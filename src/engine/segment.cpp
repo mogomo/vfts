@@ -131,6 +131,7 @@ Segment::Segment(const void *data, std::size_t size) : base_(static_cast<const s
         h->len[S_STEM_ENTRY] != sizeof(StemEntry) * ns)
         bad("section sizes do not match the counts");
     if (h->off[S_POSTINGS] + h->len[S_POSTINGS] + TAIL_PAD > size) bad("postings padding missing");
+    if (h->len[S_BITMAP_DIR] % sizeof(BitmapEntry)) bad("bitmap directory size");
     h_ = h;
     doc_ids_ = reinterpret_cast<const std::int64_t *>(base_ + h->off[S_DOC_IDS]);
     doc_len_ = reinterpret_cast<const std::uint32_t *>(base_ + h->off[S_DOC_LEN]);
@@ -143,6 +144,13 @@ Segment::Segment(const void *data, std::size_t size) : base_(static_cast<const s
     stem_terms_ = reinterpret_cast<const std::uint32_t *>(base_ + h->off[S_STEM_TERMS]);
     post_ = base_ + h->off[S_POSTINGS];
     pos_ = base_ + h->off[S_POSITIONS];
+    bitmap_dir_ = reinterpret_cast<const BitmapEntry *>(base_ + h->off[S_BITMAP_DIR]);
+    n_bitmaps_ = h->len[S_BITMAP_DIR] / sizeof(BitmapEntry);
+    bitmaps_ = base_ + h->off[S_BITMAPS];
+    for (std::size_t i = 0; i < n_bitmaps_; ++i)
+        if (bitmap_dir_[i].term >= nt || bitmap_dir_[i].off + bitmap_dir_[i].len > h->len[S_BITMAPS] ||
+            (i > 0 && bitmap_dir_[i - 1].term >= bitmap_dir_[i].term))
+            bad("bitmap directory entry " + std::to_string(i));
     if (term_off_[0] != 0 || term_off_[nt] != h->len[S_TERM_POOL]) bad("term offsets");
 }
 
@@ -192,6 +200,26 @@ const std::uint32_t *Segment::stem_terms(std::string_view key, std::uint32_t &co
     if (lo < h_->n_stems && stem_key_at(lo) == key) return stem_terms_at(lo, count);
     count = 0;
     return nullptr;
+}
+
+std::int64_t Segment::find_stem(std::string_view key) const
+{
+    std::uint32_t lo = 0, hi = h_->n_stems;
+    while (lo < hi) {
+        const std::uint32_t mid = lo + (hi - lo) / 2;
+        if (stem_key_at(mid) < key) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo < h_->n_stems && stem_key_at(lo) == key ? static_cast<std::int64_t>(lo) : -1;
+}
+
+const std::uint8_t *Segment::bitmap(std::uint32_t term, std::size_t &len) const
+{
+    const BitmapEntry *b = bitmap_dir_, *e = bitmap_dir_ + n_bitmaps_;
+    const BitmapEntry *p = std::lower_bound(b, e, term, [](const BitmapEntry &x, std::uint32_t t) { return x.term < t; });
+    if (p == e || p->term != term) { len = 0; return nullptr; }
+    len = p->len;
+    return bitmaps_ + p->off;
 }
 
 void Segment::verify() const

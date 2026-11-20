@@ -1,0 +1,415 @@
+// The search engine against a brute-force reference: random corpora, random queries (boolean,
+// phrases, w/N, pre/N; exact and stem match), one segment, several segments with tombstones and a
+// live tail. Same matches, same order, same scores (correctness rules 1, 2 and 4).
+#include "check.h"
+#include "../../src/engine/builder.h"
+#include "../../src/engine/postings.h"
+#include "../../src/engine/search.h"
+#include "../../src/engine/stemmer.h"
+
+#include <algorithm>
+#include <cmath>
+#include <map>
+#include <optional>
+#include <set>
+
+using namespace vtext;
+using Doc = std::vector<std::string>;
+using Corpus = std::map<std::int64_t, Doc>;
+
+static const char *VOCAB[] = {"run", "runs", "running", "contract", "contracts", "indemnity", "holmes", "watson",
+                              "the", "of", "a", "b", "c", "d", "e", "f", "g", "h"};
+constexpr int NV = sizeof(VOCAB) / sizeof(VOCAB[0]);
+
+static AnalyzerOptions aopts()
+{
+    AnalyzerOptions o;
+    o.default_lang = parse_lang("en");
+    return o;
+}
+
+// ------------------------------------------------------------------ reference
+
+struct Ref {
+    const Corpus &docs;
+    MatchMode match;
+    double N = 0, sum = 0;
+    float cache[256];
+    Stemmer st;
+
+    Ref(const Corpus &c, MatchMode m) : docs(c), match(m)
+    {
+        for (auto &kv : docs) if (!kv.second.empty()) { N += 1; sum += kv.second.size(); }
+        const float avgdl = N ? static_cast<float>(sum / N) : 1.0f;
+        for (int i = 0; i < 256; ++i)
+            cache[i] = 1.0f / (1.2f * ((1.0f - 0.75f) + 0.75f * static_cast<float>(norm_to_length(static_cast<std::uint8_t>(i))) / avgdl));
+    }
+
+    std::set<std::string> terms_of(const std::string &w)
+    {
+        std::set<std::string> s{w};
+        if (match == MatchMode::Stem) {
+            const std::string sw(st.stem(w, parse_lang("en")));
+            for (int i = 0; i < NV; ++i) if (std::string(st.stem(VOCAB[i], parse_lang("en"))) == sw) s.insert(VOCAB[i]);
+        }
+        return s;
+    }
+    float idf(const std::set<std::string> &ts)
+    {
+        double df = 0;
+        for (auto &kv : docs) {
+            for (auto &w : kv.second) if (ts.count(w)) { df += 1; break; }
+        }
+        return static_cast<float>(std::log(1.0 + (N - df + 0.5) / (df + 0.5)));
+    }
+    float bm25(float w, float freq, std::size_t len)
+    {
+        return w - w / (1.0f + freq * cache[length_to_norm(static_cast<std::uint32_t>(len))]);
+    }
+    static std::vector<std::uint32_t> positions(const Doc &d, const std::set<std::string> &ts)
+    {
+        std::vector<std::uint32_t> p;
+        for (std::uint32_t i = 0; i < d.size(); ++i) if (ts.count(d[i])) p.push_back(i);
+        return p;
+    }
+    struct Sp { std::uint32_t s, e; };
+
+    // spans of a positional node in a document
+    std::vector<Sp> spans(const QNode &q, const Doc &d)
+    {
+        std::vector<Sp> out;
+        if (q.kind == QKind::Term) for (auto p : positions(d, terms_of(q.words[0]))) out.push_back({p, p});
+        else if (q.kind == QKind::Phrase) {
+            for (std::uint32_t s = 0; s < d.size(); ++s) {
+                bool ok = true;
+                for (std::size_t i = 0; i < q.words.size() && ok; ++i) {
+                    if (q.words[i].empty()) continue;
+                    ok = s + i < d.size() && terms_of(q.words[i]).count(d[s + i]);
+                }
+                if (ok) out.push_back({s, static_cast<std::uint32_t>(s + q.words.size() - 1)});
+            }
+        } else if (q.kind == QKind::Bool) {
+            for (auto &k : q.should) { auto v = spans(k, d); out.insert(out.end(), v.begin(), v.end()); }
+        } else if (q.kind == QKind::Near) {
+            for (auto &a : spans(q.kids[0], d))
+                for (auto &b : spans(q.kids[1], d)) {
+                    std::uint32_t gap = 0;
+                    if (b.s > a.e) gap = b.s - a.e;
+                    else if (!q.ordered && a.s > b.e) gap = a.s - b.e;
+                    if (gap >= 1 && gap <= static_cast<std::uint32_t>(q.dist)) out.push_back({std::min(a.s, b.s), std::max(a.e, b.e)});
+                }
+        }
+        return out;
+    }
+    float leaf_idf(const QNode &q)
+    {
+        double w = 0;
+        if (q.kind == QKind::Term) w += idf(terms_of(q.words[0]));
+        else if (q.kind == QKind::Phrase) { for (auto &x : q.words) if (!x.empty()) w += idf(terms_of(x)); }
+        for (auto *v : {&q.should, &q.must, &q.kids}) for (auto &k : *v) w += leaf_idf(k);
+        return static_cast<float>(w);
+    }
+    // score if the document matches
+    std::optional<float> eval(const QNode &q, const Doc &d)
+    {
+        switch (q.kind) {
+        case QKind::Term: {
+            auto ts = terms_of(q.words[0]);
+            const auto p = positions(d, ts);
+            if (p.empty()) return std::nullopt;
+            return bm25(idf(ts), static_cast<float>(p.size()), d.size());
+        }
+        case QKind::Phrase: {
+            const auto s = spans(q, d);
+            if (s.empty()) return std::nullopt;
+            double w = 0;
+            for (auto &x : q.words) if (!x.empty()) w += idf(terms_of(x));
+            return bm25(static_cast<float>(w), static_cast<float>(s.size()), d.size());
+        }
+        case QKind::Near: {
+            float freq = 0;
+            for (auto &a : spans(q.kids[0], d))
+                for (auto &b : spans(q.kids[1], d)) {
+                    std::uint32_t gap = 0;
+                    if (b.s > a.e) gap = b.s - a.e;
+                    else if (!q.ordered && a.s > b.e) gap = a.s - b.e;
+                    if (gap >= 1 && gap <= static_cast<std::uint32_t>(q.dist)) freq += 1.0f / static_cast<float>(gap);
+                }
+            if (freq == 0) return std::nullopt;
+            return bm25(leaf_idf(q.kids[0]) + leaf_idf(q.kids[1]), freq, d.size());
+        }
+        case QKind::Bool: {
+            double s = 0;
+            for (auto &k : q.must_not) if (eval(k, d)) return std::nullopt;
+            for (auto &k : q.must) { auto v = eval(k, d); if (!v) return std::nullopt; s += *v; }
+            bool any = false;
+            for (auto &k : q.should) { auto v = eval(k, d); if (v) { any = true; s += *v; } }
+            if (q.must.empty() && !q.should.empty() && !any) return std::nullopt;
+            return static_cast<float>(s);
+        }
+        default: return std::nullopt;
+        }
+    }
+};
+
+// ------------------------------------------------------------------ random corpora and queries
+
+static Corpus corpus(std::uint64_t seed, int n, int maxlen)
+{
+    Rng r(seed);
+    Corpus c;
+    while (static_cast<int>(c.size()) < n) {
+        Doc d;
+        const int len = static_cast<int>(r.below(maxlen + 1));
+        for (int i = 0; i < len; ++i) d.push_back(VOCAB[r.below(r.below(3) == 0 ? 8 : NV)]);
+        c[r.below(n * 10) + 1] = d;
+    }
+    return c;
+}
+
+static std::string rand_word(Rng &r) { return VOCAB[r.below(NV)]; }
+
+static std::string rand_pos(Rng &r, int depth)
+{
+    const int k = static_cast<int>(r.below(depth > 0 ? 5 : 2));
+    switch (k) {
+    case 0: return rand_word(r);
+    case 1: return "\"" + rand_word(r) + " " + rand_word(r) + (r.below(2) ? " " + rand_word(r) : "") + "\"";
+    case 2: return "(" + rand_word(r) + " OR " + rand_word(r) + ")";
+    default: return "(" + rand_pos(r, depth - 1) + (r.below(2) ? " w/" : " pre/") + std::to_string(1 + r.below(4)) + " " + rand_pos(r, depth - 1) + ")";
+    }
+}
+
+static std::string rand_query(Rng &r, int depth)
+{
+    const int k = static_cast<int>(r.below(depth > 0 ? 7 : 3));
+    switch (k) {
+    case 0: case 1: return rand_word(r);
+    case 2: return rand_pos(r, 1);
+    case 3: return "(" + rand_query(r, depth - 1) + " AND " + rand_query(r, depth - 1) + ")";
+    case 4: return "(" + rand_query(r, depth - 1) + " OR " + rand_query(r, depth - 1) + ")";
+    case 5: return "(" + rand_query(r, depth - 1) + " NOT " + rand_query(r, depth - 1) + ")";
+    default: return rand_query(r, depth - 1) + " " + rand_query(r, depth - 1) + " -" + rand_word(r);
+    }
+}
+
+// ------------------------------------------------------------------ comparison
+
+static std::string text_of(const Doc &d)
+{
+    std::string s;
+    for (auto &w : d) s += w + " ";
+    return s;
+}
+
+static std::shared_ptr<const std::string> build_seg(const Corpus &c, std::int64_t id)
+{
+    SegmentBuilder b(aopts());
+    for (auto &kv : c) b.add(kv.first, text_of(kv.second));
+    return std::make_shared<const std::string>(b.finish(id));
+}
+
+static int compared = 0;
+
+static void compare(Searcher &s, const Corpus &live, const std::string &q, MatchMode m)
+{
+    SearchOptions o;
+    o.match = m;
+    o.k = 1000000;
+    Analyzer a(aopts());
+    const QNode node = parse_query(q, a, o.query);
+    Ref ref(live, m);
+    std::vector<std::pair<float, std::int64_t>> want;
+    for (auto &kv : live) { auto v = ref.eval(node, kv.second); if (v) want.push_back({*v, kv.first}); }
+    // pure negative queries match every document with score 0
+    std::sort(want.begin(), want.end(), [](auto &x, auto &y) { return x.first != y.first ? x.first > y.first : x.second < y.second; });
+    const auto got = s.search(q, o);
+    const std::uint64_t n = s.count(q, o);
+    ++compared;
+    bool ok = got.size() == want.size() && n == want.size();
+    for (std::size_t i = 0; ok && i < got.size(); ++i) {
+        ok = got[i].doc_id == want[i].second && std::fabs(got[i].score - want[i].first) <= 1e-5f * std::max(1.0f, want[i].first);
+        if (!ok && std::fabs(got[i].score - want[i].first) <= 1e-5f * std::max(1.0f, want[i].first)) {
+            // equal scores within rounding may order differently only if they are equal in float
+            ok = false;
+        }
+    }
+    if (!ok) {
+        ++failures;
+        std::printf("FAIL query %s [%s] (%s): got %zu (count %llu), want %zu\n", q.c_str(), to_string(node).c_str(),
+                    m == MatchMode::Stem ? "stem" : "exact", got.size(), static_cast<unsigned long long>(n), want.size());
+        for (std::size_t i = 0; i < std::min<std::size_t>(5, std::max(got.size(), want.size())); ++i)
+            std::printf("   %zu: got %lld %.7f  want %lld %.7f\n", i, i < got.size() ? static_cast<long long>(got[i].doc_id) : -1LL,
+                        i < got.size() ? got[i].score : 0.0f, i < want.size() ? static_cast<long long>(want[i].second) : -1LL,
+                        i < want.size() ? want[i].first : 0.0f);
+    }
+}
+
+static void single_segment()
+{
+    const Corpus c = corpus(1, 400, 25);
+    auto bytes = build_seg(c, 1);
+    Segment seg(bytes->data(), bytes->size());
+    Rng r(2);
+    for (int i = 0; i < 300; ++i) {
+        const std::string q = rand_query(r, 3);
+        for (MatchMode m : {MatchMode::Exact, MatchMode::Stem}) {
+            Searcher s(aopts(), {SegmentRef{&seg, nullptr, nullptr}});
+            compare(s, c, q, m);
+        }
+    }
+}
+
+// The same live documents split into three segments, with tombstones, a live tail that masks
+// changed documents, and deleted documents: results must be those of the live set.
+static void many_segments()
+{
+    const Corpus all = corpus(7, 600, 20);
+    Corpus parts[3];
+    int i = 0;
+    for (auto &kv : all) parts[i++ % 3][kv.first] = kv.second;
+    std::vector<std::shared_ptr<const std::string>> bytes;
+    std::vector<std::unique_ptr<Segment>> segs;
+    for (int p = 0; p < 3; ++p) { bytes.push_back(build_seg(parts[p], 10 + p)); segs.emplace_back(new Segment(bytes.back()->data(), bytes.back()->size())); }
+    Corpus live = all;
+    Rng r(8);
+    // tombstones: delete every 9th document of each segment
+    std::vector<SegmentRef> refs;
+    for (int p = 0; p < 3; ++p) {
+        auto dead = std::make_shared<DocSet>();
+        dead->resize(segs[p]->n_docs());
+        for (std::uint32_t d = 0; d < segs[p]->n_docs(); d += 9) { dead->set(d); live.erase(segs[p]->doc_id(d)); }
+        auto dc = std::make_shared<DeadCounts>(compute_dead_counts(*segs[p], *dead));
+        refs.push_back({segs[p].get(), dead, dc});
+    }
+    // live tail: 30 changed documents (new text), 10 new documents, 10 deleted through the mask
+    Corpus tail;
+    std::vector<std::int64_t> mask;
+    int changed = 0;
+    for (auto &kv : live) {
+        if (changed < 30 && r.below(10) == 0) {
+            Doc d;
+            for (int k = 0; k < 8; ++k) d.push_back(VOCAB[r.below(NV)]);
+            tail[kv.first] = d;
+            mask.push_back(kv.first);
+            ++changed;
+        }
+    }
+    for (int k = 0; k < 10; ++k) tail[100000 + k] = {"contract", "indemnity", VOCAB[r.below(NV)]};
+    int deleted = 0;
+    for (auto &kv : live) if (!tail.count(kv.first) && deleted < 10 && r.below(15) == 0) { mask.push_back(kv.first); ++deleted; }
+    for (auto id : mask) live.erase(id);
+    for (auto &kv : tail) live[kv.first] = kv.second;
+    auto tail_bytes = build_seg(tail, -1);
+
+    Rng rq(9);
+    for (int k = 0; k < 200; ++k) {
+        const std::string q = rand_query(rq, 3);
+        for (MatchMode m : {MatchMode::Exact, MatchMode::Stem}) {
+            Searcher s(aopts(), refs);
+            s.mask(mask);
+            s.add_tail(tail_bytes);
+            compare(s, live, q, m);
+        }
+    }
+    // statistics equal those of the live set
+    Searcher s(aopts(), refs);
+    s.mask(mask);
+    s.add_tail(tail_bytes);
+    s.search("a", SearchOptions());
+    std::uint64_t n = 0, sum = 0;
+    for (auto &kv : live) if (!kv.second.empty()) { ++n; sum += kv.second.size(); }
+    CHECK_EQ(s.stats().n_docs, n);
+    CHECK_EQ(s.stats().sum_len, sum);
+    CHECK_EQ(s.stats().live_docs, static_cast<std::uint64_t>(live.size()));
+
+    // one segment of the live set gives the same scores (rule 4)
+    auto one = build_seg(live, 99);
+    Segment seg(one->data(), one->size());
+    Rng rq2(10);
+    for (int k = 0; k < 50; ++k) {
+        const std::string q = rand_query(rq2, 2);
+        Searcher a(aopts(), refs);
+        a.mask(mask);
+        a.add_tail(tail_bytes);
+        Searcher b(aopts(), {SegmentRef{&seg, nullptr, nullptr}});
+        SearchOptions o;
+        o.k = 20;
+        const auto x = a.search(q, o), y = b.search(q, o);
+        bool same = x.size() == y.size();
+        for (std::size_t j = 0; same && j < x.size(); ++j) same = x[j].doc_id == y[j].doc_id && x[j].score == y[j].score;
+        if (!same) { ++failures; std::printf("FAIL segmentation changes the result of %s\n", q.c_str()); }
+    }
+}
+
+static void sloppy_phrase()
+{
+    // Lucene's sloppy phrase: matchLength = |(p1 - 1) - p0| for two words; freq = sum 1/(1+len)
+    Corpus c;
+    c[1] = {"roman", "x", "empire"};              // in order, one word between: length 1
+    c[2] = {"empire", "roman"};                   // reversed adjacent: length 2
+    c[3] = {"roman", "x", "x", "x", "empire"};    // length 3
+    c[4] = {"roman", "empire"};                   // exact: length 0
+    auto b = build_seg(c, 1);
+    Segment seg(b->data(), b->size());
+    Searcher s(aopts(), {SegmentRef{&seg, nullptr, nullptr}});
+    SearchOptions o;
+    CHECK_EQ(s.count("\"roman empire\"~0", o), 1ull);
+    CHECK_EQ(s.count("\"roman empire\"~1", o), 2ull);
+    CHECK_EQ(s.count("\"roman empire\"~2", o), 3ull);
+    CHECK_EQ(s.count("\"roman empire\"~3", o), 4ull);
+    CHECK_EQ(s.count("roman w/1 empire", o), 2ull);         // adjacent, either order
+    CHECK_EQ(s.count("roman pre/1 empire", o), 1ull);
+    CHECK_EQ(s.count("roman pre/2 empire", o), 2ull);
+    CHECK_EQ(s.count("roman w/4 empire", o), 4ull);
+    CHECK_EQ(s.count("empire pre/4 roman", o), 1ull);
+    // freq of doc 1 with slop 1 is 1/2: score = w - w / (1 + 0.5 * cache)
+    o.k = 10;
+    const auto h = s.search("\"roman empire\"~3", o);
+    CHECK(h.size() == 4 && h[0].doc_id == 4);
+}
+
+static void prefix_wildcard_fuzzy()
+{
+    Corpus c;
+    c[1] = {"indemnity", "contract"};
+    c[2] = {"indemnify", "x"};
+    c[3] = {"indemnification"};
+    c[4] = {"test", "text"};
+    c[5] = {"holmes"};
+    c[6] = {"holms", "homes"};
+    c[7] = {"ohlmes"};          // transposition
+    auto b = build_seg(c, 1);
+    Segment seg(b->data(), b->size());
+    Searcher s(aopts(), {SegmentRef{&seg, nullptr, nullptr}});
+    SearchOptions o;
+    CHECK_EQ(s.count("indemn*", o), 3ull);
+    CHECK_EQ(s.count("indemnif*", o), 2ull);
+    CHECK_EQ(s.count("te?t", o), 1ull);
+    CHECK_EQ(s.count("*emnity", o), 1ull);
+    // counts are documents: holms and homes are both in document 6
+    CHECK_EQ(s.count("holmse~1", o), 2ull);      // holmes (transposition), holms (deletion)
+    CHECK_EQ(s.count("holmes~1", o), 3ull);      // holmes; holms, homes; ohlmes (transposition)
+    CHECK_EQ(s.count("holmes~2", o), 3ull);
+    CHECK_EQ(s.count("holmes~0", o), 1ull);
+    CHECK_EQ(s.count("indemn* w/1 contract", o), 1ull);
+    o.max_expansions = 1;
+    CHECK_EQ(s.count("indemn*", o), 1ull);
+    o.max_expansions = 50;
+    o.prefix_length = 2;
+    CHECK_EQ(s.count("holmes~2", o), 2ull);      // ohlmes does not start with "ho"
+    // constant score for prefix and wildcard, like Lucene's default
+    o.k = 10;
+    const auto h = s.search("indemn*", o);
+    CHECK(h.size() == 3 && h[0].score == 1.0f && h[2].score == 1.0f && h[0].doc_id == 1);
+}
+
+int main()
+{
+    single_segment();
+    many_segments();
+    sloppy_phrase();
+    prefix_wildcard_fuzzy();
+    std::printf("%d query comparisons\n", compared);
+    return finish("test_search");
+}

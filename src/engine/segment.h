@@ -24,7 +24,7 @@ namespace vtext {
 constexpr char SEGMENT_MAGIC[8] = {'V', 'T', 'E', 'X', 'T', 'S', 'G', '1'};
 constexpr std::uint32_t SEGMENT_FORMAT = 1;
 constexpr std::uint32_t BLOCK = 128;                 // documents per postings block
-constexpr std::size_t HEADER_BYTES = 256;
+constexpr std::size_t HEADER_BYTES = 512;
 constexpr std::size_t TAIL_PAD = 16;                 // zero bytes after the postings for unaligned 8-byte reads
 
 // Section order in the file; header.off[] holds their byte offsets.
@@ -40,6 +40,8 @@ enum Section {
     S_STEM_TERMS,       // uint32 term ids, grouped by stem entry
     S_POSTINGS,         // per term: BlockMeta[n_blocks] then the packed blocks (see below)
     S_POSITIONS,        // per term, per document in docno order: tf varints (position deltas)
+    S_BITMAP_DIR,       // BitmapEntry[], ascending by term id: terms with a stored bitmap
+    S_BITMAPS,          // CRoaring portable bitmaps of docnos
     S_COUNT
 };
 
@@ -93,8 +95,21 @@ struct StemEntry {
     std::uint32_t key_len;
     std::uint32_t first;        // index into S_STEM_TERMS
     std::uint32_t count;
+    std::uint32_t union_df;     // documents that contain at least one of the terms
+    std::uint32_t reserved;
 };
-static_assert(sizeof(StemEntry) == 16, "StemEntry size");
+static_assert(sizeof(StemEntry) == 24, "StemEntry size");
+
+// Terms with df >= BITMAP_MIN_DF also have their documents as a CRoaring bitmap (portable
+// serialization), for counting and boolean filtering without decoding postings (tcount).
+constexpr std::uint32_t BITMAP_MIN_DF = 2048;
+struct BitmapEntry {
+    std::uint32_t term;
+    std::uint32_t reserved;
+    std::uint64_t off;          // in S_BITMAPS
+    std::uint64_t len;
+};
+static_assert(sizeof(BitmapEntry) == 24, "BitmapEntry size");
 #pragma pack(pop)
 
 // Lucene's SmallFloat.intToByte4 / byte4ToInt: the one-byte document length of BM25. Lengths below
@@ -152,6 +167,13 @@ public:
     std::string_view stem_key_at(std::uint32_t i) const;
     const std::uint32_t *stem_terms_at(std::uint32_t i, std::uint32_t &count) const;
 
+    std::uint32_t stem_union_df(std::uint32_t i) const { return stems_[i].union_df; }
+    // Index of a stem key in the stem table, or -1.
+    std::int64_t find_stem(std::string_view key) const;
+
+    // The stored bitmap of a term (CRoaring portable bytes), or nullptr.
+    const std::uint8_t *bitmap(std::uint32_t term, std::size_t &len) const;
+
     const std::uint8_t *postings() const { return post_; }
     const std::uint8_t *positions() const { return pos_; }
     std::size_t positions_bytes() const { return h_->len[S_POSITIONS]; }
@@ -171,6 +193,9 @@ private:
     const std::uint32_t *stem_terms_ = nullptr;
     const std::uint8_t *post_ = nullptr;
     const std::uint8_t *pos_ = nullptr;
+    const BitmapEntry *bitmap_dir_ = nullptr;
+    std::size_t n_bitmaps_ = 0;
+    const std::uint8_t *bitmaps_ = nullptr;
 };
 
 // ---- small codecs shared by writer and readers

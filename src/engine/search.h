@@ -1,0 +1,112 @@
+// Searching a set of segments: BM25 top-k (tsearch) and counting (tcount).
+//
+// Global statistics: N (documents with at least one token), the average document length and the
+// document frequency of every query word are summed over all segments and the live tail, minus
+// deleted and masked documents. A document's score therefore depends only on the document and on
+// the live collection, never on how documents are split into segments or nodes.
+//
+// BM25 is Lucene's BM25Similarity (k1 = 1.2, b = 0.75), in the same float arithmetic, with the
+// one-byte length norms of Lucene (segment.h). Docs/design.md, "Scoring".
+#ifndef VTEXT_ENGINE_SEARCH_H
+#define VTEXT_ENGINE_SEARCH_H
+
+#include "analyzer.h"
+#include "query.h"
+#include "segment.h"
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace vtext {
+
+enum class MatchMode : std::uint8_t { Stem, Exact };
+
+struct SearchOptions {
+    MatchMode match = MatchMode::Stem;
+    QueryOptions query;                 // lang, implicit operator, stopwords
+    std::uint32_t k = 10;
+    int prefix_length = 0;              // fuzzy: leading code points that must match exactly
+    std::uint32_t max_expansions = 50;  // prefix, wildcard, fuzzy: terms per word at most
+    float k1 = 1.2f, b = 0.75f;
+    int threads = 1;                    // segments searched in parallel
+};
+
+// How deletions change the document frequencies of one segment: computed once per set of
+// tombstones (cache.h), so that a query does not scan postings for them.
+struct DeadCounts {
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> terms;   // (term id, deleted docs), ascending
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> stems;   // (stem entry, deleted docs), ascending
+    std::uint32_t term(std::uint32_t t) const;
+    std::uint32_t stem(std::uint32_t s) const;
+};
+
+// Bit set over the docnos of a segment.
+struct DocSet {
+    std::vector<std::uint64_t> bits;
+    std::uint32_t count = 0;
+    void resize(std::uint32_t n) { bits.assign((n + 63) / 64, 0); count = 0; }
+    bool test(std::uint32_t d) const { return !bits.empty() && (bits[d >> 6] >> (d & 63) & 1); }
+    bool set(std::uint32_t d) { std::uint64_t &w = bits[d >> 6]; const std::uint64_t m = 1ull << (d & 63); if (w & m) return false; w |= m; ++count; return true; }
+};
+
+// A segment as one search sees it: the bytes, plus its deleted documents (tombstones of the
+// active generation) and their effect on document frequencies.
+struct SegmentRef {
+    const Segment *seg = nullptr;
+    std::shared_ptr<const DocSet> dead;             // may be null: nothing deleted
+    std::shared_ptr<const DeadCounts> dead_counts;  // required when dead is set
+};
+
+// DeadCounts of a segment for a set of deleted docnos (scans every posting list once).
+DeadCounts compute_dead_counts(const Segment &seg, const DocSet &dead);
+
+struct Hit {
+    std::int64_t doc_id;
+    float score;
+};
+
+struct CollectionStats {
+    std::uint64_t n_docs = 0;           // live documents with at least one token (BM25 N)
+    std::uint64_t sum_len = 0;          // their tokens
+    std::uint64_t live_docs = 0;        // all live documents, also empty ones
+    float avgdl() const { return n_docs ? static_cast<float>(static_cast<double>(sum_len) / static_cast<double>(n_docs)) : 1.0f; }
+};
+
+class Searcher {
+public:
+    Searcher(const AnalyzerOptions &analyzer_options, std::vector<SegmentRef> segments);
+    ~Searcher();
+
+    // Hides these doc ids in every segment (rows that changed or were deleted after the segments
+    // were made). Call before add_tail and before searching.
+    void mask(const std::vector<std::int64_t> &doc_ids);
+    // A segment of documents analyzed at query time (the live tail), searched beside the others.
+    void add_tail(std::shared_ptr<const std::string> segment_bytes);
+
+    std::vector<Hit> search(const std::string &query, const SearchOptions &opts);
+    std::uint64_t count(const std::string &query, const SearchOptions &opts);
+
+    const CollectionStats &stats() const { return stats_; }
+    // The parsed query, for messages and tests.
+    std::string explain(const std::string &query, const SearchOptions &opts);
+
+    struct Impl;
+
+private:
+    void prepare();
+    AnalyzerOptions aopts_;
+    std::vector<SegmentRef> segs_;
+    std::vector<std::shared_ptr<const std::string>> tail_bytes_;
+    std::vector<std::unique_ptr<Segment>> tail_segs_;
+    std::vector<std::vector<std::uint32_t>> masked_;    // per segment: extra dead docnos, ascending
+    std::vector<std::shared_ptr<DocSet>> combined_dead_; // per segment: tombstones + masked
+    CollectionStats stats_;
+    bool prepared_ = false;
+    std::unique_ptr<Analyzer> analyzer_;
+};
+
+} // namespace vtext
+
+#endif
