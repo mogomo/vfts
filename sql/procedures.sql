@@ -256,6 +256,28 @@ BEGIN
 END;
 $$;
 
+-- Stores the segments in the session temp table vtext_build (index rows) in the index tables, as
+-- segments added by generation g_new. Returns nothing; the caller commits.
+CREATE OR REPLACE PROCEDURE vtext.store_build(iid INT, g_new INT) LANGUAGE PLvSQL AS $$
+BEGIN
+    PERFORM INSERT /*+DIRECT*/ INTO vtext.term_dict SELECT iid, segment_id, term_id, term, stem, COALESCE(lang, ''), n FROM vtext_build WHERE kind = 'T';
+    PERFORM INSERT /*+DIRECT*/ INTO vtext.postings SELECT iid, segment_id, term_id, chunk_id, bin::VARBINARY(65000) FROM vtext_build WHERE kind = 'P';
+    PERFORM INSERT /*+DIRECT*/ INTO vtext.positions SELECT iid, segment_id, term_id, chunk_id, bin FROM vtext_build WHERE kind = 'Q';
+    PERFORM INSERT /*+DIRECT*/ INTO vtext.doc_stats SELECT iid, segment_id, docno, doc_id, n FROM vtext_build WHERE kind = 'D';
+    PERFORM INSERT INTO vtext.segments (index_id, segment_id, state, gen_added, n_docs, n_terms, sum_len, bytes, checksum, created)
+            SELECT iid, segment_id, 'active', g_new, n, term_id, docno, chunk_id, doc_id, CLOCK_TIMESTAMP() FROM vtext_build WHERE kind = 'S';
+END;
+$$;
+
+-- The session temp table that holds a build's index rows until the commit.
+CREATE OR REPLACE PROCEDURE vtext.build_table() LANGUAGE PLvSQL AS $$
+BEGIN
+    EXECUTE 'CREATE LOCAL TEMPORARY TABLE IF NOT EXISTS vtext_build (kind VARCHAR(1), segment_id INT, term_id INT, chunk_id INT, docno INT, '
+         || 'doc_id INT, n INT, term VARCHAR(1024), stem VARCHAR(1024), lang VARCHAR(8), bin LONG VARBINARY(32000000)) '
+         || 'ON COMMIT DELETE ROWS UNSEGMENTED ALL NODES';
+END;
+$$;
+
 -- ------------------------------------------------------------------ refresh
 
 -- Incremental and exact: indexes the rows newer than the last boundary into new segments,
@@ -348,9 +370,7 @@ BEGIN
     ELSE
         parts := nodes;
     END IF;
-    EXECUTE 'CREATE LOCAL TEMPORARY TABLE IF NOT EXISTS vtext_build (kind VARCHAR(1), segment_id INT, term_id INT, chunk_id INT, docno INT, '
-         || 'doc_id INT, n INT, term VARCHAR(1024), stem VARCHAR(1024), lang VARCHAR(8), bin LONG VARBINARY(32000000)) '
-         || 'ON COMMIT DELETE ROWS UNSEGMENTED ALL NODES';
+    PERFORM CALL vtext.build_table();
     seg_base := EXECUTE 'SELECT NEXTVAL(''vtext.segment_seq'') * 1000000';
     IF n_rows > 0 THEN
         EXECUTE 'INSERT /*+DIRECT, LABEL(vtext_build)*/ INTO vtext_build SELECT vtext.tbuild(part, doc_id, body, lang, NULL::INT USING PARAMETERS seg_base='
@@ -360,12 +380,7 @@ BEGIN
     END IF;
 
     -- 4. Store the new segments in the index tables.
-    PERFORM INSERT /*+DIRECT*/ INTO vtext.term_dict SELECT iid, segment_id, term_id, term, stem, COALESCE(lang, ''), n FROM vtext_build WHERE kind = 'T';
-    PERFORM INSERT /*+DIRECT*/ INTO vtext.postings SELECT iid, segment_id, term_id, chunk_id, bin::VARBINARY(65000) FROM vtext_build WHERE kind = 'P';
-    PERFORM INSERT /*+DIRECT*/ INTO vtext.positions SELECT iid, segment_id, term_id, chunk_id, bin FROM vtext_build WHERE kind = 'Q';
-    PERFORM INSERT /*+DIRECT*/ INTO vtext.doc_stats SELECT iid, segment_id, docno, doc_id, n FROM vtext_build WHERE kind = 'D';
-    PERFORM INSERT INTO vtext.segments (index_id, segment_id, state, gen_added, n_docs, n_terms, sum_len, bytes, checksum, created)
-            SELECT iid, segment_id, 'active', g_new, n, term_id, docno, chunk_id, doc_id, CLOCK_TIMESTAMP() FROM vtext_build WHERE kind = 'S';
+    PERFORM CALL vtext.store_build(iid, g_new);
     n_segs := (SELECT COUNT(*) FROM vtext_build WHERE kind = 'S');
 
     -- 5. Tombstones: older versions of every changed doc_id, in the segments that were active.
@@ -410,6 +425,101 @@ BEGIN
     --    views show a wider tail, which is still exact).
     PERFORM CALL vtext.make_views(nm);
     RAISE NOTICE 'vtext: index % generation %: % (% s)', nm, g_new, note, ROUND(secs, 1);
+    -- 9. Tiered merge, when the policy finds a tier with merge_factor segments.
+    PERFORM CALL vtext.merge(nm, 0);
+END;
+$$;
+
+-- ------------------------------------------------------------------ merge
+
+-- Merges segments into one, dropping tombstoned documents, in one generation step: build the new
+-- segment from the node cache (tmerge), store it, mark the inputs merged, load every node, activate.
+CREATE OR REPLACE PROCEDURE vtext.merge_step(nm VARCHAR, seg_list VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT; g INT; g_new INT; cdir VARCHAR(1024); new_id INT; params VARCHAR(65000); n INT;
+BEGIN
+    SELECT index_id, gen, cache_dir INTO iid, g, cdir FROM vtext.indexes WHERE index_name = nm;
+    g_new := g + 1;
+    new_id := EXECUTE 'SELECT NEXTVAL(''vtext.segment_seq'') * 1000000';
+    PERFORM CALL vtext.build_table();
+    params := 'index=' || QUOTE_LITERAL(nm) || ', gen=' || g || ', segments=' || QUOTE_LITERAL(seg_list) || ', new_id=' || new_id
+           || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
+    EXECUTE 'INSERT /*+DIRECT, LABEL(vtext_merge)*/ INTO vtext_build SELECT vtext.tmerge(USING PARAMETERS ' || params || ') OVER()';
+    PERFORM CALL vtext.store_build(iid, g_new);
+    n := EXECUTE 'UPDATE vtext.segments SET state = ''merged'', gen_removed = ' || g_new || ' WHERE index_id = ' || iid
+                 || ' AND gen_removed IS NULL AND segment_id IN (' || seg_list || ')';
+    PERFORM CALL vtext.load_rows(nm, cdir, 'SELECT * FROM vtext_build');
+    PERFORM CALL vtext.activate(nm, g_new);
+    PERFORM UPDATE vtext.indexes SET gen = g_new WHERE index_name = nm;
+    PERFORM COMMIT;
+    PERFORM CALL vtext.make_views(nm);
+END;
+$$;
+
+-- max_segments = 0: the tiered policy. Segments are grouped in tiers by size (tier t holds
+-- segments of merge_factor^t to merge_factor^(t+1) MB); a tier with merge_factor segments has its
+-- merge_factor smallest merged into one, which lands in a higher tier. Segments with 30% or more
+-- deleted documents are merged as well. Repeats until nothing qualifies.
+-- max_segments = N > 0: merges the smallest segments until at most N are left (N = 1: one segment).
+CREATE OR REPLACE PROCEDURE vtext.merge(nm VARCHAR, max_segments INT) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT; mf INT; c INT; k INT; lst VARCHAR(65000); steps INT; t0 TIMESTAMPTZ; me VARCHAR(256); marked INT;
+BEGIN
+    SELECT index_id, merge_factor INTO iid, mf FROM vtext.indexes WHERE index_name = nm;
+    IF iid IS NULL THEN
+        RAISE EXCEPTION 'vtext.merge: index % does not exist', nm;
+    END IF;
+    me := (SELECT session_id FROM v_monitor.current_session);
+    marked := (SELECT COUNT(*) FROM vtext.indexes i WHERE i.index_name = nm AND i.refresh_started_at IS NOT NULL
+               AND i.refresh_started_by IN (SELECT session_id FROM v_monitor.sessions) AND i.refresh_started_by <> me);
+    IF marked > 0 THEN
+        RAISE EXCEPTION 'vtext.merge: a refresh or merge of % is running', nm;
+    END IF;
+    t0 := (SELECT CLOCK_TIMESTAMP());
+    steps := 0;
+    LOOP
+        lst := NULL;
+        c := (SELECT COUNT(*) FROM vtext.segments WHERE index_id = iid AND gen_removed IS NULL);
+        IF max_segments > 0 THEN
+            IF c > max_segments THEN
+                k := c - max_segments + 1;
+                lst := (SELECT LISTAGG(segment_id::VARCHAR USING PARAMETERS max_length = 65000) FROM
+                        (SELECT segment_id, ROW_NUMBER() OVER(ORDER BY bytes, segment_id) AS rn FROM vtext.segments
+                         WHERE index_id = iid AND gen_removed IS NULL) s WHERE rn <= k);
+            END IF;
+        ELSE
+            lst := (SELECT LISTAGG(segment_id::VARCHAR USING PARAMETERS max_length = 65000) FROM
+                    (SELECT segment_id, tier, ROW_NUMBER() OVER(PARTITION BY tier ORDER BY bytes, segment_id) AS rn,
+                            COUNT(*) OVER(PARTITION BY tier) AS cnt, MIN(tier) OVER() AS t
+                     FROM (SELECT segment_id, bytes, FLOOR(LN(GREATEST(bytes, 1048576) / 1048576.0) / LN(mf))::INT AS tier
+                           FROM vtext.segments WHERE index_id = iid AND gen_removed IS NULL) x) y
+                    WHERE cnt >= mf AND rn <= mf AND tier = (SELECT MIN(tier) FROM
+                        (SELECT FLOOR(LN(GREATEST(bytes, 1048576) / 1048576.0) / LN(mf))::INT AS tier, COUNT(*) AS n
+                         FROM vtext.segments WHERE index_id = iid AND gen_removed IS NULL GROUP BY 1) z WHERE n >= mf));
+            IF lst IS NULL OR lst = '' THEN
+                -- segments with many deletions
+                lst := (SELECT LISTAGG(segment_id::VARCHAR USING PARAMETERS max_length = 65000) FROM
+                        (SELECT s.segment_id, ROW_NUMBER() OVER(ORDER BY s.bytes) AS rn FROM vtext.segments s
+                         JOIN (SELECT segment_id, COUNT(*) AS dead FROM vtext.tombstones WHERE index_id = iid GROUP BY segment_id) t USING (segment_id)
+                         WHERE s.index_id = iid AND s.gen_removed IS NULL AND t.dead >= 0.3 * s.n_docs) d WHERE rn <= mf);
+            END IF;
+        END IF;
+        EXIT WHEN lst IS NULL OR lst = '';
+        PERFORM CALL vtext.merge_step(nm, lst);
+        steps := steps + 1;
+        EXIT WHEN steps >= 1000;
+    END LOOP;
+    IF steps > 0 THEN
+        RAISE NOTICE 'vtext: index % merged in % steps (% s); % segments now', nm, steps,
+                     (SELECT ROUND(DATEDIFF('millisecond', t0, CLOCK_TIMESTAMP()) / 1000.0, 1)),
+                     (SELECT COUNT(*) FROM vtext.segments WHERE index_id = iid AND gen_removed IS NULL);
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE vtext.merge(nm VARCHAR) LANGUAGE PLvSQL AS $$
+BEGIN
+    PERFORM CALL vtext.merge(nm, 0);
 END;
 $$;
 

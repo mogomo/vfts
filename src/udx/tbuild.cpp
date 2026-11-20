@@ -9,7 +9,6 @@
 // The calling thread reads the rows and writes the result; worker threads never call the SDK.
 #include "udx_common.h"
 #include "../engine/builder.h"
-#include "../engine/table_codec.h"
 
 #include <condition_variable>
 #include <deque>
@@ -173,58 +172,9 @@ private:
 
         // Write every segment as index rows (this thread only).
         for (std::string &bytes : segments) {
-            const vtext::Segment seg(bytes.data(), bytes.size());
-            const std::int64_t sid = seg.id();
-            vtext::RowSink sink;
-            sink.doc = [&](const vtext::DocRow &r) {
-                begin(out, "D", sid);
-                out.setInt(IC_DOCNO, r.docno);
-                out.setInt(IC_DOC_ID, r.doc_id);
-                out.setInt(IC_N, r.length);
-                out.next();
-            };
-            sink.term = [&](const vtext::TermDictRow &r) {
-                begin(out, "T", sid);
-                out.setInt(IC_TERM_ID, r.term_id);
-                out.setInt(IC_N, r.doc_freq);
-                out.getStringRef(IC_TERM).copy(r.term.data(), r.term.size());
-                out.getStringRef(IC_STEM).copy(r.stem.data(), r.stem.size());
-                out.getStringRef(IC_LANG).copy(r.lang.data(), r.lang.size());
-                out.next();
-            };
-            sink.posting = [&](const vtext::PostingRow &r) {
-                begin(out, "P", sid);
-                out.setInt(IC_TERM_ID, r.term_id);
-                out.setInt(IC_CHUNK, r.chunk_id);
-                out.getStringRef(IC_BIN).copy(r.docs.data(), r.docs.size());
-                out.next();
-                begin(out, "Q", sid);
-                out.setInt(IC_TERM_ID, r.term_id);
-                out.setInt(IC_CHUNK, r.chunk_id);
-                if (r.payload.size() > 32000000) fail("positions of one term and chunk exceed 32 MB");
-                out.getStringRef(IC_BIN).copy(r.payload.data(), r.payload.size());
-                out.next();
-            };
-            vtext::segment_to_rows(seg, sink);
-            const vtext::SegmentHeader &h = seg.header();
-            begin(out, "S", sid);
-            out.setInt(IC_N, h.n_docs);
-            out.setInt(IC_TERM_ID, h.n_terms);
-            out.setInt(IC_DOCNO, static_cast<vint>(h.sum_len));
-            out.setInt(IC_CHUNK, static_cast<vint>(h.total_bytes));
-            out.setInt(IC_DOC_ID, static_cast<vint>(h.checksum));
-            out.next();
+            write_segment_rows(out, bytes);
             std::string().swap(bytes);
         }
-    }
-
-    // Starts a row: kind and segment set, every other column NULL.
-    static void begin(PartitionWriter &out, const char *kind, std::int64_t sid)
-    {
-        out.getStringRef(IC_KIND).copy(kind);
-        out.setInt(IC_SEGMENT, sid);
-        for (int c : {IC_TERM_ID, IC_CHUNK, IC_DOCNO, IC_DOC_ID, IC_N}) out.setNull(c);
-        for (int c : {IC_TERM, IC_STEM, IC_LANG, IC_BIN}) out.setNull(c);
     }
 };
 

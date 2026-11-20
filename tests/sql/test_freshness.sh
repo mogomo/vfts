@@ -77,6 +77,21 @@ q "CALL vtext.create_index('vt_fr_ref', 'vt_fr.ref')" > /dev/null
 compare_all "second round without refresh"
 q "CALL vtext.refresh_index('vt_fr')" > /dev/null
 compare_all "second refresh"
+q "CALL vtext.merge('vt_fr', 1)" > /dev/null
+expect "merge into one segment" \
+       "$(q "SELECT COUNT(*) FROM vtext.segments s JOIN vtext.indexes i USING (index_id) WHERE i.index_name = 'vt_fr' AND s.gen_removed IS NULL")" "1"
+compare_all "after merge (deleted documents dropped)"
+# tiered policy: ten small refreshes make ten small segments; the tenth refresh merges them
+for r in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.2
+    q "UPDATE vt_fr.docs SET body = body || ' notice', ver = CLOCK_TIMESTAMP() WHERE doc_id BETWEEN $((r * 10 + 400)) AND $((r * 10 + 405)); COMMIT;" > /dev/null
+    q "CALL vtext.refresh_index('vt_fr')" > /dev/null
+done
+expect "tiered merge keeps the segment count below merge_factor" \
+       "$(q "SELECT (COUNT(*) < 10)::INT FROM vtext.segments s JOIN vtext.indexes i USING (index_id) WHERE i.index_name = 'vt_fr' AND s.gen_removed IS NULL")" "1"
+q "CALL vtext.drop_index('vt_fr_ref'); DROP TABLE vt_fr.ref; CREATE TABLE vt_fr.ref AS SELECT doc_id, body, lang FROM vt_fr.docs; COMMIT;" > /dev/null
+q "CALL vtext.create_index('vt_fr_ref', 'vt_fr.ref')" > /dev/null
+compare_all "after tiered merges"
 q "CALL vtext.rebuild('vt_fr')" > /dev/null
 compare_all "after rebuild"
 expect "rebuild leaves one generation of segments" \

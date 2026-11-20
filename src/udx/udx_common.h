@@ -8,6 +8,7 @@
 #include "Vertica.h"
 #include "../engine/analyzer.h"
 #include "../engine/cache.h"
+#include "../engine/table_codec.h"
 #include "../engine/language.h"
 
 #include <cerrno>
@@ -171,6 +172,61 @@ inline void add_index_row_columns(Vertica::SizedColumnTypes &t)
     t.addVarchar(1024, "stem");
     t.addVarchar(8, "lang");
     t.addLongVarbinary(32000000, "bin");
+}
+
+// Starts an index row: kind and segment set, every other column NULL.
+inline void begin_index_row(Vertica::PartitionWriter &out, const char *kind, std::int64_t sid)
+{
+    out.getStringRef(IC_KIND).copy(kind);
+    out.setInt(IC_SEGMENT, sid);
+    for (int c : {IC_TERM_ID, IC_CHUNK, IC_DOCNO, IC_DOC_ID, IC_N}) out.setNull(c);
+    for (int c : {IC_TERM, IC_STEM, IC_LANG, IC_BIN}) out.setNull(c);
+}
+
+// Writes one segment as index rows: D, T, P, Q rows and the S summary row (calling thread only).
+inline void write_segment_rows(Vertica::PartitionWriter &out, const std::string &bytes)
+{
+    const vtext::Segment seg(bytes.data(), bytes.size());
+    const std::int64_t sid = seg.id();
+    vtext::RowSink sink;
+    sink.doc = [&](const vtext::DocRow &r) {
+        begin_index_row(out, "D", sid);
+        out.setInt(IC_DOCNO, r.docno);
+        out.setInt(IC_DOC_ID, r.doc_id);
+        out.setInt(IC_N, r.length);
+        out.next();
+    };
+    sink.term = [&](const vtext::TermDictRow &r) {
+        begin_index_row(out, "T", sid);
+        out.setInt(IC_TERM_ID, r.term_id);
+        out.setInt(IC_N, r.doc_freq);
+        out.getStringRef(IC_TERM).copy(r.term.data(), r.term.size());
+        out.getStringRef(IC_STEM).copy(r.stem.data(), r.stem.size());
+        out.getStringRef(IC_LANG).copy(r.lang.data(), r.lang.size());
+        out.next();
+    };
+    sink.posting = [&](const vtext::PostingRow &r) {
+        if (r.payload.size() > 32000000) fail("positions of one term and chunk exceed 32 MB");
+        begin_index_row(out, "P", sid);
+        out.setInt(IC_TERM_ID, r.term_id);
+        out.setInt(IC_CHUNK, r.chunk_id);
+        out.getStringRef(IC_BIN).copy(r.docs.data(), r.docs.size());
+        out.next();
+        begin_index_row(out, "Q", sid);
+        out.setInt(IC_TERM_ID, r.term_id);
+        out.setInt(IC_CHUNK, r.chunk_id);
+        out.getStringRef(IC_BIN).copy(r.payload.data(), r.payload.size());
+        out.next();
+    };
+    vtext::segment_to_rows(seg, sink);
+    const vtext::SegmentHeader &h = seg.header();
+    begin_index_row(out, "S", sid);
+    out.setInt(IC_N, h.n_docs);
+    out.setInt(IC_TERM_ID, h.n_terms);
+    out.setInt(IC_DOCNO, static_cast<vint>(h.sum_len));
+    out.setInt(IC_CHUNK, static_cast<vint>(h.total_bytes));
+    out.setInt(IC_DOC_ID, static_cast<vint>(h.checksum));
+    out.next();
 }
 
 } // namespace vtext_udx

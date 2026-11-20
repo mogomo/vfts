@@ -133,6 +133,7 @@ CREATE OR REPLACE TRANSFORM FUNCTION vtext.tokenize AS LANGUAGE 'C++' NAME 'Toke
 CREATE OR REPLACE TRANSFORM FUNCTION vtext.tsearch  AS LANGUAGE 'C++' NAME 'TSearchFactoryS' LIBRARY vtext.vtext :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vtext.tcount   AS LANGUAGE 'C++' NAME 'TCountFactory'   LIBRARY vtext.vtext :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vtext.tbuild   AS LANGUAGE 'C++' NAME 'TBuildFactory'   LIBRARY vtext.vtext :fenced;
+CREATE OR REPLACE TRANSFORM FUNCTION vtext.tmerge   AS LANGUAGE 'C++' NAME 'TMergeFactory'   LIBRARY vtext.vtext :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vtext.tload    AS LANGUAGE 'C++' NAME 'TLoadFactory'    LIBRARY vtext.vtext :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vtext.tnode    AS LANGUAGE 'C++' NAME 'TNodeFactory'    LIBRARY vtext.vtext :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vtext.tinfo    AS LANGUAGE 'C++' NAME 'TInfoFactory'    LIBRARY vtext.vtext :fenced;
