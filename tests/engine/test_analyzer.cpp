@@ -143,13 +143,14 @@ static void arabic()
     // Persian kaf and yeh unified with the Arabic letters
     CHECK_EQ(terms("کتاب"), terms("كتاب"));
     CHECK_EQ(terms("کی"), terms("كي"));
-    // Prefixes: the article al- (also bi-al-) is removed by the Arabic Snowball stemmer. The
-    // combination wa-al- is not (Snowball keeps a waw that is followed by alef): a known limit,
-    // listed in the README.
+    // Prefixes: Lucene's light prefixes, then Snowball. Consistent with the teh marbuta normalization.
     CHECK_EQ(stem("الكتاب", "ar"), stem("كتاب", "ar"));
     CHECK_EQ(stem("بالكتاب", "ar"), stem("كتاب", "ar"));
-    CHECK(all_same(stems("الكتاب بالكتاب كتاب", "ar")));
-    CHECK(stem("والكتاب", "ar") != stem("كتاب", "ar"));
+    CHECK_EQ(stem("والكتاب", "ar"), stem("كتاب", "ar"));
+    CHECK(all_same(stems("الكتاب بالكتاب والكتاب كتاب", "ar")));
+    CHECK(all_same(stems("مدرسة المدرسة والمدرسة مدرسه", "ar")));
+    CHECK_EQ(arabic_prefix_strip("وقت"), std::string("وقت"));         // wa- needs 4 letters
+    CHECK_EQ(arabic_prefix_strip("الب"), std::string("الب"));          // al- needs 2 letters after it
     // Persian Snowball
     CHECK(stem("کتابها", "fa") != std::string());
     // Mixed with English: each word gets the stemmer of its script

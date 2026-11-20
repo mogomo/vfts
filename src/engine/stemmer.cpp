@@ -44,6 +44,30 @@ std::size_t hebrew_letters(std::string_view s)
 
 } // namespace
 
+// Lucene ArabicStemmer's prefixes, in its order: removed before Snowball, because the normalization
+// of teh marbuta (ة -> ه) makes Snowball treat "المدرسه" and "مدرسه" differently.
+std::string arabic_prefix_strip(std::string_view term)
+{
+    static const char *prefixes[] = {"\xD8\xA7\xD9\x84",                 // ال
+                                     "\xD9\x88\xD8\xA7\xD9\x84",       // وال
+                                     "\xD8\xA8\xD8\xA7\xD9\x84",       // بال
+                                     "\xD9\x83\xD8\xA7\xD9\x84",       // كال
+                                     "\xD9\x81\xD8\xA7\xD9\x84",       // فال
+                                     "\xD9\x84\xD9\x84",               // لل
+                                     "\xD9\x88"};                      // و
+    // length in code points
+    std::size_t len = 0;
+    for (unsigned char c : term) len += (c & 0xC0) != 0x80;
+    for (const char *p : prefixes) {
+        const std::string_view pre(p);
+        const std::size_t plen = pre.size() / 2;      // all two-byte letters
+        if (term.compare(0, pre.size(), pre) != 0) continue;
+        if (plen == 1 ? len < 4 : len < plen + 2) continue;   // Lucene: wa- needs 4 letters, the others prefix + 2
+        return std::string(term.substr(pre.size()));
+    }
+    return std::string(term);
+}
+
 std::string hebrew_prefix_strip(std::string_view term)
 {
     std::size_t letters = hebrew_letters(term);
@@ -77,6 +101,10 @@ std::string_view Stemmer::stem(std::string_view term, Lang lang)
     }
     sb_stemmer *s = sb_[lang];
     if (!s) return term;            // not in this libstemmer build: exact terms only
+    if (info.code[0] == 'a' && info.code[1] == 'r' && info.code[2] == 0) {
+        pre_ = arabic_prefix_strip(term);
+        term = pre_;
+    }
     const sb_symbol *r = sb_stemmer_stem(s, reinterpret_cast<const sb_symbol *>(term.data()), static_cast<int>(term.size()));
     if (!r) throw std::runtime_error("out of memory in the Snowball stemmer");
     buf_.assign(reinterpret_cast<const char *>(r), static_cast<std::size_t>(sb_stemmer_length(s)));

@@ -3,6 +3,7 @@
 // (match='stem'). A wrong stem therefore only changes which terms a query expands to.
 //
 //   Snowball (libstemmer_c) for every language it has (sb_stemmer_list()).
+//   Arabic: Lucene's light prefixes (ال وال بال كال فال لل و) removed first, then Snowball.
 //   Hebrew: light prefix stripping. Up to 2 leading letters from ו ה ב כ ל מ ש are removed while
 //   at least 3 letters remain. There is no free Hebrew stemmer; recall is good but below a full
 //   morphological analyser.
@@ -35,8 +36,11 @@ public:
 private:
     std::vector<sb_stemmer *> sb_;      // by language id, created on first use
     std::vector<bool> tried_;
-    std::string buf_;
+    std::string buf_, pre_;
 };
+
+// The Arabic prefix step on its own (UTF-8 in, UTF-8 out).
+std::string arabic_prefix_strip(std::string_view term);
 
 // The Hebrew light stemmer on its own (UTF-8 in, UTF-8 out).
 std::string hebrew_prefix_strip(std::string_view term);

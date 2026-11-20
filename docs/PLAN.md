@@ -8,7 +8,7 @@ A milestone is done when all its tests pass, it is committed, and this file and
 | M1 | Analyzer: tokenizer, normalizers, Snowball, Hebrew prefixes | unit tests pass for every language group, including the Sherlock Holmes cases | done 2026-11-21 |
 | M2 | One-segment index build, storage format, `tcount`, boolean queries | results equal the SQL reference | done 2026-11-21 |
 | M3 | Positions, phrase, proximity, `w/N`, `pre/N`; BM25 `tsearch` | BM25 scores equal the reference formula | done 2026-11-21 |
-| M4 | Prefix, wildcard, fuzzy, stem expansion via the term dictionary | `match='exact'` and `match='stem'` both tested | |
+| M4 | Prefix, wildcard, fuzzy, stem expansion via the term dictionary | `match='exact'` and `match='stem'` both tested | done 2026-11-21 |
 | M5 | Freshness: segments, live tail, journal deletes, global statistics, merge | correctness rules 3 and 4 pass | |
 | M6 | `tsnippet`, `hybrid` with vvector | RRF output tested on a small fixture | |
 | M7 | Multi-node Enterprise and Eon with a secondary subcluster; per-node cache | the same results on every system | |
@@ -38,8 +38,9 @@ ICU 79.1, libstemmer_c 3.2.0 (Snowball), CRoaring 5.5.5. See `third_party/fetch.
 - [x] `vtext.tokenize()` UDx for inspection
 
 Result: tests/engine/test_analyzer.cpp and tests/sql/test_tokenize.sh pass on Enterprise 26.3
-(unfenced, g++ 15.2) and on the 5-node Eon cluster 26.2 (fenced, g++ 8.5). Known limit: the Arabic
-Snowball stemmer keeps the combined prefix wa-al- (والكتاب).
+(unfenced, g++ 15.2) and on the 5-node Eon cluster 26.2 (fenced, g++ 8.5). Arabic: Lucene's light
+prefixes are removed before Snowball (found in M4: after the normalization ة -> ه, Snowball alone
+stems "المدرسه" and "مدرسه" differently).
 
 ### M2 one segment, tcount, boolean
 - [x] segment format (docs/format.md), writer, reader, verify
@@ -57,11 +58,11 @@ equal plain SQL; BM25 scores equal the formula within 1e-4), tests/sql/test_fres
 
 ### M4 prefix, wildcard, fuzzy, stem
 - [x] engine: expansions chosen globally (same on every segmentation), max_expansions, prefix_length
-- [ ] SQL test: mode='exact' and mode='stem', languages through Vertica
+- [x] SQL test: mode='exact' and mode='stem', languages through Vertica (tests/sql/test_languages.sh)
 
 ### M5 freshness, merge
 - [x] segments, live tail, journal deletes, global statistics, incremental refresh (rule 3 passes)
-- [ ] tiered merge; same results before and after (rule 4)
+- [x] tiered merge; same results before and after (rule 4)
 - [ ] same scores on 1 node and N nodes (Eon)
 
 ### M6 – M8
