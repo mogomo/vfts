@@ -105,3 +105,13 @@ milestone). Check again on other versions.
   through the PATH the caller sets (`/opt/vertica/bin`).
 - (M1) A transform function declared with `isExploder = true` and two factories under one name
   (`tokenize(text)` and `tokenize(text, lang)`) work fenced and unfenced, on one node and on Eon.
+- (M2, 26.3.0-2) A transform function accepts `*` and `t.*` as its argument list:
+  `SELECT vtext.tokenize(*) OVER() FROM (SELECT body, lang FROM t) x` passes both columns. vtext's
+  search functions are called this way over the generated views.
+- (M2) `CREATE PROCEDURE vtext.refresh(...)` fails: "ROLLBACK 2278: Built-in function with the same
+  name already exists: refresh" (also inside a schema). `vtext.merge`, `vtext.info` and
+  `vtext.rebuild` are accepted as procedure names. vtext uses `vtext.refresh_index`.
+- (M2) An exploder transform function called with `OVER(PARTITION BY ...)` gets "NOTICE 10927: OVER
+  clause converted to OVER(PARTITION ROW)".
+- (M2) PL/vSQL: `x := (SELECT NEXTVAL('s')) * 1000` fails with "ERROR 9016: Sequence manipulation functions not allowed in subqueries"; `x := (SELECT NEXTVAL('s'))` alone works, and `x := EXECUTE 'SELECT NEXTVAL(''s'') * 1000';` works.
+- (M2) `match` is a reserved word in `USING PARAMETERS` ("ERROR 4856: Syntax error at or near \"match\""); a quoted `"match"='exact'` works. vtext calls the parameter `mode` and accepts `"match"` too.

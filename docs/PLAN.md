@@ -6,8 +6,8 @@ A milestone is done when all its tests pass, it is committed, and this file and
 | # | Scope | Done when | State |
 |---|---|---|---|
 | M1 | Analyzer: tokenizer, normalizers, Snowball, Hebrew prefixes | unit tests pass for every language group, including the Sherlock Holmes cases | done 2026-11-21 |
-| M2 | One-segment index build, storage format, `tcount`, boolean queries | results equal the SQL reference | |
-| M3 | Positions, phrase, proximity, `w/N`, `pre/N`; BM25 `tsearch` | BM25 scores equal the reference formula | |
+| M2 | One-segment index build, storage format, `tcount`, boolean queries | results equal the SQL reference | done 2026-11-21 |
+| M3 | Positions, phrase, proximity, `w/N`, `pre/N`; BM25 `tsearch` | BM25 scores equal the reference formula | done 2026-11-21 |
 | M4 | Prefix, wildcard, fuzzy, stem expansion via the term dictionary | `match='exact'` and `match='stem'` both tested | |
 | M5 | Freshness: segments, live tail, journal deletes, global statistics, merge | correctness rules 3 and 4 pass | |
 | M6 | `tsnippet`, `hybrid` with vvector | RRF output tested on a small fixture | |
@@ -42,13 +42,27 @@ Result: tests/engine/test_analyzer.cpp and tests/sql/test_tokenize.sh pass on En
 Snowball stemmer keeps the combined prefix wa-al- (والكتاب).
 
 ### M2 one segment, tcount, boolean
-- [ ] segment format (docs/format.md), writer, reader, verify
-- [ ] segment builder (documents -> segment), table codec (segment <-> table rows)
-- [ ] query parser: terms, AND, OR, NOT, -term, ( )
-- [ ] boolean evaluation on one segment; tcount
-- [ ] index tables, create_index / refresh (first build) / drop_index / info procedures
-- [ ] tload: per-node cache from the tables
-- [ ] SQL reference test: boolean results equal plain SQL over a tokenized reference table
+- [x] segment format (docs/format.md), writer, reader, verify
+- [x] segment builder (documents -> segment), table codec (segment <-> table rows)
+- [x] query parser: terms, AND, OR, NOT, -term, ( )
+- [x] boolean evaluation on one segment; tcount
+- [x] index tables, create_index / refresh (first build) / drop_index / info procedures
+- [x] tload: per-node cache from the tables
+- [x] SQL reference test: boolean results equal plain SQL over a tokenized reference table
 
-### M3 – M8
+Result (M2 and M3): tests/engine/test_segment, test_query, test_search (1000 random queries against a
+brute-force model, also split into segments with tombstones and a live tail), test_cache; SQL:
+tests/sql/test_search.sh (boolean, phrase, slop phrase, w/N, pre/N, OR groups, prefix, wildcard, fuzzy
+equal plain SQL; BM25 scores equal the formula within 1e-4), tests/sql/test_freshness.sh (rule 3).
+
+### M4 prefix, wildcard, fuzzy, stem
+- [x] engine: expansions chosen globally (same on every segmentation), max_expansions, prefix_length
+- [ ] SQL test: mode='exact' and mode='stem', languages through Vertica
+
+### M5 freshness, merge
+- [x] segments, live tail, journal deletes, global statistics, incremental refresh (rule 3 passes)
+- [ ] tiered merge; same results before and after (rule 4)
+- [ ] same scores on 1 node and N nodes (Eon)
+
+### M6 – M8
 Filled in as each milestone starts.

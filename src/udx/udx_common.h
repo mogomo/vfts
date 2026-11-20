@@ -7,6 +7,7 @@
 
 #include "Vertica.h"
 #include "../engine/analyzer.h"
+#include "../engine/cache.h"
 #include "../engine/language.h"
 
 #include <cerrno>
@@ -103,6 +104,73 @@ inline void add_analyzer_parameters(Vertica::SizedColumnTypes &p)
     p.addVarchar(16, "lang");
     p.addVarchar(16, "accent_fold");
     p.addVarchar(16, "on_unsupported");
+}
+
+// The analyzer options of an index as stored in its generation file:
+// "lang=en;accent_fold=latin;on_unsupported=error".
+inline vtext::AnalyzerOptions parse_index_options(const std::string &s)
+{
+    vtext::AnalyzerOptions o;
+    o.default_lang = vtext::parse_lang("en");
+    std::size_t i = 0;
+    while (i < s.size()) {
+        std::size_t j = s.find(';', i);
+        if (j == std::string::npos) j = s.size();
+        const std::string kv = s.substr(i, j - i);
+        const std::size_t eq = kv.find('=');
+        if (eq != std::string::npos) {
+            const std::string k = kv.substr(0, eq), v = kv.substr(eq + 1);
+            if (k == "lang") o.default_lang = vtext::parse_lang(v);
+            else if (k == "accent_fold") o.fold = v == "none" ? vtext::AccentFold::None : v == "all" ? vtext::AccentFold::All : vtext::AccentFold::Latin;
+            else if (k == "on_unsupported") o.unsupported_plain = v == "plain";
+        }
+        i = j + 1;
+    }
+    return o;
+}
+
+inline std::string index_options_string(const vtext::AnalyzerOptions &o)
+{
+    return std::string("lang=") + vtext::lang_info(o.default_lang).code + ";accent_fold=" +
+           (o.fold == vtext::AccentFold::None ? "none" : o.fold == vtext::AccentFold::All ? "all" : "latin") +
+           ";on_unsupported=" + (o.unsupported_plain ? "plain" : "error");
+}
+
+// cache_dir: function parameter, then session parameter, then /tmp/vtext.
+inline std::string resolve_cache_dir(Settings &s) { return s.text("cache_dir", vtext::DEFAULT_CACHE_DIR); }
+
+inline std::string read_index_name(Settings &s)
+{
+    const std::string name = s.text("index", "");
+    if (name.empty()) fail("parameter index is required");
+    if (!vtext::valid_index_name(name)) fail("index name '" + name + "' is not valid: use letters, digits and underscore");
+    return name;
+}
+
+// "Index rows": the one row shape that tbuild writes and tload reads (docs/format.md):
+//   kind  D doc_stats, T term_dict, P postings, Q positions, S segment summary,
+//         G active segment of a generation, X tombstone
+enum IndexCol { IC_KIND = 0, IC_SEGMENT, IC_TERM_ID, IC_CHUNK, IC_DOCNO, IC_DOC_ID, IC_N, IC_TERM, IC_STEM, IC_LANG, IC_BIN, IC_COUNT };
+
+inline void add_index_row_types(Vertica::ColumnTypes &t)
+{
+    t.addVarchar(); t.addInt(); t.addInt(); t.addInt(); t.addInt(); t.addInt(); t.addInt();
+    t.addVarchar(); t.addVarchar(); t.addVarchar(); t.addLongVarbinary();
+}
+
+inline void add_index_row_columns(Vertica::SizedColumnTypes &t)
+{
+    t.addVarchar(1, "kind");
+    t.addInt("segment_id");
+    t.addInt("term_id");
+    t.addInt("chunk_id");
+    t.addInt("docno");
+    t.addInt("doc_id");
+    t.addInt("n");
+    t.addVarchar(1024, "term");
+    t.addVarchar(1024, "stem");
+    t.addVarchar(8, "lang");
+    t.addLongVarbinary(32000000, "bin");
 }
 
 } // namespace vtext_udx
