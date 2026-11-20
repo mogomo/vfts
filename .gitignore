@@ -1,0 +1,13 @@
+# private development files, never published
+.dev/
+# build output and downloaded sources
+build/
+third_party/src/
+third_party/install/
+# benchmark data and raw run output (results/ summaries are committed)
+/data/
+bench/out/
+*.o
+*.so
+__pycache__/
+third_party/build/
