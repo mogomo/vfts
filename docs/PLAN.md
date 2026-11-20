@@ -10,7 +10,7 @@ A milestone is done when all its tests pass, it is committed, and this file and
 | M3 | Positions, phrase, proximity, `w/N`, `pre/N`; BM25 `tsearch` | BM25 scores equal the reference formula | done 2026-11-21 |
 | M4 | Prefix, wildcard, fuzzy, stem expansion via the term dictionary | `match='exact'` and `match='stem'` both tested | done 2026-11-21 |
 | M5 | Freshness: segments, live tail, journal deletes, global statistics, merge | correctness rules 3 and 4 pass | done 2026-11-21 |
-| M6 | `tsnippet`, `hybrid` with vvector | RRF output tested on a small fixture | |
+| M6 | `tsnippet`, `hybrid` with vvector | RRF output tested on a small fixture | done 2026-11-21 |
 | M7 | Multi-node Enterprise and Eon with a secondary subcluster; per-node cache | the same results on every system | done 2026-11-21 (Enterprise: 1 node only) |
 | M8 | Benchmark, README, `blog/` article with charts | every number comes from a recorded run | |
 
@@ -71,8 +71,8 @@ equal plain SQL; BM25 scores equal the formula within 1e-4), tests/sql/test_fres
 - [x] stale caches refused with a clear message; identical results on every system
 
 ### M6 snippets and hybrid
-- [ ] tsnippet
-- [ ] hybrid (RRF and weighted) with vvector; test on a small fixture
+- [x] tsnippet (engine test_snippet; SQL test_snippet_hybrid.sh)
+- [x] hybrid (RRF and weighted) with vvector; test on a small fixture with hand-computed answers, and tsearch + vsearch fused in SQL
 
 ### M8 benchmark and documents
 Filled in when it starts.
