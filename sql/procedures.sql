@@ -174,7 +174,11 @@ $$;
 -- ------------------------------------------------------------------ loading node caches
 
 -- Writes the segment files of the rows `rows_sql` (index row shape) on every node of the session's
--- subcluster, then fails unless every UP node did it.
+-- subcluster, then fails unless every UP node did it. The index tables are replicated; each node
+-- joins its own copy with the one row tnode returns on that node (a local join, DISTRIB(L,L)).
+-- SYNTACTIC_JOIN keeps that row as the inner side: the planner reserves the declared width of a
+-- LONG VARBINARY column for every inner row, and with the index rows as the inner side a load on
+-- the secondary subcluster ran out of memory (docs/VERTICA_NOTES.md).
 CREATE OR REPLACE PROCEDURE vtext.load_rows(nm VARCHAR, cdir VARCHAR, rows_sql VARCHAR(65000)) LANGUAGE PLvSQL AS $$
 DECLARE
     want INT; got INT; params VARCHAR(2000);
@@ -183,8 +187,9 @@ BEGIN
     params := 'index=' || QUOTE_LITERAL(nm) || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
     got := EXECUTE 'SELECT /*+LABEL(vtext_load)*/ COUNT(DISTINCT node_name) FROM (SELECT vtext.tload(r.kind, r.segment_id, r.term_id, r.chunk_id, '
         || 'r.docno, r.doc_id, r.n, r.term, r.stem, r.lang, r.bin USING PARAMETERS ' || params || ') OVER(PARTITION NODES) '
-        || 'FROM (SELECT s.* FROM (' || rows_sql || ') s CROSS JOIN vtext.probe p WHERE p.k IN '
-        || '(SELECT k FROM (SELECT vtext.tnode(k) OVER(PARTITION NODES) FROM vtext.probe) n)) r) l WHERE status = ''loaded''';
+        || 'FROM (SELECT /*+SYNTACTIC_JOIN*/ s.* FROM (' || rows_sql || ') s CROSS JOIN /*+DISTRIB(L,L)*/ '
+        || '(SELECT vtext.tnode(k) OVER(PARTITION NODES) FROM vtext.probe) p) r) l '
+        || 'WHERE status = ''loaded''';
     IF got <> want THEN
         RAISE EXCEPTION 'vtext: index % was loaded on % of % nodes', nm, got, want;
     END IF;
@@ -211,8 +216,9 @@ BEGIN
            || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
     got := EXECUTE 'SELECT /*+LABEL(vtext_activate)*/ COUNT(DISTINCT node_name) FROM (SELECT vtext.tload(r.kind, r.segment_id, r.term_id, r.chunk_id, '
         || 'r.docno, r.doc_id, r.n, r.term, r.stem, r.lang, r.bin USING PARAMETERS ' || params || ') OVER(PARTITION NODES) '
-        || 'FROM (SELECT s.* FROM (' || rows_sql || ') s CROSS JOIN vtext.probe p WHERE p.k IN '
-        || '(SELECT k FROM (SELECT vtext.tnode(k) OVER(PARTITION NODES) FROM vtext.probe) n)) r) l WHERE status = ''activated''';
+        || 'FROM (SELECT /*+SYNTACTIC_JOIN*/ s.* FROM (' || rows_sql || ') s CROSS JOIN /*+DISTRIB(L,L)*/ '
+        || '(SELECT vtext.tnode(k) OVER(PARTITION NODES) FROM vtext.probe) p) r) l '
+        || 'WHERE status = ''activated''';
     IF got <> want THEN
         RAISE EXCEPTION 'vtext: generation % of index % was activated on % of % nodes', g, nm, got, want;
     END IF;

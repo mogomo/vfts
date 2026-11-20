@@ -9,9 +9,9 @@ A milestone is done when all its tests pass, it is committed, and this file and
 | M2 | One-segment index build, storage format, `tcount`, boolean queries | results equal the SQL reference | done 2026-11-21 |
 | M3 | Positions, phrase, proximity, `w/N`, `pre/N`; BM25 `tsearch` | BM25 scores equal the reference formula | done 2026-11-21 |
 | M4 | Prefix, wildcard, fuzzy, stem expansion via the term dictionary | `match='exact'` and `match='stem'` both tested | done 2026-11-21 |
-| M5 | Freshness: segments, live tail, journal deletes, global statistics, merge | correctness rules 3 and 4 pass | |
+| M5 | Freshness: segments, live tail, journal deletes, global statistics, merge | correctness rules 3 and 4 pass | done 2026-11-21 |
 | M6 | `tsnippet`, `hybrid` with vvector | RRF output tested on a small fixture | |
-| M7 | Multi-node Enterprise and Eon with a secondary subcluster; per-node cache | the same results on every system | |
+| M7 | Multi-node Enterprise and Eon with a secondary subcluster; per-node cache | the same results on every system | done 2026-11-21 (Enterprise: 1 node only) |
 | M8 | Benchmark, README, `blog/` article with charts | every number comes from a recorded run | |
 
 ## Test systems
@@ -63,7 +63,16 @@ equal plain SQL; BM25 scores equal the formula within 1e-4), tests/sql/test_fres
 ### M5 freshness, merge
 - [x] segments, live tail, journal deletes, global statistics, incremental refresh (rule 3 passes)
 - [x] tiered merge; same results before and after (rule 4)
-- [ ] same scores on 1 node and N nodes (Eon)
+- [x] same scores on 1 node and N nodes (Eon): tests/sql/digest.sql identical on 1 node, the 3-node primary and the 2-node secondary
 
-### M6 – M8
-Filled in as each milestone starts.
+### M7 Eon
+- [x] build on RHEL 8 / g++ 8.5, deploy fenced and unfenced, every SQL test passes
+- [x] node caches on every node of the session's subcluster; load_all from a secondary subcluster
+- [x] stale caches refused with a clear message; identical results on every system
+
+### M6 snippets and hybrid
+- [ ] tsnippet
+- [ ] hybrid (RRF and weighted) with vvector; test on a small fixture
+
+### M8 benchmark and documents
+Filled in when it starts.

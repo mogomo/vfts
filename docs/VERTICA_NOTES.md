@@ -115,3 +115,26 @@ milestone). Check again on other versions.
   clause converted to OVER(PARTITION ROW)".
 - (M2) PL/vSQL: `x := (SELECT NEXTVAL('s')) * 1000` fails with "ERROR 9016: Sequence manipulation functions not allowed in subqueries"; `x := (SELECT NEXTVAL('s'))` alone works, and `x := EXECUTE 'SELECT NEXTVAL(''s'') * 1000';` works.
 - (M2) `match` is a reserved word in `USING PARAMETERS` ("ERROR 4856: Syntax error at or near \"match\""); a quoted `"match"='exact'` works. vtext calls the parameter `mode` and accepts `"match"` too.
+
+## Verified in milestone M7 (26.2.0 5-node Eon: primary subcluster of 3, secondary of 2; 26.3.0-2 single node)
+- Loading node caches from replicated (UNSEGMENTED ALL NODES) index tables: `rows CROSS JOIN
+  (SELECT vtext.tnode(k) OVER(PARTITION NODES) FROM vtext.probe) p` with `/*+SYNTACTIC_JOIN*/` after
+  the SELECT and `/*+DISTRIB(L,L)*/` after CROSS JOIN: EXPLAIN shows the index rows as the outer side
+  (local scan, LOCAL ROUND ROBIN, no Send/Recv of the rows) and the one tnode row per node as the
+  inner side. Every node of the session's subcluster loaded (checked by counting nodes).
+- Without SYNTACTIC_JOIN, a load from a session on the secondary subcluster failed with "ERROR 3815:
+  Join inner did not fit in memory [(vtext.probe x vtext.doc_stats) ...]": the planner put the index
+  rows (with a LONG VARBINARY(32000000) column) on the inner side. On the primary the same statement
+  ran. With `p.k IN (SELECT k FROM (tnode ...))` as the filter, the IN became a semi-join above the
+  cross join: every index row would have been joined with every probe row of the node first.
+- From a session on the secondary subcluster, `OVER(PARTITION NODES)` reaches the 2 secondary nodes
+  only (as vvector found). `CALL vtext.load_all('<index>')` there loads them (0.7 s for a 3,072-document
+  index); a search there before that fails with "no cache for index ... run CALL vtext.load_all", and
+  after a refresh on the primary with "cache of index ... is stale on this node (generation 1, the view
+  needs 2)". After load_all the results equal those of the primary.
+- The same 3,072-document corpus gives identical results (doc ids, ranks, scores to 6 digits, five
+  query types) on the single node (26.3.0-2, g++ 15.2) and on the 3-node Eon primary (26.2.0, g++
+  8.5) and its secondary subcluster: `tests/sql/digest.sql`.
+- All SQL tests pass on Eon fenced and unfenced.
+- A node's local vsql needs the database password in the environment where it is not set by the
+  shell profile (VSQL_PASSWORD); the scripts never store it.
