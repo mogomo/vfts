@@ -12,6 +12,9 @@ cd "$(dirname "$0")"
 JOBS=${1:-$(nproc)}
 TP=$(pwd)
 PREFIX=$TP/install
+case "$PREFIX" in
+  *[[:space:]]*) echo "build.sh: the path $PREFIX has a space; ICU's configure cannot handle that: move the repository" >&2; exit 1 ;;
+esac
 mkdir -p "$PREFIX/include" "$PREFIX/lib" build
 
 # ICU 79.1: common (break iterators, normalization, case folding) and i18n (transliteration is not

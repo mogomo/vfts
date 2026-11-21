@@ -202,7 +202,7 @@ into segments or nodes.
 ## Install
 
 **One command, for any Vertica database** (one node or many, Enterprise or Eon). On a Vertica
-node, as a user that can read the repository, with the connection of a superuser:
+node, in a directory whose path has no spaces, with the connection of a superuser:
 
     git clone <this repository> && cd vertica-text-udx
     export VSQL_USER=dbadmin VSQL_PASSWORD=... VSQL_DATABASE=...
@@ -212,8 +212,10 @@ node, as a user that can read the repository, with the connection of a superuser
 the session's node is this machine), builds the three static dependencies once and then vtext,
 runs the engine tests, deploys the library, functions and procedures (copied to every node),
 builds the tools, and runs every function on a test table to verify. It stops at the first
-problem and says what to fix. `./install.sh --check` only checks; `./install.sh --uninstall
-[--drop]` removes vtext. The steps below are what it does, for reference and for the parts that
+problem and says what to fix. It can be run again (an upgrade); its test uses the schema
+`vtext_selftest` and never touches anything else. `./install.sh --check` only checks;
+`./install.sh --uninstall` removes the library, functions and procedures (the indexes stay), and
+`--uninstall --drop` also drops every index (views and node caches included) and the schema `vtext`. The steps below are what it does, for reference and for the parts that
 come after the install (indexing, grants, Eon subclusters, the broker).
 
 ### 1. Check the environment
@@ -246,8 +248,10 @@ On a Vertica node (with the built `build/libvtext.so` and the repository's `sql/
     make deploy FENCED=yes      # or fenced: a separate process per node, a crash cannot stop the node (slower)
 
 `make deploy` (scripts/deploy.sh, sql/install.sql) creates the schema `vtext`, its tables, the
-library, every function and procedure, and grants their use to PUBLIC. `CREATE LIBRARY` copies the
-library to every node of the cluster, so this runs once per database. Nothing is stored in the
+library, every function and procedure, and grants the functions to PUBLIC (the procedures are for
+dbadmin, or `GRANT EXECUTE ON PROCEDURE ...`). `CREATE LIBRARY` reads the library as the database's
+OS user (deploy.sh hands it a copy in /tmp) and copies it to every node of the cluster, so this runs
+once per database. Nothing is stored in the
 scripts: the connection comes from the `VSQL_*` variables.
 
 ### 4. Verify
@@ -295,8 +299,8 @@ own Vertica sessions.
 ### Upgrade and uninstall
 
     git pull && make && make deploy      # replaces the library and functions; indexes and caches stay
-    make undeploy                        # removes library and functions; index tables stay
-    scripts/deploy.sh --undeploy --drop  # also drops the schema vtext with every index
+    ./install.sh --uninstall             # removes library, functions and procedures; indexes stay
+    ./install.sh --uninstall --drop      # also drops every index (views, node caches) and the schema vtext
 
 An unfenced upgrade is safe while the database runs: the old library stays mapped for searches
 still running.

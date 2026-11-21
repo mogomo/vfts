@@ -29,13 +29,18 @@ for a in "$@"; do
         *) echo "install.sh: unknown option $a (see --help)"; exit 2 ;;
     esac
 done
+[ "$DROP" = yes ] && [ "$UNINSTALL" = no ] && { echo "install.sh: --drop goes with --uninstall"; exit 2; }
+[ "$UNINSTALL" = yes ] && { [ "$CHECK_ONLY" = yes ] || [ "$FENCED" = yes ]; } && { echo "install.sh: --uninstall takes only --drop"; exit 2; }
 
 B=$(tput bold 2> /dev/null || true); N=$(tput sgr0 2> /dev/null || true)
 step() { echo; echo "${B}== $*${N}"; }
 ok()   { echo "   ok    $*"; }
 warn() { echo "   note  $*"; }
-die()  { echo "   FAIL  $*"; echo; echo "install.sh stopped. Nothing after this step was changed."; exit 1; }
-q()    { timeout 120 vsql -X -A -t -q -c "$1" 2> /dev/null; }
+die()  { echo "   FAIL  $*"; echo; echo "install.sh stopped at this step; the steps after it did not run."; exit 1; }
+# --foreground: vsql can ask for a password on the terminal, and Ctrl-C reaches it
+q()    { timeout --foreground 120 vsql -X -A -t -q -c "$1" 2> /dev/null; }
+# Ctrl-C also stops a long step (make, deploy) that runs under timeout in its own process group
+trap 'echo; echo "install.sh interrupted"; pkill -TERM -P $$ 2> /dev/null; exit 130' INT TERM
 
 # ---------------------------------------------------------------- 1. environment
 step "1. Environment"
@@ -44,6 +49,7 @@ v=$(q "SELECT version();") || true
 [ -n "$v" ] || die "cannot connect with vsql: set VSQL_USER, VSQL_PASSWORD, VSQL_DATABASE (and VSQL_HOST, VSQL_PORT)"
 ok "connected: $v"
 ver=$(echo "$v" | sed -n 's/.*v\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
+[ -n "$ver" ] || warn "could not read the version from: $v"
 if [ -n "$ver" ] && [ "$(printf '%s\n26.2\n' "$ver" | sort -V | head -1)" != "26.2" ]; then
     die "Vertica $ver: vtext needs 26.2 or later (tested on 26.3)"
 fi
@@ -53,7 +59,9 @@ fi
 ok "superuser: $(q 'SELECT CURRENT_USER();')"
 # CREATE LIBRARY reads the file on the node the session is connected to: that must be this machine
 node_addr=$(q "SELECT node_address FROM v_catalog.nodes WHERE node_name = LOCAL_NODE_NAME();")
-case " $(hostname -I 2> /dev/null) 127.0.0.1 ::1 " in
+[ -n "$node_addr" ] || die "could not read the address of the session's node"
+addrs="$(hostname -I 2> /dev/null) $(ip -o addr show 2> /dev/null | awk '{sub(/\/.*/, "", $4); print $4}' | tr '\n' ' ')"
+case " $addrs 127.0.0.1 ::1 " in
     *" $node_addr "*) ok "the session's node ($node_addr) is this machine" ;;
     *) die "the session is connected to node $node_addr, not to this machine: set VSQL_HOST to this node (or localhost)" ;;
 esac
@@ -77,18 +85,17 @@ gv=$(g++ -dumpversion | cut -d. -f1)
 ok "g++ $(g++ -dumpfullversion 2> /dev/null || g++ -dumpversion)"
 for t in make curl tar; do command -v $t > /dev/null || die "$t not found"; done
 ok "make, curl, tar"
+case "$PWD" in
+    *[[:space:]]*) die "the repository's path has a space ($PWD): ICU's build cannot handle that; move it (e.g. to ~/vertica-text-udx)" ;;
+esac
 [ "$CHECK_ONLY" = yes ] && { echo; echo "Environment ready."; exit 0; }
 
 # ---------------------------------------------------------------- 2. build
 step "2. Build (dependencies once, then vtext)"
-if [ -f third_party/install/lib/libicuuc.a ] && [ -f third_party/install/lib/libstemmer.a ] && [ -f third_party/install/lib/libroaring.a ]; then
-    ok "dependencies already built (third_party/install)"
-else
-    echo "   building ICU, Snowball and CRoaring (5 to 20 minutes; log: build/deps.log)"
-    mkdir -p build
-    timeout 3600 make deps > build/deps.log 2>&1 || die "dependencies failed: see build/deps.log"
-    ok "dependencies built"
-fi
+mkdir -p build || die "cannot create build/ in $PWD"
+[ -f third_party/install/lib/libicuuc.a ] || echo "   building ICU, Snowball and CRoaring once (5 to 20 minutes; log: build/deps.log)"
+timeout 3600 make deps > build/deps.log 2>&1 || die "dependencies failed: see build/deps.log"
+ok "dependencies (third_party/install: ICU, Snowball, CRoaring)"
 J=$(nproc 2> /dev/null || echo 2)
 timeout 3600 make -j"$J" > build/make.log 2>&1 || die "build failed: see build/make.log"
 ok "build/libvtext.so"
@@ -109,12 +116,14 @@ step "4. Verify"
 tv=$(q "SELECT version || ' (' || build || ', ICU ' || icu || ')' FROM (SELECT vtext.tversion() OVER()) v;")
 [ -n "$tv" ] || die "vtext.tversion() did not answer"
 ok "vtext $tv"
-out=$(timeout 600 scripts/examples.sh 2>&1)
-if echo "$out" | grep -q "ERROR"; then
-    echo "$out" | grep -B3 "ERROR" | head -20
-    die "the examples failed (above)"
+out=$(EX_SCHEMA=vtext_selftest EX_INDEX=vtext_selftest timeout 600 scripts/examples.sh 2>&1); rc=$?
+if [ $rc -ne 0 ] || grep -qE "ERROR|FATAL|could not connect|server closed" <<< "$out"; then
+    printf '%s\n' "$out" | grep -B3 -E "ERROR|FATAL|could not connect|server closed" | head -20
+    [ $rc -eq 124 ] && die "the examples did not finish in 10 minutes"
+    [ $rc -eq 3 ] && die "the schema or index vtext_selftest exists and was not made by vtext: not touched"
+    die "the examples failed (exit $rc; above)"
 fi
-ok "every function ran on a test table (scripts/examples.sh), then the table was removed"
+ok "every function ran on a test table (schema vtext_selftest, then removed)"
 
 # ---------------------------------------------------------------- done
 step "Installed"

@@ -16,7 +16,7 @@ fetch() {   # url file sha256
     mv "src/$file.part" "src/$file"
   fi
   if [ -n "$sum" ]; then
-    echo "$sum  src/$file" | sha256sum -c --quiet - || { echo "checksum mismatch: $file" >&2; exit 1; }
+    echo "$sum  src/$file" | sha256sum -c --quiet - || { echo "checksum mismatch: $file (removed; run again)" >&2; rm -f "src/$file"; exit 1; }
   else
     echo "no checksum pinned for $file: $(sha256sum "src/$file" | cut -d' ' -f1)"
   fi

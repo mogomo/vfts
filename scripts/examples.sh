@@ -1,24 +1,52 @@
 #!/usr/bin/env bash
-# Every example of README.md "Reference", run on a small table of its own (schema ex, index notes).
+# Every example of README.md "Reference", run on a small table of its own (default: schema ex, index notes).
 # Prints each statement and its output, as in the README. Safe to run again.
 #
 #   scripts/examples.sh            run all examples
 #   scripts/examples.sh --clean    remove the schema and the index
 #
 # Needs: vtext deployed (make deploy) and the vsql connection variables. The tserve example also
-# needs build/tools/vtext_broker (make tools) and curl.
+# needs build/tools/vtext_broker (make tools) and curl. EX_SCHEMA and EX_INDEX change the names
+# (install.sh uses vtext_selftest). An existing schema or index of that name that this script did
+# not make is never touched: the script stops. Exit status: the number of failed statements.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+S=${EX_SCHEMA:-ex}; I=${EX_INDEX:-notes}
+case "$S$I" in *[!A-Za-z0-9_]*) echo "examples.sh: EX_SCHEMA and EX_INDEX: letters, digits, underscore" >&2; exit 2 ;; esac
+q1() { vsql -X -A -t -q -c "$1" 2> /dev/null; }
+mine() {   # the schema is this script's when it holds its marker table
+    [ "$(q1 "SELECT COUNT(*) FROM v_catalog.tables WHERE table_schema = '$S' AND table_name = 'vtext_examples_marker'")" = 1 ]
+}
 clean() {
-    vsql -X -q -c "CALL vtext.drop_index('notes')" > /dev/null 2>&1
-    vsql -X -q -c "DROP SCHEMA IF EXISTS ex CASCADE" > /dev/null 2>&1
+    if [ "$(q1 "SELECT COUNT(*) FROM v_catalog.schemata WHERE schema_name = '$S'")" = 1 ] && ! mine; then
+        echo "examples.sh: schema $S exists and was not made by this script: not touched (set EX_SCHEMA)" >&2; exit 3
+    fi
+    local src; src=$(q1 "SELECT source_table FROM vtext.indexes WHERE index_name = '$I'")
+    if [ -n "$src" ] && [ "${src%%.*}" != "$S" ]; then
+        echo "examples.sh: index $I exists on $src: not touched (set EX_INDEX)" >&2; exit 3
+    fi
+    [ -n "$src" ] && vsql -X -q -c "CALL vtext.drop_index('$I')" > /dev/null 2>&1
+    vsql -X -q -c "DROP SCHEMA IF EXISTS $S CASCADE" > /dev/null 2>&1
+    return 0
 }
 if [ "${1:-}" = --clean ]; then clean; echo "examples removed"; exit 0; fi
-ex() { echo; echo "-- $1"; shift; for s in "$@"; do echo "$s"; vsql -X -c "$s" 2>&1 | grep -v '^$' | sed 's/^/   /'; done; }
+FAILS=0
+ex() {   # title, then statements: each is printed with its output; a failed one is counted
+    echo; echo "-- $1"; shift
+    for s in "$@"; do
+        s=${s//SCHEMA ex;/SCHEMA $S;}; s=${s//ex./$S.}; s=${s//\'notes\'/\'$I\'}; s=${s//notes_live/${I}_live}; s=${s//notes_snap/${I}_snap}; s=${s//notes_journal/${I}_journal}
+        echo "$s"
+        local out rc
+        out=$(vsql -X -v ON_ERROR_STOP=1 -c "$s" 2>&1); rc=$?
+        printf '%s\n' "$out" | grep -v '^$' | sed 's/^/   /'
+        [ $rc -eq 0 ] || FAILS=$((FAILS + 1))
+    done
+}
 clean
 
 ex "A source table: doc_id, body, lang, ver (README: Prepare a table)" \
 "CREATE SCHEMA ex;
+CREATE TABLE ex.vtext_examples_marker (made_by VARCHAR(40));
 CREATE TABLE ex.notes (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8),
                        ver TIMESTAMPTZ NOT NULL DEFAULT CLOCK_TIMESTAMP());
 CREATE TABLE ex.notes_journal (doc_id INT, op CHAR(1), ver TIMESTAMPTZ DEFAULT CLOCK_TIMESTAMP());
@@ -103,14 +131,17 @@ ex "tversion" "SELECT version, build, icu FROM (SELECT vtext.tversion() OVER()) 
 
 if [ -x build/tools/vtext_broker ] && command -v curl > /dev/null; then
     echo; echo "-- tserve through vtext_broker (mode serve): HTTP in, the user's own Vertica session, one tserve statement"
-    echo "build/tools/vtext_broker --port 9399 --schema ex --mode serve &"
-    build/tools/vtext_broker --port 9399 --schema ex --mode serve > /dev/null 2>&1 &
+    echo "build/tools/vtext_broker --port 9399 --schema $S --mode serve &"
+    build/tools/vtext_broker --port 9399 --schema "$S" --mode serve > /dev/null 2>&1 &
     bp=$!
     sleep 1
-    echo "curl -s -XPOST localhost:9399/notes/_search -d '{\"query\": \"contract AND indemn*\"}'"
-    curl -s -m 20 -XPOST localhost:9399/notes/_search -d '{"query": "contract AND indemn*"}' | sed 's/^/   /'; echo
+    echo "curl -s -XPOST localhost:9399/$I/_search -d '{\"query\": \"contract AND indemn*\"}'"
+    r=$(curl -s -m 20 -XPOST "localhost:9399/$I/_search" -d '{"query": "contract AND indemn*"}')
+    echo "   $r"
+    case "$r" in *'"hits"'*) ;; *) FAILS=$((FAILS + 1)) ;; esac
     kill $bp 2> /dev/null; wait $bp 2> /dev/null
 fi
 
 ex "drop_index" "CALL vtext.drop_index('notes');"
-vsql -X -q -c "DROP SCHEMA IF EXISTS ex CASCADE" > /dev/null 2>&1
+vsql -X -q -c "DROP SCHEMA IF EXISTS $S CASCADE" > /dev/null 2>&1
+exit $FAILS
