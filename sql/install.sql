@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS vtext.indexes (
 CREATE TABLE IF NOT EXISTS vtext.segments (
     index_id     INT NOT NULL,
     segment_id   INT NOT NULL,
-    state        VARCHAR(16) NOT NULL,            -- active, merged, dropped
+    state        VARCHAR(16) NOT NULL,            -- active, merged, dropped, purged (rows deleted)
     gen_added    INT NOT NULL,
     gen_removed  INT,                             -- NULL while active
     n_docs       INT NOT NULL,

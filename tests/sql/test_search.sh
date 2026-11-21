@@ -99,4 +99,9 @@ expect "snap view" "$(q "SELECT COUNT(*) FROM (SELECT vtext.tsearch(* USING PARA
 expect_error "syntax error is reported" "SELECT vtext.tsearch(* USING PARAMETERS index='vt_ref', query='kilo AND') OVER() FROM vt_ref.vt_ref_live" "AND without a right operand"
 expect_error "unknown index" "SELECT vtext.tsearch(* USING PARAMETERS index='nope', query='kilo') OVER() FROM vt_ref.vt_ref_live" "no cache for index nope"
 
+# session defaults: ALTER SESSION SET UDPARAMETER FOR vtext.vtext (the library's qualified name)
+expect "session default k = 3" \
+       "$(q "ALTER SESSION SET UDPARAMETER FOR vtext.vtext k = '3'; SELECT COUNT(*) FROM (SELECT vtext.tsearch(* USING PARAMETERS index='vt_ref', query='kilo') OVER() FROM vt_ref.vt_ref_live) r")" "3"
+expect "a parameter overrides the session default" \
+       "$(q "ALTER SESSION SET UDPARAMETER FOR vtext.vtext k = '3'; SELECT COUNT(*) FROM (SELECT vtext.tsearch(* USING PARAMETERS index='vt_ref', query='kilo', k=5) OVER() FROM vt_ref.vt_ref_live) r")" "5"
 done_test

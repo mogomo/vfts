@@ -71,9 +71,61 @@ namespace {
 
 // ---------------------------------------------------------------- plan
 
-constexpr std::size_t MAX_NEAR_PAIRS = 100000;
+struct Span { std::uint32_t start, end; };      // a match, both ends inclusive (snippets)
 
-struct Span { std::uint32_t start, end; };
+// A span as Lucene's Spans enumerate it: positions [start, end), and the width of the match, which
+// gives its sloppy frequency 1 / (1 + width).
+struct LSpan { std::int32_t start, end, width; };
+inline bool lspan_less(const LSpan &a, const LSpan &b) { return a.start != b.start ? a.start < b.start : a.end < b.end; }
+
+// Lucene's NearSpansOrdered over the spans of the clauses in one document (each list sorted by
+// start, then end): for every span of the first clause, the next clauses move forward (never back)
+// to their first span starting at or after the end of the previous one; a match when the gaps
+// together are at most slop. The first clause that runs out ends the document.
+void near_ordered(const std::vector<const std::vector<LSpan> *> &L, int slop, std::vector<LSpan> &out)
+{
+    const std::size_t n = L.size();
+    std::vector<std::ptrdiff_t> cur(n, -1);
+    for (;;) {
+        if (++cur[0] >= static_cast<std::ptrdiff_t>(L[0]->size())) return;
+        const LSpan *prev = &(*L[0])[static_cast<std::size_t>(cur[0])];
+        std::int64_t width = 0;
+        for (std::size_t i = 1; i < n; ++i) {
+            const std::vector<LSpan> &v = *L[i];
+            const auto size = static_cast<std::ptrdiff_t>(v.size());
+            while (cur[i] < 0 || (cur[i] < size && v[static_cast<std::size_t>(cur[i])].start < prev->end)) ++cur[i];
+            if (cur[i] >= size) return;
+            width += v[static_cast<std::size_t>(cur[i])].start - prev->end;
+            prev = &v[static_cast<std::size_t>(cur[i])];
+        }
+        if (width <= slop) out.push_back({(*L[0])[static_cast<std::size_t>(cur[0])].start, prev->end, static_cast<std::int32_t>(width)});
+    }
+}
+
+// Lucene's NearSpansUnordered for two clauses: a window of one current span per clause; a match
+// when (largest end - smallest start - the lengths of the spans) is at most slop; then the clause
+// with the smallest span (start, then end; on a tie the current one) moves to its next span. The
+// clause that holds the largest end changes only when another end is larger (as in Lucene).
+void near_unordered(const std::vector<LSpan> &a, const std::vector<LSpan> &b, int slop, std::vector<LSpan> &out)
+{
+    if (a.empty() || b.empty()) return;
+    const std::vector<LSpan> *L[2] = {&a, &b};
+    std::size_t cur[2] = {0, 0};
+    auto sp = [&](int c) -> const LSpan & { return (*L[c])[cur[c]]; };
+    std::int64_t total = (a[0].end - a[0].start) + (b[0].end - b[0].start);
+    int maxc = b[0].end > a[0].end ? 1 : 0;
+    int top = lspan_less(b[0], a[0]) ? 1 : 0;
+    for (;;) {
+        const std::int64_t w = sp(maxc).end - sp(top).start - total;
+        if (w <= slop) out.push_back({sp(top).start, sp(maxc).end, static_cast<std::int32_t>(w)});
+        const std::int64_t old_len = sp(top).end - sp(top).start;
+        if (++cur[top] >= L[top]->size()) return;
+        total += (sp(top).end - sp(top).start) - old_len;
+        if (top != maxc && sp(top).end > sp(maxc).end) maxc = top;
+        const int other = 1 - top;
+        if (lspan_less(sp(other), sp(top))) top = other;
+    }
+}
 
 // One leaf of the query (a word, or one slot of a phrase, or a pattern), resolved for every
 // segment.
@@ -84,6 +136,9 @@ struct Leaf {
     std::vector<std::int64_t> stem_entry;           // per segment: the stem group when ids is exactly that group
     std::uint64_t df = 0;                           // global live document frequency
     float idf = 0;
+    // the terms of the leaf as Lucene's span queries count them in the weight of a w/N or pre/N:
+    // (key, idf); a word is one term, a pattern every term it expands to
+    std::vector<std::pair<std::string, float>> span_terms;
 };
 
 struct PNode {
@@ -110,6 +165,9 @@ struct It {
     std::uint32_t next() { return positioned ? (doc == NO_DOC ? NO_DOC : advance(doc + 1)) : advance(0); }
     virtual float score() = 0;
     virtual void spans(std::vector<Span> &out) = 0;
+    // the spans of the current document as a clause of w/N or pre/N (Lucene's span queries), sorted
+    // by start, then end
+    virtual void lspans(std::vector<LSpan> &) {}
     virtual std::uint64_t cost() const = 0;
 };
 
@@ -154,6 +212,11 @@ struct LeafIt : It {
     {
         positions(tmp);
         for (std::uint32_t p : tmp) out.push_back({p, p});
+    }
+    void lspans(std::vector<LSpan> &out) override
+    {
+        positions(tmp);
+        for (std::uint32_t p : tmp) out.push_back({static_cast<std::int32_t>(p), static_cast<std::int32_t>(p) + 1, 0});
     }
     std::uint64_t cost() const override
     {
@@ -319,10 +382,29 @@ struct PhraseIt : It {
         return weight - weight / (1.0f + freq * norm_inverse);
     }
     void spans(std::vector<Span> &out) override { out.insert(out.end(), matches.begin(), matches.end()); }
+    // As a clause of w/N: an ordered span query of the words with the phrase's slop (Lucene's
+    // SpanNearQuery, in order), the form the phrase takes inside a span query.
+    void lspans(std::vector<LSpan> &out) override
+    {
+        if (slop == 0) {
+            for (const Span &m : matches) out.push_back({static_cast<std::int32_t>(m.start), static_cast<std::int32_t>(m.end) + 1, 0});
+            return;
+        }
+        std::vector<std::vector<LSpan>> lists(slots.size());
+        std::vector<const std::vector<LSpan> *> L;
+        for (std::size_t i = 0; i < slots.size(); ++i) {
+            for (std::uint32_t p : pos[i]) lists[i].push_back({static_cast<std::int32_t>(p), static_cast<std::int32_t>(p) + 1, 0});
+            L.push_back(&lists[i]);
+        }
+        const std::size_t before = out.size();
+        near_ordered(L, slop, out);
+        std::stable_sort(out.begin() + static_cast<std::ptrdiff_t>(before), out.end(), lspan_less);
+    }
     std::uint64_t cost() const override { return conj.empty() ? 0 : conj[0]->cost(); }
 };
 
-// w/N and pre/N: both operands in the document, then pairs of their spans within the distance.
+// w/N and pre/N: both operands in the document, then Lucene's span matching (SpanNearQuery with
+// slop N - 1, in order for pre/N): the frequency is the sum of 1 / (1 + width) over the matches.
 struct NearIt : It {
     std::unique_ptr<It> a, b;
     std::vector<It *> conj;
@@ -331,7 +413,7 @@ struct NearIt : It {
     float weight = 0;
     Scoring sc;
     float freq = 0;
-    std::vector<Span> sa, sb, matches;
+    std::vector<LSpan> la, lb, matches;
 
     void init()
     {
@@ -348,34 +430,30 @@ struct NearIt : It {
     }
     bool verify()
     {
-        sa.clear(); sb.clear(); matches.clear();
-        a->spans(sa);
-        b->spans(sb);
-        auto by_start = [](const Span &x, const Span &y) { return x.start != y.start ? x.start < y.start : x.end < y.end; };
-        std::sort(sb.begin(), sb.end(), by_start);
+        la.clear(); lb.clear(); matches.clear();
+        a->lspans(la);
+        b->lspans(lb);
+        if (ordered) near_ordered({&la, &lb}, dist - 1, matches);
+        else near_unordered(la, lb, dist - 1, matches);
         freq = 0;
-        std::size_t pairs = 0;
-        for (const Span &x : sa) {
-            for (const Span &y : sb) {
-                if (y.start > x.end + static_cast<std::uint32_t>(dist)) break;
-                std::uint32_t gap = 0;
-                if (y.start > x.end) gap = y.start - x.end;
-                else if (!ordered && x.start > y.end) gap = x.start - y.end;
-                else continue;
-                if (gap == 0 || gap > static_cast<std::uint32_t>(dist)) continue;
-                freq += 1.0f / static_cast<float>(gap);
-                matches.push_back({std::min(x.start, y.start), std::max(x.end, y.end)});
-                if (++pairs >= MAX_NEAR_PAIRS) return freq > 0;
-            }
-        }
-        return freq > 0;
+        for (const LSpan &m : matches) freq += 1.0f / (1.0f + static_cast<float>(m.width));
+        return !matches.empty();
     }
     float score() override
     {
         const float norm_inverse = sc.cache[sc.norms[doc]];
         return weight - weight / (1.0f + freq * norm_inverse);
     }
-    void spans(std::vector<Span> &out) override { out.insert(out.end(), matches.begin(), matches.end()); }
+    void spans(std::vector<Span> &out) override
+    {
+        for (const LSpan &m : matches) out.push_back({static_cast<std::uint32_t>(m.start), static_cast<std::uint32_t>(m.end - 1)});
+    }
+    void lspans(std::vector<LSpan> &out) override
+    {
+        const std::size_t before = out.size();
+        out.insert(out.end(), matches.begin(), matches.end());
+        std::stable_sort(out.begin() + static_cast<std::ptrdiff_t>(before), out.end(), lspan_less);
+    }
     std::uint64_t cost() const override { return std::min(a->cost(), b->cost()); }
 };
 
@@ -421,6 +499,13 @@ struct BoolIt : It {
     void spans(std::vector<Span> &out) override
     {
         for (auto &x : should) if (x->advance(doc) == doc) x->spans(out);
+    }
+    // as a clause of w/N: the spans of the matching should clauses merged (Lucene's SpanOrQuery)
+    void lspans(std::vector<LSpan> &out) override
+    {
+        const std::size_t before = out.size();
+        for (auto &x : should) if (x->advance(doc) == doc) x->lspans(out);
+        std::stable_sort(out.begin() + static_cast<std::ptrdiff_t>(before), out.end(), lspan_less);
     }
     std::uint64_t cost() const override
     {
@@ -565,6 +650,7 @@ struct Searcher::Impl {
         }
         for (std::size_t si = 0; si < n; ++si) L.df += live_df(si, L.ids[si], L.stem_entry[si]);
         L.idf = idf(L.df);
+        L.span_terms.emplace_back((o.match == MatchMode::Stem ? "s\x01" + key : "e\x01" + word), L.idf);
         leaves.push_back(std::move(L));
         return static_cast<int>(leaves.size() - 1);
     }
@@ -619,19 +705,13 @@ struct Searcher::Impl {
             const std::string pre = w.substr(0, bytes);
             for (std::size_t si = 0; si < n; ++si) {
                 const Segment &seg = *segs[si];
-                for (std::uint32_t t = seg.lower_bound(pre); t < seg.n_terms(); ++t) {
-                    const std::string_view term = seg.term(t);
-                    if (term.compare(0, pre.size(), pre) != 0) break;
-                    // quick length filter on bytes (a code point is 1 to 4 bytes)
-                    if (term.size() + 4 * static_cast<std::size_t>(q.edits) < w.size() && term.size() * 4 + 4 * q.edits < w.size()) continue;
-                    to_code_points(term, txt);
-                    const int dist = bounded_osa_distance(pat, txt, q.edits);
-                    if (dist <= q.edits) {
-                        auto &c = cand[std::string(term)];
-                        c.first = dist;
-                        c.second += seg.info(t).df;
-                    }
-                }
+                fuzzy_terms(seg.n_terms(), [&](std::uint32_t t) { return seg.term(t); },
+                            [&](std::string_view x) { return seg.lower_bound(x); }, pat, q.edits, pre,
+                            [&](std::uint32_t t, std::string_view term, int dist) {
+                                auto &c = cand[std::string(term)];
+                                c.first = dist;
+                                c.second += seg.info(t).df;
+                            });
             }
         }
         // the best max_expansions terms, the same choice on every segment
@@ -642,16 +722,21 @@ struct Searcher::Impl {
             return x.first < y.first;
         });
         if (v.size() > o.max_expansions) v.resize(o.max_expansions);
-        std::uint64_t max_df = 0;
+        std::vector<std::uint64_t> term_df(v.size(), 0);
         for (std::size_t si = 0; si < n; ++si) {
-            for (auto &e : v) {
-                const std::int64_t t = segs[si]->find_term(e.first);
-                if (t >= 0) L.ids[si].push_back(static_cast<std::uint32_t>(t));
+            for (std::size_t j = 0; j < v.size(); ++j) {
+                const std::int64_t t = segs[si]->find_term(v[j].first);
+                if (t < 0) continue;
+                L.ids[si].push_back(static_cast<std::uint32_t>(t));
+                term_df[j] += live_df(si, {static_cast<std::uint32_t>(t)}, -1);
             }
             std::sort(L.ids[si].begin(), L.ids[si].end());
         }
+        // inside w/N or pre/N every expansion adds its idf to the weight (Lucene's span_multi)
+        for (std::size_t j = 0; j < v.size(); ++j)
+            if (term_df[j]) L.span_terms.emplace_back("e\x01" + v[j].first, idf(term_df[j]));
         if (L.constant) {
-            // only used as the weight of the pattern inside w/N or pre/N: the most frequent term
+            std::uint64_t max_df = 0;
             for (auto &e : v) max_df = std::max(max_df, e.second.second);
             L.df = max_df;
         } else {
@@ -693,7 +778,7 @@ struct Searcher::Impl {
             p.ordered = q.ordered;
             p.kids.push_back(plan(q.kids[0]));
             p.kids.push_back(plan(q.kids[1]));
-            p.weight = boost * (leaf_weight(p.kids[0]) + leaf_weight(p.kids[1]));
+            p.weight = boost * span_weight(p);
             break;
         }
         case QKind::Bool:
@@ -705,12 +790,19 @@ struct Searcher::Impl {
         return p;
     }
 
-    // The sum of the idf of the words below a node (the weight of a w/N or pre/N).
-    float leaf_weight(const PNode &p) const
+    // The weight of a w/N or pre/N: the sum of the idf of the distinct terms below it (Lucene's
+    // SpanWeight: one statistic per term, the expansions of patterns included).
+    void span_terms(const PNode &p, std::map<std::string, float> &m) const
     {
+        for (int l : p.leaves) if (l >= 0) for (const auto &t : leaves[l].span_terms) m.emplace(t.first, t.second);
+        for (auto *v : {&p.must, &p.should, &p.kids}) for (const PNode &k : *v) span_terms(k, m);
+    }
+    float span_weight(const PNode &p) const
+    {
+        std::map<std::string, float> m;
+        span_terms(p, m);
         double w = 0;
-        for (int l : p.leaves) if (l >= 0) w += leaves[l].idf;
-        for (auto *v : {&p.must, &p.should, &p.kids}) for (const PNode &k : *v) w += leaf_weight(k);
+        for (const auto &t : m) w += t.second;
         return static_cast<float>(w);
     }
 
@@ -937,12 +1029,11 @@ struct Searcher::Impl {
             return std::max(sh, lo);
         };
         double th = theta();
-        // Windows of WINDOW docnos. In each window every list has a bound from its impacts; sorted by
+        // Windows of o.window docnos (default 8192). In each window every list has a bound from its impacts; sorted by
         // those bounds, the lists whose bounds together stay below the threshold are probed only
         // ("non-essential" in the window), and candidates come from the others. A window whose lists
         // together stay below the threshold is skipped. Before the top k is full, every list is
         // essential.
-        constexpr std::uint32_t WINDOW = 4096;
         std::uint64_t c_cand = 0, c_scored = 0, c_skip = 0, c_probe = 0;
         struct Flush {
             SearchOptions::Stats *st; std::uint64_t &a, &b, &c, &d; std::size_t terms;

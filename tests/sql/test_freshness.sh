@@ -80,6 +80,12 @@ compare_all "second refresh"
 q "CALL vtext.merge('vt_fr', 1)" > /dev/null
 expect "merge into one segment" \
        "$(q "SELECT COUNT(*) FROM vtext.segments s JOIN vtext.indexes i USING (index_id) WHERE i.index_name = 'vt_fr' AND s.gen_removed IS NULL")" "1"
+expect "merged-away segments leave no rows in the index tables" \
+       "$(q "SELECT (SELECT COUNT(*) FROM vtext.postings p JOIN vtext.segments s USING (index_id, segment_id) WHERE s.gen_removed IS NOT NULL AND s.index_id = (SELECT index_id FROM vtext.indexes WHERE index_name = 'vt_fr'))
+                  + (SELECT COUNT(*) FROM vtext.positions p JOIN vtext.segments s USING (index_id, segment_id) WHERE s.gen_removed IS NOT NULL AND s.index_id = (SELECT index_id FROM vtext.indexes WHERE index_name = 'vt_fr'))
+                  + (SELECT COUNT(*) FROM vtext.term_dict p JOIN vtext.segments s USING (index_id, segment_id) WHERE s.gen_removed IS NOT NULL AND s.index_id = (SELECT index_id FROM vtext.indexes WHERE index_name = 'vt_fr'))
+                  + (SELECT COUNT(*) FROM vtext.doc_stats p JOIN vtext.segments s USING (index_id, segment_id) WHERE s.gen_removed IS NOT NULL AND s.index_id = (SELECT index_id FROM vtext.indexes WHERE index_name = 'vt_fr'))
+                  + (SELECT COUNT(*) FROM vtext.tombstones p JOIN vtext.segments s USING (index_id, segment_id) WHERE s.gen_removed IS NOT NULL AND s.index_id = (SELECT index_id FROM vtext.indexes WHERE index_name = 'vt_fr'))")" "0"
 compare_all "after merge (deleted documents dropped)"
 # tiered policy: ten small refreshes make ten small segments; the tenth refresh merges them
 for r in 1 2 3 4 5 6 7 8 9 10; do

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Load a dataset into Vertica and build its vtext index; prints one JSON line with the timings.
+# Load a dataset into Vertica, build its vtext index and merge it into one segment; prints one JSON
+# line with the timings and sizes.
 #
 #   bench/load_vertica.sh <dataset> [create_index options]      e.g. bench/load_vertica.sh msmarco 'lang=en'
 #
@@ -24,10 +25,22 @@ fi
 t1=$(date +%s.%N)
 Q "CALL vtext.create_index('$DS', 'bench.$DS', '$OPTS margin=0')" > /dev/null
 t2=$(date +%s.%N)
+# merged into one segment, as the engines are force-merged into one segment per shard (VTEXT_MERGE=0: not merged)
+[ "${VTEXT_MERGE:-1}" = 1 ] && Q "CALL vtext.merge('$DS', 1)" > /dev/null
+t3=$(date +%s.%N)
 docs=$(Q "SELECT COUNT(*) FROM bench.$DS")
 segs=$(Q "SELECT COUNT(*) FROM vtext.segments s JOIN vtext.indexes i USING (index_id) WHERE i.index_name = '$DS' AND s.gen_removed IS NULL")
 cache=$(Q "SELECT SUM(bytes) FROM vtext.segments s JOIN vtext.indexes i USING (index_id) WHERE i.index_name = '$DS' AND s.gen_removed IS NULL")
-tables=$(Q "SELECT SUM(used_bytes) FROM v_monitor.projection_storage WHERE anchor_table_schema = 'vtext' AND anchor_table_name IN ('term_dict','postings','positions','doc_stats')")
+# rows of the merged-away segments are deleted by vtext.merge; purge them now (Vertica would at its
+# next mergeout) so that the size is the size of the live index (benchmark database only)
+Q "SELECT MAKE_AHM_NOW()" > /dev/null
+for t in term_dict postings positions doc_stats tombstones; do Q "SELECT PURGE_TABLE('vtext.$t')" > /dev/null; done
+# the index tables are partitioned by index_id and unsegmented: count this index's partitions on one node
+tables=$(Q "SELECT COALESCE(SUM(p.ros_size_bytes), 0) FROM v_monitor.partitions p JOIN v_catalog.projections j ON j.projection_id = p.projection_id
+            WHERE j.projection_schema = 'vtext' AND j.anchor_table_name IN ('term_dict', 'postings', 'positions', 'doc_stats')
+              AND p.partition_key = (SELECT index_id FROM vtext.indexes WHERE index_name = '$DS')::VARCHAR
+              AND p.node_name = (SELECT MIN(node_name) FROM v_catalog.nodes)")
 source=$(Q "SELECT SUM(used_bytes) FROM v_monitor.projection_storage WHERE anchor_table_schema = 'bench' AND anchor_table_name = '$DS'")
-printf '{"engine": "vtext", "dataset": "%s", "docs": %s, "copy_s": %.1f, "index_s": %.1f, "segments": %s, "cache_bytes": %s, "index_table_bytes": %s, "source_table_bytes": %s}\n' \
-    "$DS" "$docs" "$(echo "$t1 - $t0" | bc)" "$(echo "$t2 - $t1" | bc)" "$segs" "$cache" "$tables" "$source"
+# index_s = build + merge (the engines' index_s = bulk + refresh + force merge)
+printf '{"engine": "vtext", "dataset": "%s", "docs": %s, "copy_s": %.1f, "build_s": %.1f, "merge_s": %.1f, "index_s": %.1f, "segments": %s, "cache_bytes": %s, "index_table_bytes": %s, "source_table_bytes": %s}\n' \
+    "$DS" "$docs" "$(echo "$t1 - $t0" | bc)" "$(echo "$t2 - $t1" | bc)" "$(echo "$t3 - $t2" | bc)" "$(echo "$t3 - $t1" | bc)" "$segs" "$cache" "$tables" "$source"

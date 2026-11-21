@@ -31,7 +31,7 @@ inline bool one_of(const std::string &v, std::initializer_list<const char *> all
 }
 
 // Values with the precedence: function parameter, then session parameter
-// (ALTER SESSION SET UDPARAMETER FOR vtext <name> = '...'), then the built-in default.
+// (ALTER SESSION SET UDPARAMETER FOR vtext.vtext <name> = '...'), then the built-in default.
 // Session parameters arrive as strings whatever they look like.
 class Settings {
 public:

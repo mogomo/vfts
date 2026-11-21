@@ -148,7 +148,7 @@ void unify_apostrophes(icu::UnicodeString &u)
 // presentation (© ™) are not words.
 bool is_emoji(std::string_view seg)
 {
-    if (seg.empty() || static_cast<unsigned char>(seg[0]) < 0xC0 && seg.find("\xE2\x83\xA3") == std::string_view::npos) return false;
+    if (seg.empty() || (static_cast<unsigned char>(seg[0]) < 0xC0 && seg.find("\xE2\x83\xA3") == std::string_view::npos)) return false;
     UChar32 c;
     for (int32_t i = 0, n = static_cast<int32_t>(seg.size()); i < n;) {
         U8_NEXT(reinterpret_cast<const uint8_t *>(seg.data()), i, n, c);

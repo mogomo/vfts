@@ -159,4 +159,26 @@ milestone). Check again on other versions.
   statement_id)` with literals stops a running statement.
 - COPY of a 3 GB file with custom delimiters (`DELIMITER E'\001' RECORD TERMINATOR E'\002' NO
   ESCAPE`) into a single-node table took about 4 minutes (8.8 million rows).
-- (M8) After a redeploy of an unfenced library (CREATE OR REPLACE LIBRARY), threads that the previous version started stay in the server process; a query that waited for the old pool's queue slowed from 4 to 10 ms until the database was restarted. Benchmarks start from a restarted database.
+- After a redeploy of an unfenced library (CREATE OR REPLACE LIBRARY) Vertica unmaps the old
+  copy, but threads that the old copy started stay in the server process. A detached worker thread
+  of the old copy crashed the server (SIGSEGV with the program counter in unmapped memory) at the
+  first query after a redeploy. vtext pins the library that holds its thread pool
+  (`dlopen(self, RTLD_NOLOAD | RTLD_NODELETE)` when the pool starts): the old copy stays mapped and
+  its threads sleep. Verified: two redeploys with queries in between, no crash. (Joining the
+  threads from a static destructor would run inside `dlclose`, under the loader lock.)
+- `SHOW SESSION UDPARAMETER ALL` right after `ALTER SESSION SET UDPARAMETER FOR vtext k = '3'`
+  crashed the 26.3.0-2 server (SIGSEGV in `process_variable_show`, a Vertica bug: no UDx code on
+  the stack). Avoid that statement.
+- A library created in a schema (`CREATE LIBRARY vtext.vtext`) takes session parameters only with
+  the qualified name: `ALTER SESSION SET UDPARAMETER FOR vtext.vtext k = '3'` reaches the UDx;
+  `FOR vtext` is accepted without an error and has no effect.
+- Per-statement floor, single client, vsql round trip (300 statements, mean): `SELECT 1` 1.0 ms;
+  a transform UDx without input 1.55 ms; the same reading one row from a view 1.74 ms. A scan of
+  a 517,401-row table with `ver > constant` that returns no row: 1.26 ms. The same scan
+  `UNION ALL` one constant row: 2.0 ms, also when the constant row comes from a regular one-row
+  table instead of `dual`, and a `LEFT JOIN` form costs 2.5 ms. So the `_live` view (tail scan
+  plus the sentinel row) costs about 1 ms per statement more than `_snap`. A transform function
+  is not called at all when its input is empty (`OVER()` over zero rows returns zero rows), so
+  the sentinel row is needed.
+- A perf profile of 3,000 tcount statements that match nothing: about 2% of the samples in the
+  library; the rest is the server's statement machinery.

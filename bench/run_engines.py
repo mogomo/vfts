@@ -12,6 +12,7 @@
     --warmup W         runs of the whole set before measuring (default 1)
     --repeat R         measured runs; per query the best time is kept (default 3)
     --run FILE         write the hits of the first measured run: qid, doc_id, rank, score
+    --times FILE       write the time of every query: qid, server ms, client ms (best of the runs)
     --cli PATH         vtext_cli (default build/tools/vtext_cli): parses the query syntax, so that
                        the engines get exactly the query vtext runs (see translate())
 
@@ -75,12 +76,19 @@ class Translator:
         return any(Translator.has_pattern(x) for k in ("a", "b") if k in t for x in [t[k]]) or \
             any(Translator.has_pattern(x) for k in ("must", "should", "must_not") for x in t.get(k, []))
 
+    def span_word(self, w, field):
+        # a word inside a span query on body.exact (the query has a pattern) in stem mode: its stem
+        # on body, masked as body.exact, so that all clauses share one field (positions are the same)
+        if field == "body.exact" and self.field == "body":
+            return {"field_masking_span": {"query": {"span_term": {"body": self.token(w, "body")}}, "field": "body.exact"}}
+        return {"span_term": {field: self.token(w, field)}}
+
     def span(self, t, field):
         k = t["k"]
         if k == "term":
-            return {"span_term": {field: self.token(t["w"], field)}}
+            return self.span_word(t["w"], field)
         if k == "phrase":
-            return {"span_near": {"clauses": [{"span_term": {field: self.token(w, field)}} for w in t["w"] if w],
+            return {"span_near": {"clauses": [self.span_word(w, field) for w in t["w"] if w],
                                   "slop": t["slop"], "in_order": True}}
         if k == "prefix":
             return {"span_multi": {"match": {"prefix": {field: {"value": t["p"]}}}}}
@@ -135,6 +143,7 @@ def main():
     warmup = int(arg("--warmup", 1))
     repeat = int(arg("--repeat", 3))
     run_path = arg("--run")
+    times_path = arg("--times")
     cli = arg("--cli", "build/tools/vtext_cli")
     port = PORTS[engine]
     queries = []
@@ -174,6 +183,7 @@ def main():
 
         def work():
             c = Conn(port)
+            c.post(f"/{index}/_count", {"query": {"match_none": {}}})   # not measured: the connection is set up
             while True:
                 with lock:
                     i = nxt[0]
@@ -214,6 +224,11 @@ def main():
                 else:
                     for rank, h in enumerate(out.get("hits", {}).get("hits", []), 1):
                         f.write(f"{qid}\t{h['_id']}\t{rank}\t{h['_score']:.7f}\n")
+    if times_path:
+        with open(times_path, "w") as f:
+            for i, (qid, _) in enumerate(queries):
+                if took[i] < 1e17:
+                    f.write(f"{qid}\t{took[i]:.3f}\t{client[i]:.3f}\n")
     t = sorted(x for x in took if x < 1e17)
     c = sorted(x for x in client if x < 1e17)
     print(json.dumps({"engine": engine, "index": index, "queries": n, "clients": clients, "mode": mode, "plain": plain,

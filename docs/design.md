@@ -193,7 +193,7 @@ Searches keep running on the previous generation while a merge runs.
 ## Node cache
 
 - Layout and files: docs/format.md. cache_dir: function parameter, then session parameter
-  (`ALTER SESSION SET UDPARAMETER FOR vtext cache_dir = '...'`), then `/tmp/vtext`. The procedures
+  (`ALTER SESSION SET UDPARAMETER FOR vtext.vtext cache_dir = '...'`), then `/tmp/vtext`. The procedures
   pass an index's `cache_dir` option to the functions they call; a search cannot read the manifest,
   so searches of such an index set the same directory as a parameter or session parameter.
 - `OVER(PARTITION NODES)` runs on every node only for a segmented input: `vtext.probe` (1,024

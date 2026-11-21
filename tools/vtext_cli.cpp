@@ -6,6 +6,7 @@
 //                    Elasticsearch / OpenSearch translation in bench/run_engines.py)
 //   vtext_cli search <cache_dir> <index> <queries.tsv> [--k 10] [--threads N] [--mode stem|exact]
 //                    [--repeat R] [--run out.tsv] [--no-pruning] [--count] [--plain] [--and]
+//                    [--max-expansions 50] [--prefix-length 0] [--classic] [--stats]
 //
 // docs.dat: records "doc_id \x01 lang \x01 body \x02" (bench/data/prepare.py). queries.tsv: qid \t query.
 // search prints the latency of every query over R runs (best run per query) as percentiles, and
@@ -163,6 +164,8 @@ static int search(int argc, char **argv)
     o.query.plain = flag(argc, argv, "--plain");
     o.classic = flag(argc, argv, "--classic");
     o.window = static_cast<std::uint32_t>(std::atoi(opt(argc, argv, "--window", "0")));
+    o.max_expansions = static_cast<std::uint32_t>(std::atoi(opt(argc, argv, "--max-expansions", "50")));
+    o.prefix_length = std::atoi(opt(argc, argv, "--prefix-length", "0"));
     o.query.op_and = flag(argc, argv, "--and");
     const bool counting = flag(argc, argv, "--count");
     const int repeat = std::atoi(opt(argc, argv, "--repeat", "3"));

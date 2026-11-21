@@ -164,7 +164,17 @@ def main():
         request(port, "POST", f"/{ds}/_forcemerge?max_num_segments=1", timeout=7200)
     t_merge = time.time() - t2
     request(port, "PUT", f"/{ds}/_settings", {"index": {"refresh_interval": "1s"}})
-    stats = request(port, "GET", f"/{ds}/_stats/store,docs,segments")["indices"][ds]["primaries"]
+    # after a force merge the files of the old segments are deleted a little later: the size is
+    # read when it has been stable for 10 seconds (at most 10 minutes)
+    stats, last, stable = None, -1, 0
+    for _ in range(600):
+        stats = request(port, "GET", f"/{ds}/_stats/store,docs,segments")["indices"][ds]["primaries"]
+        cur = stats["store"]["size_in_bytes"]
+        stable = stable + 1 if cur == last else 0
+        if stable >= 10:
+            break
+        last = cur
+        time.sleep(1)
     print(json.dumps({"engine": engine, "dataset": ds, "shards": shards, "workers": workers, "docs": docs,
                       "count": stats["docs"]["count"], "bulk_s": round(t_bulk, 1), "refresh_s": round(t_refresh, 1),
                       "merge_s": round(t_merge, 1), "index_s": round(t_bulk + t_refresh + t_merge, 1),

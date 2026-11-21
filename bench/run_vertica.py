@@ -13,6 +13,7 @@
     --warmup W         runs of the whole set before measuring (default 1)
     --repeat R         measured runs; per query the best time is kept (default 3)
     --run FILE         write the hits of the first measured run: qid, doc_id, rank, score
+    --times FILE       write the time of every query: qid, server ms, client ms (best of the runs)
     --param 'x=y'      more tsearch parameters (for example threads=1, max_expansions=100000)
     --batch B          B queries per statement (the parameter queries, one per line); times per
                        query are the statement's time divided by B
@@ -55,6 +56,7 @@ def main():
     warmup = int(arg("--warmup", 1))
     repeat = int(arg("--repeat", 3))
     run_path = arg("--run")
+    times_path = arg("--times")
     extra = [sys.argv[i + 1] for i, a in enumerate(sys.argv) if a == "--param"]
     batch = int(arg("--batch", 1))
     queries = []
@@ -87,7 +89,11 @@ def main():
         errs = [0]
 
         def client(c):
-            script = "\\timing on\n" + "".join(statement(i, label) for i in parts[c])
+            # a marker before every statement: the timing line after it belongs to that statement,
+            # also when the query has no hits
+            # one statement first that is not measured: the session is set up (the engines' clients
+            # likewise send one request on each new connection first)
+            script = "\\timing on\nSELECT 1;\n" + "".join(f"\\echo @@{i}\n" + statement(i, label) for i in parts[c])
             p = subprocess.run(["vsql", "-X", "-A", "-t", "-F", "\t", "-f", "-"], input=script, capture_output=True, text=True)
             outs[c] = p.stdout
             if p.returncode != 0 or "ERROR" in p.stderr:
@@ -104,21 +110,20 @@ def main():
         wall = time.time() - t0
         rows, client_ms = {}, {}
         for c in range(clients):
-            last = None
+            stmt = None           # first query of the current statement (its marker)
             for line in outs[c].splitlines():
+                if line.startswith("@@"):
+                    stmt = int(line[2:])
+                    continue
                 m = re.match(r"Time: First fetch.*All rows formatted: ([0-9.]+) ms", line)
                 if m:
-                    if last is not None:
-                        b0 = last - last % batch if batch > 1 else last
-                        for j in range(b0, min(b0 + batch, n)):
-                            client_ms[j] = float(m.group(1)) / min(batch, n - b0)
+                    if stmt is not None:
+                        for j in range(stmt, min(stmt + batch, n)):
+                            client_ms[j] = float(m.group(1)) / min(batch, n - stmt)
                     continue
                 p = line.split("\t")
-                if len(p) >= 2 and p[0].isdigit():
-                    last = int(p[0])
-                    if record:
-                        rows.setdefault(last, []).append(p[1:])
-            # a query without hits prints no row: give its time to nobody (it is still in server times)
+                if len(p) >= 2 and p[0].isdigit() and record:
+                    rows.setdefault(int(p[0]), []).append(p[1:])
         return rows, client_ms, wall, errs[0]
 
     run_id = "vtb" + uuid.uuid4().hex[:10]
@@ -160,6 +165,11 @@ def main():
                         f.write(f"{qid}\t{row[0]}\n")
                     else:
                         f.write(f"{qid}\t{row[0]}\t{row[1]}\t{float(row[2]):.7f}\n")
+    if times_path:
+        with open(times_path, "w") as f:
+            for i, (qid, _) in enumerate(queries):
+                if server[i] < 1e17:
+                    f.write(f"{qid}\t{server[i]:.3f}\t{client[i]:.3f}\n")
     s = sorted(x for x in server if x < 1e17)
     c = sorted(x for x in client if x < 1e17)
 

@@ -307,6 +307,27 @@ $$;
 
 -- ------------------------------------------------------------------ refresh
 
+-- Deletes the rows of the segments that a merge or a full build retired (they are no longer in
+-- any generation that can be loaded). Vertica reclaims the space at its next mergeout.
+CREATE OR REPLACE PROCEDURE vtext.purge_segments(iid INT) LANGUAGE PLvSQL AS $$
+DECLARE
+    lst VARCHAR(65000);
+BEGIN
+    lst := (SELECT LISTAGG(segment_id::VARCHAR USING PARAMETERS max_length = 65000) FROM vtext.segments
+            WHERE index_id = iid AND gen_removed IS NOT NULL AND state <> 'purged');
+    IF lst IS NULL OR lst = '' THEN
+        RETURN;
+    END IF;
+    EXECUTE 'DELETE FROM vtext.term_dict  WHERE index_id = ' || iid || ' AND segment_id IN (' || lst || ')';
+    EXECUTE 'DELETE FROM vtext.postings   WHERE index_id = ' || iid || ' AND segment_id IN (' || lst || ')';
+    EXECUTE 'DELETE FROM vtext.positions  WHERE index_id = ' || iid || ' AND segment_id IN (' || lst || ')';
+    EXECUTE 'DELETE FROM vtext.doc_stats  WHERE index_id = ' || iid || ' AND segment_id IN (' || lst || ')';
+    EXECUTE 'DELETE FROM vtext.tombstones WHERE index_id = ' || iid || ' AND segment_id IN (' || lst || ')';
+    EXECUTE 'UPDATE vtext.segments SET state = ''purged'' WHERE index_id = ' || iid || ' AND segment_id IN (' || lst || ')';
+    PERFORM COMMIT;
+END;
+$$;
+
 -- Incremental and exact: indexes the rows newer than the last boundary into new segments,
 -- tombstones their older versions and journal deletes, loads every node, then switches the
 -- views. docs/design.md "Refresh" explains the steps and why the result is exact.
@@ -453,8 +474,11 @@ BEGIN
     --    views show a wider tail, which is still exact).
     PERFORM CALL vtext.make_views(nm);
     RAISE NOTICE 'vtext: index % generation %: % (% s)', nm, g_new, note, ROUND(secs, 1);
-    -- 9. Tiered merge, when the policy finds a tier with merge_factor segments. Not after a full build:
-    --    its segments are the parallel units of a search (merge them with vtext.merge when wanted).
+    IF full_ THEN
+        PERFORM CALL vtext.purge_segments(iid);
+    END IF;
+    -- 9. Tiered merge, when the policy finds a tier with merge_factor segments. Not after a full build
+    --    (its segments have the same size; vtext.merge(name, 1) makes one segment of them when wanted).
     IF NOT full_ THEN
         PERFORM CALL vtext.merge(nm, 0);
     END IF;
@@ -484,6 +508,7 @@ BEGIN
     PERFORM UPDATE vtext.indexes SET gen = g_new WHERE index_name = nm;
     PERFORM COMMIT;
     PERFORM CALL vtext.make_views(nm);
+    PERFORM CALL vtext.purge_segments(iid);
 END;
 $$;
 

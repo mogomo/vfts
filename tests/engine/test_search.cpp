@@ -3,6 +3,7 @@
 // live tail. Same matches, same order, same scores (correctness rules 1, 2 and 4).
 #include "check.h"
 #include "../../src/engine/builder.h"
+#include "../../src/engine/expand.h"
 #include "../../src/engine/postings.h"
 #include "../../src/engine/search.h"
 #include "../../src/engine/stemmer.h"
@@ -75,40 +76,88 @@ struct Ref {
     }
     struct Sp { std::uint32_t s, e; };
 
-    // spans of a positional node in a document
-    std::vector<Sp> spans(const QNode &q, const Doc &d)
+    // spans of a phrase (both ends inclusive)
+    std::vector<Sp> phrase_spans(const QNode &q, const Doc &d)
     {
         std::vector<Sp> out;
-        if (q.kind == QKind::Term) for (auto p : positions(d, terms_of(q.words[0]))) out.push_back({p, p});
-        else if (q.kind == QKind::Phrase) {
-            for (std::uint32_t s = 0; s < d.size(); ++s) {
-                bool ok = true;
-                for (std::size_t i = 0; i < q.words.size() && ok; ++i) {
-                    if (q.words[i].empty()) continue;
-                    ok = s + i < d.size() && terms_of(q.words[i]).count(d[s + i]);
-                }
-                if (ok) out.push_back({s, static_cast<std::uint32_t>(s + q.words.size() - 1)});
+        for (std::uint32_t s = 0; s < d.size(); ++s) {
+            bool ok = true;
+            for (std::size_t i = 0; i < q.words.size() && ok; ++i) {
+                if (q.words[i].empty()) continue;
+                ok = s + i < d.size() && terms_of(q.words[i]).count(d[s + i]);
             }
-        } else if (q.kind == QKind::Bool) {
-            for (auto &k : q.should) { auto v = spans(k, d); out.insert(out.end(), v.begin(), v.end()); }
-        } else if (q.kind == QKind::Near) {
-            for (auto &a : spans(q.kids[0], d))
-                for (auto &b : spans(q.kids[1], d)) {
-                    std::uint32_t gap = 0;
-                    if (b.s > a.e) gap = b.s - a.e;
-                    else if (!q.ordered && a.s > b.e) gap = a.s - b.e;
-                    if (gap >= 1 && gap <= static_cast<std::uint32_t>(q.dist)) out.push_back({std::min(a.s, b.s), std::max(a.e, b.e)});
-                }
+            if (ok) out.push_back({s, static_cast<std::uint32_t>(s + q.words.size() - 1)});
         }
         return out;
     }
-    float leaf_idf(const QNode &q)
+
+    // Lucene's span model, written after its Java classes: a Spans is a list of [start, end) with a
+    // width, walked forward with next_start(); start() is -1 before the first, NO_MORE after the last.
+    struct LS { int s, e, w; };
+    static constexpr int NO_MORE = 1 << 30;
+    struct Spans {
+        std::vector<LS> v;
+        long at = -1;
+        int start() const { return at < 0 ? -1 : (at >= static_cast<long>(v.size()) ? NO_MORE : v[at].s); }
+        int end() const { return at < 0 ? -1 : (at >= static_cast<long>(v.size()) ? NO_MORE : v[at].e); }
+        int next_start() { ++at; return start(); }
+    };
+    static bool ordered_pos(const Spans &x, const Spans &y) { return x.start() == y.start() ? x.end() < y.end() : x.start() < y.start(); }
+
+    std::vector<LS> lspans(const QNode &q, const Doc &d)
     {
-        double w = 0;
-        if (q.kind == QKind::Term) w += idf(terms_of(q.words[0]));
-        else if (q.kind == QKind::Phrase) { for (auto &x : q.words) if (!x.empty()) w += idf(terms_of(x)); }
-        for (auto *v : {&q.should, &q.must, &q.kids}) for (auto &k : *v) w += leaf_idf(k);
-        return static_cast<float>(w);
+        std::vector<LS> out;
+        if (q.kind == QKind::Term) {
+            for (auto p : positions(d, terms_of(q.words[0]))) out.push_back({static_cast<int>(p), static_cast<int>(p) + 1, 0});
+        } else if (q.kind == QKind::Phrase) {
+            for (auto &m : phrase_spans(q, d)) out.push_back({static_cast<int>(m.s), static_cast<int>(m.e) + 1, 0});
+        } else if (q.kind == QKind::Bool) {          // SpanOrQuery
+            for (auto &k : q.should) { auto v = lspans(k, d); out.insert(out.end(), v.begin(), v.end()); }
+            std::stable_sort(out.begin(), out.end(), [](const LS &a, const LS &b) { return a.s != b.s ? a.s < b.s : a.e < b.e; });
+        } else if (q.kind == QKind::Near) {
+            Spans a{lspans(q.kids[0], d)}, b{lspans(q.kids[1], d)};
+            const int slop = q.dist - 1;
+            if (q.ordered) {                          // NearSpansOrdered.stretchToOrder
+                while (a.next_start() != NO_MORE) {
+                    while (b.start() < a.end()) b.next_start();
+                    if (b.start() == NO_MORE) break;
+                    const int width = b.start() - a.end();
+                    if (width <= slop) out.push_back({a.start(), b.end(), width});
+                }
+            } else {                                  // NearSpansUnordered.SpanTotalLengthEndPositionWindow
+                if (a.v.empty() || b.v.empty()) return out;
+                a.next_start();
+                b.next_start();
+                Spans *cells[2] = {&a, &b};
+                int total = (a.end() - a.start()) + (b.end() - b.start());
+                Spans *maxc = &a;
+                if (b.end() > maxc->end()) maxc = &b;
+                Spans *top = ordered_pos(b, a) ? &b : &a;
+                for (;;) {
+                    const int width = maxc->end() - top->start() - total;
+                    if (width <= slop) out.push_back({top->start(), maxc->end(), width});
+                    const int old = top->end() - top->start();
+                    if (top->next_start() == NO_MORE) break;
+                    total += (top->end() - top->start()) - old;
+                    if (top->end() > maxc->end()) maxc = top;
+                    Spans *other = top == cells[0] ? cells[1] : cells[0];
+                    if (ordered_pos(*other, *top)) top = other;
+                }
+            }
+            std::stable_sort(out.begin(), out.end(), [](const LS &x, const LS &y) { return x.s != y.s ? x.s < y.s : x.e < y.e; });
+        }
+        return out;
+    }
+    // the weight of a span query: the idf of its distinct terms
+    void span_idf(const QNode &q, std::map<std::string, float> &m)
+    {
+        auto add = [&](const std::string &w) {
+            const std::string key = match == MatchMode::Stem ? std::string(st.stem(w, parse_lang("en"))) : w;
+            m.emplace(key, idf(terms_of(w)));
+        };
+        if (q.kind == QKind::Term) add(q.words[0]);
+        else if (q.kind == QKind::Phrase) { for (auto &x : q.words) if (!x.empty()) add(x); }
+        for (auto *v : {&q.should, &q.must, &q.kids}) for (auto &k : *v) span_idf(k, m);
     }
     // score if the document matches
     std::optional<float> eval(const QNode &q, const Doc &d)
@@ -121,7 +170,7 @@ struct Ref {
             return bm25(idf(ts), static_cast<float>(p.size()), d.size());
         }
         case QKind::Phrase: {
-            const auto s = spans(q, d);
+            const auto s = phrase_spans(q, d);
             if (s.empty()) return std::nullopt;
             double w = 0;
             for (auto &x : q.words) if (!x.empty()) w += idf(terms_of(x));
@@ -129,15 +178,14 @@ struct Ref {
         }
         case QKind::Near: {
             float freq = 0;
-            for (auto &a : spans(q.kids[0], d))
-                for (auto &b : spans(q.kids[1], d)) {
-                    std::uint32_t gap = 0;
-                    if (b.s > a.e) gap = b.s - a.e;
-                    else if (!q.ordered && a.s > b.e) gap = a.s - b.e;
-                    if (gap >= 1 && gap <= static_cast<std::uint32_t>(q.dist)) freq += 1.0f / static_cast<float>(gap);
-                }
-            if (freq == 0) return std::nullopt;
-            return bm25(leaf_idf(q.kids[0]) + leaf_idf(q.kids[1]), freq, d.size());
+            const auto m = lspans(q, d);
+            for (auto &x : m) freq += 1.0f / (1.0f + static_cast<float>(x.w));
+            if (m.empty()) return std::nullopt;
+            std::map<std::string, float> terms;
+            span_idf(q, terms);
+            double w = 0;
+            for (auto &t : terms) w += t.second;
+            return bm25(static_cast<float>(w), freq, d.size());
         }
         case QKind::Bool: {
             double s = 0;
@@ -442,6 +490,56 @@ static void prefix_wildcard_fuzzy()
     CHECK(h.size() == 3 && h[0].score == 1.0f && h[2].score == 1.0f && h[0].doc_id == 1);
 }
 
+// fuzzy_terms (the trie walk) against the distance of every term
+static void test_fuzzy_terms()
+{
+    static const char *ALPHA[] = {"a", "b", "c", "d", "e", "\xc3\xa9", "\xd7\xa9", "\xd7\x94"};
+    Rng r(77);
+    int checked = 0;
+    for (int round = 0; round < 40; ++round) {
+        std::set<std::string> dict_set;
+        const int n = 200 + static_cast<int>(r.below(2000));
+        while (static_cast<int>(dict_set.size()) < n) {
+            std::string w;
+            const int len = 1 + static_cast<int>(r.below(9));
+            for (int i = 0; i < len; ++i) w += ALPHA[r.below(r.below(4) == 0 ? 8 : 5)];
+            dict_set.insert(w);
+        }
+        std::vector<std::string> dict(dict_set.begin(), dict_set.end());
+        auto term = [&](std::uint32_t t) { return std::string_view(dict[t]); };
+        auto lb = [&](std::string_view x) {
+            return static_cast<std::uint32_t>(std::lower_bound(dict.begin(), dict.end(), x, [](const std::string &a, std::string_view b) { return std::string_view(a) < b; }) - dict.begin());
+        };
+        for (int qn = 0; qn < 25; ++qn) {
+            std::string w;
+            const int len = 1 + static_cast<int>(r.below(8));
+            for (int i = 0; i < len; ++i) w += ALPHA[r.below(8)];
+            const int edits = 1 + static_cast<int>(r.below(2));
+            std::vector<std::uint32_t> wc, tc;
+            to_code_points(w, wc);
+            const std::size_t plen = r.below(3);
+            std::string pre;
+            {
+                std::size_t b = 0, cps = 0;
+                while (b < w.size() && cps < plen) { ++b; while (b < w.size() && (static_cast<unsigned char>(w[b]) & 0xC0) == 0x80) ++b; ++cps; }
+                pre = w.substr(0, b);
+            }
+            std::map<std::string, int> want, got;
+            for (auto &t : dict) {
+                if (t.compare(0, pre.size(), pre) != 0) continue;
+                to_code_points(t, tc);
+                const int d = bounded_osa_distance(wc, tc, edits);
+                if (d <= edits) want[t] = d;
+            }
+            fuzzy_terms(static_cast<std::uint32_t>(dict.size()), term, lb, wc, edits, pre,
+                        [&](std::uint32_t, std::string_view t, int d) { got[std::string(t)] = d; });
+            CHECK(want == got);
+            ++checked;
+        }
+    }
+    std::printf("%d fuzzy expansions equal to the brute force\n", checked);
+}
+
 int main()
 {
     single_segment();
@@ -449,6 +547,7 @@ int main()
     slices();
     sloppy_phrase();
     prefix_wildcard_fuzzy();
+    test_fuzzy_terms();
     std::printf("%d query comparisons\n", compared);
     return finish("test_search");
 }

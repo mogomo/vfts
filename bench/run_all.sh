@@ -39,6 +39,8 @@ queries_of() {   # dataset -> "file throughput_file extra_args"
 }
 mode_of() { case $1 in wiki_he|wiki_ar) echo exact ;; *) echo stem ;; esac; }   # the engines have no equivalent Hebrew / Arabic stemmer
 lang_of() { case $1 in wiki_he) echo he ;; wiki_ar) echo ar ;; *) echo en ;; esac; }
+# Wikipedia articles quote Chinese / Japanese words: index them unstemmed, as the ICU tokenizer of the engines does
+opts_of() { case $1 in wiki_he|wiki_ar) echo "lang=$(lang_of "$1") on_unsupported=plain" ;; *) echo "lang=$(lang_of "$1")" ;; esac; }
 
 step_env() {
     python3 - > "$R/env.json" <<EOF
@@ -70,7 +72,7 @@ run_vt() {   # dataset clients run_file
     read -r qf qx extra <<< "$(queries_of "$ds")"
     local q=$qf; [ "$c" -gt 1 ] && q=$qx
     timeout 7200 python3 -I bench/run_vertica.py "$ds" bench "$q" --clients "$c" --repeat "$REPEAT" --mode "$(mode_of "$ds")" \
-        --param max_expansions=100000 ${extra:-} ${run:+--run "$run"} | tee -a "$R/vtext_query.jsonl"
+        --param max_expansions=100000 ${extra:-} ${run:+--run "$run" --times "${run%.run}.times"} | tee -a "$R/vtext_query.jsonl"
 }
 
 run_eng() {   # engine dataset clients run_file
@@ -78,16 +80,20 @@ run_eng() {   # engine dataset clients run_file
     read -r qf qx extra <<< "$(queries_of "$ds")"
     local q=$qf; [ "$c" -gt 1 ] && q=$qx
     timeout 7200 python3 -I bench/run_engines.py "$e" "$ds" "$q" --clients "$c" --repeat "$REPEAT" --mode "$(mode_of "$ds")" \
-        --lang "$(lang_of "$ds")" ${extra:-} ${run:+--run "$run"} | tee -a "$R/${e}_query.jsonl"
+        --lang "$(lang_of "$ds")" ${extra:-} ${run:+--run "$run" --times "${run%.run}.times"} | tee -a "$R/${e}_query.jsonl"
 }
 
 step_vtext() {
     bench/engines/engines.sh stop all
     for ds in $SETS; do
         log "vtext: load $ds"
-        timeout 10000 bench/load_vertica.sh "$ds" "lang=$(lang_of "$ds")" | tee -a "$R/vtext_load.jsonl"
+        timeout 10000 bench/load_vertica.sh "$ds" "$(opts_of "$ds")" | tee -a "$R/vtext_load.jsonl"
         log "vtext: queries $ds"
         run_vt "$ds" 1 "$OUT/vtext_$ds.run"
+        # the answers on the scale of Elasticsearch (bm25='classic'), to compare them with its own
+        read -r qf qx extra <<< "$(queries_of "$ds")"
+        timeout 3600 python3 -I bench/run_vertica.py "$ds" bench "$qf" --repeat 1 --warmup 0 --mode "$(mode_of "$ds")" \
+            --param max_expansions=100000 --param "bm25='classic'" ${extra:-} --run "$OUT/vtext_${ds}_classic.run" > /dev/null
         run_vt "$ds" 32 ""
         read -r qf qx extra <<< "$(queries_of "$ds")"
         [ "$ds" != msmarco ] && timeout 3600 python3 -I bench/run_vertica.py "$ds" bench "$qf" --count --repeat 1 --warmup 0 \

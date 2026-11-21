@@ -122,6 +122,75 @@ def count_agreement(ds, other):
     return same, len(ra)
 
 
+def read_run(path):
+    """qid -> [(doc_id, score)] in rank order."""
+    out = {}
+    if not os.path.exists(path):
+        return None
+    for l in open(path):
+        p = l.rstrip("\n").split("\t")
+        if len(p) >= 4:
+            out.setdefault(p[0], []).append((p[1], float(p[3])))
+    return out
+
+
+def top_agreement(ds, other):
+    """The top 10 of vtext against an engine. Elasticsearch is compared with the vtext run with
+    bm25='classic' (its scale), OpenSearch with the default run. "Same scores": at every rank the
+    score is the same (relative difference at most 1e-4). "Same documents": the documents above the
+    10th score are the same (documents tied with the 10th may differ: the engines break ties
+    differently). Score difference: over the documents both returned."""
+    mine = os.path.join(OUT, f"vtext_{ds}_classic.run" if other == "es" else f"vtext_{ds}.run")
+    a, b = read_run(mine), read_run(os.path.join(OUT, f"{other}_{ds}.run"))
+    if not a or b is None:
+        return None
+    q = same_scores = same_docs = 0
+    diffs = []
+    for qid in set(a) | set(b):
+        x, y = a.get(qid, []), b.get(qid, [])
+        q += 1
+        same_scores += len(x) == len(y) and all(abs(p[1] - r[1]) <= 1e-4 * max(abs(p[1]), 1e-9) for p, r in zip(x, y))
+        cut_x = x[-1][1] if len(x) >= 10 else -1.0
+        cut_y = y[-1][1] if len(y) >= 10 else -1.0
+        above_x = set(d for d, sc in x if sc > cut_x * (1 + 1e-4))
+        above_y = set(d for d, sc in y if sc > cut_y * (1 + 1e-4))
+        same_docs += above_x == above_y
+        ys = dict(y)
+        for d, sc in x:
+            if d in ys and sc > 0:
+                diffs.append(abs(ys[d] - sc) / sc)
+    diffs.sort()
+    return {"queries": q, "same_scores": same_scores, "same_docs": same_docs,
+            "median_rel": diffs[len(diffs) // 2] if diffs else None, "max_rel": diffs[-1] if diffs else None}
+
+
+def kind_of(query):
+    """The operator that decides the cost of a query of the syntax sets."""
+    import re
+    if re.search(r"~\d?(\s|$|\))", query) and '"' not in query.split("~")[0][-1:]:
+        return "fuzzy"
+    if "*" in query or "?" in query:
+        return "prefix / wildcard"
+    if re.search(r"\b(w|pre)/\d+", query):
+        return "w/N, pre/N"
+    if '"' in query:
+        return "phrase"
+    if re.search(r"\b(AND|OR|NOT)\b|^-|\s-", query):
+        return "boolean"
+    return "words"
+
+
+def read_times(path):
+    if not os.path.exists(path):
+        return None
+    out = {}
+    for l in open(path):
+        p = l.rstrip("\n").split("\t")
+        if len(p) >= 3 and p[2] != "inf":
+            out[p[0]] = float(p[2])
+    return out
+
+
 def main():
     os.makedirs(CHARTS, exist_ok=True)
     env = json.load(open(os.path.join(RES, "env.json"))) if os.path.exists(os.path.join(RES, "env.json")) else {}
@@ -208,6 +277,66 @@ def main():
                 rows.append(f"| {name} | {oname} | {a[0]} of {a[1]} |")
     if rows:
         md += ["## Same matches (counts per query, syntax queries)", "", "| Dataset | Engine | Queries with the same count as vtext |", "|---|---|---:|"] + rows + [""]
+
+
+    # agreement of the top 10
+    rows = []
+    for ds, name in SETS:
+        for o, oname in ENGINES[1:]:
+            a = top_agreement(ds, o)
+            if a:
+                med = "-" if a["median_rel"] is None else f"{a['median_rel']:.1e}"
+                mx = "-" if a["max_rel"] is None else f"{a['max_rel']:.1e}"
+                rows.append(f"| {name} | {oname} | {a['queries']} | {a['same_scores']} | {a['same_docs']} | {med} | {mx} |")
+    if rows:
+        md += ["## Same answers (top 10)", "",
+               "Elasticsearch against vtext with `bm25='classic'` (the scale of Elasticsearch), OpenSearch against vtext's default. "
+               "Same scores: the score at every rank is the same (relative difference at most 1e-4). Same documents: the documents "
+               "scored above the 10th are the same (documents tied with the 10th may differ: each engine breaks ties its own way). "
+               "Score difference: relative, over the documents both engines returned.", "",
+               "| Dataset | Engine | Queries | Same scores | Same documents | Score difference, median | Score difference, max |",
+               "|---|---|---:|---:|---:|---:|---:|"] + rows + [""]
+
+    # latency per kind of query (syntax sets, 1 client, client round trip)
+    kinds = {}
+    wins = {e: [0, 0] for e, _ in ENGINES[1:]}
+    slow = []
+    for ds, name in SETS[1:]:
+        qpath = os.path.join(HERE, "queries", f"{ds}.tsv")
+        t = {e: read_times(os.path.join(OUT, f"{e}_{ds}.times")) for e, _ in ENGINES}
+        if not os.path.exists(qpath) or not t["vtext"]:
+            continue
+        for l in open(qpath, encoding="utf-8"):
+            qid, _, text = l.rstrip("\n").partition("\t")
+            if qid not in t["vtext"]:
+                continue
+            k = kind_of(text)
+            for e, _ in ENGINES:
+                if t[e] and qid in t[e]:
+                    kinds.setdefault(k, {}).setdefault(e, []).append(t[e][qid])
+            for e, _ in ENGINES[1:]:
+                if t[e] and qid in t[e]:
+                    wins[e][0] += t["vtext"][qid] < t[e][qid]
+                    wins[e][1] += 1
+                    if t[e][qid] < t["vtext"][qid]:
+                        slow.append((t["vtext"][qid] - t[e][qid], name, text, e, t["vtext"][qid], t[e][qid]))
+    if kinds:
+        md += ["## Latency by kind of query (Enron, PubMed, Wikipedia; 1 client, client round trip, mean ms)", "",
+               "| Kind | Queries | " + " | ".join(n for _, n in ENGINES) + " |", "|---|---:|" + "---:|" * len(ENGINES)]
+        for k in ("words", "boolean", "phrase", "w/N, pre/N", "prefix / wildcard", "fuzzy"):
+            if k in kinds:
+                v = kinds[k]
+                md.append(f"| {k} | {len(v.get('vtext', []))} | " + " | ".join(
+                    fmt(sum(v[e]) / len(v[e]), 2) if v.get(e) else "-" for e, _ in ENGINES) + " |")
+        md.append("")
+        md += ["Queries where vtext is faster: " + ", ".join(f"{wins[e][0]} of {wins[e][1]} against {n}" for e, n in ENGINES[1:] if wins[e][1]) + ".", ""]
+        slow.sort(reverse=True)
+        if slow:
+            md += ["Queries where an engine is faster than vtext, the largest differences first:", "",
+                   "| Dataset | Query | Engine | vtext (ms) | Engine (ms) |", "|---|---|---|---:|---:|"]
+            for d, name, text, e, a, b in slow[:15]:
+                md.append(f"| {name} | `{text}` | {dict(ENGINES)[e]} | {fmt(a, 2)} | {fmt(b, 2)} |")
+            md.append("")
 
     # refresh
     ref = jsonl("vtext_refresh.jsonl")

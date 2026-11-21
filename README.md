@@ -355,7 +355,7 @@ Many queries in one statement: add query rows `(qid, query)` to the view's rows:
                          UNION ALL SELECT 2, 'holmes', NULL, NULL, NULL, NULL, NULL) i) r
     ORDER BY qid, rank;
 
-Session defaults: `ALTER SESSION SET UDPARAMETER FOR vtext mode = 'exact';` (any parameter except
+Session defaults: `ALTER SESSION SET UDPARAMETER FOR vtext.vtext mode = 'exact';` (any parameter except
 index and query).
 
 #### tcount

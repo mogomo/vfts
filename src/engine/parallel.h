@@ -1,11 +1,17 @@
 // A process-wide pool of worker threads for searching segments in parallel. The calling thread
 // takes part (so a query never waits for a busy pool), and helpers from the pool take the other
 // items. Worker threads run engine code only, never the Vertica SDK.
+//
+// The threads live as long as the process. Vertica unloads a UDx library when it is replaced
+// (CREATE OR REPLACE LIBRARY) or dropped; in an unfenced process the threads of the old copy would
+// then run code that is no longer mapped. So the library that holds the pool is pinned in memory
+// (RTLD_NODELETE) when the pool starts: an old copy stays mapped, with its threads asleep.
 #ifndef VTEXT_ENGINE_PARALLEL_H
 #define VTEXT_ENGINE_PARALLEL_H
 
 #include <atomic>
 #include <condition_variable>
+#include <dlfcn.h>
 #include <cstddef>
 #include <deque>
 #include <exception>
@@ -72,7 +78,15 @@ private:
 
     explicit Pool(unsigned threads) : size_(threads)
     {
+        pin_library();
         for (unsigned i = 0; i < threads; ++i) std::thread([this] { loop(); }).detach();
+    }
+
+    static void pin_library()
+    {
+        Dl_info info;
+        if (dladdr(reinterpret_cast<void *>(&Pool::instance), &info) && info.dli_fname)
+            (void)dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE);   // the handle is kept on purpose
     }
 
     static void work(Job &j)
