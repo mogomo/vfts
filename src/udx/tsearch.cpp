@@ -10,6 +10,7 @@
 //   only gen set               the sentinel: the generation the view belongs to (stale check)
 // Output: tsearch (qid, doc_id, score, rank), best first; tcount (qid, count).
 #include "udx_common.h"
+#include "search_options.h"
 #include "../engine/builder.h"
 #include "../engine/search.h"
 
@@ -108,56 +109,35 @@ private:
             searcher.add_tail(std::make_shared<const std::string>(b.finish(-1)));
         }
 
-        vtext::SearchOptions o;
-        // mode= is the parameter to use; MATCH is a reserved word in Vertica, so "match"= (quoted)
-        // is accepted as well.
-        if (s.has("mode") && s.has("match")) fail("give mode or \"match\", not both");
-        const std::string match = s.has("mode") ? s.text("mode", "stem") : s.text("match", "stem");
-        if (match == "stem") o.match = vtext::MatchMode::Stem;
-        else if (match == "exact") o.match = vtext::MatchMode::Exact;
-        else fail("mode must be 'stem' or 'exact', not '" + match + "'");
-        if (s.has("lang")) o.query.lang = vtext::parse_lang(s.text("lang", ""));
-        const std::string op = s.text("operator", "or");
-        if (op == "and" || op == "AND") o.query.op_and = true;
-        else if (op != "or" && op != "OR") fail("operator must be 'or' or 'and', not '" + op + "'");
-        o.query.stopwords = s.boolean("stopwords", false);
-        const std::string bm25 = s.text("bm25", "lucene");
-        if (bm25 == "classic") o.classic = true;
-        else if (bm25 != "lucene") fail("bm25 must be 'lucene' (the scores of OpenSearch) or 'classic' (times k1 + 1: the scores of Elasticsearch)");
-        const std::string syntax = s.text("syntax", "query");
-        if (syntax == "plain") o.query.plain = true;
-        else if (syntax != "query") fail("syntax must be 'query' or 'plain', not '" + syntax + "'");
-        const std::int64_t k = s.integer("k", 10);
-        if (k < 1 || k > 1000000) fail("k must be 1 to 1000000");
-        o.k = static_cast<std::uint32_t>(k);
-        const std::int64_t pl = s.integer("prefix_length", 0);
-        if (pl < 0 || pl > 100) fail("prefix_length must be 0 to 100");
-        o.prefix_length = static_cast<int>(pl);
-        const std::int64_t me = s.integer("max_expansions", 50);
-        if (me < 1 || me > 100000) fail("max_expansions must be 1 to 100000");
-        o.max_expansions = static_cast<std::uint32_t>(me);
-        std::int64_t th = s.integer("threads", 0);
-        if (th < 0 || th > 256) fail("threads must be 0 (automatic) to 256");
-        // 0: one thread per core; large segments are cut into slices of documents (search.h)
-        if (th == 0) th = std::max<std::int64_t>(1, std::thread::hardware_concurrency());
-        o.threads = static_cast<int>(th);
+        vtext::SearchOptions o = parse_search_options(s);
 
-        for (auto &q : queries) {
+        // A batch runs its queries in parallel (one thread each, results kept in query order), in
+        // chunks so that a cancel is seen between them.
+        const std::size_t chunk = std::max<std::size_t>(64, static_cast<std::size_t>(o.threads) * 4);
+        for (std::size_t at = 0; at < queries.size(); at += chunk) {
             if (isCanceled()) return;
+            const std::size_t end = std::min(queries.size(), at + chunk);
+            std::vector<std::string> texts;
+            texts.reserve(end - at);
+            for (std::size_t i = at; i < end; ++i) texts.push_back(queries[i].second);
             if (counting_) {
-                const std::uint64_t n = searcher.count(q.second, o);
-                out.setInt(0, q.first);
-                out.setInt(1, static_cast<vint>(n));
-                out.next();
-            } else {
-                const auto hits = searcher.search(q.second, o);
-                vint rank = 0;
-                for (const vtext::Hit &h : hits) {
-                    out.setInt(0, q.first);
-                    out.setInt(1, h.doc_id);
-                    out.setFloat(2, h.score);
-                    out.setInt(3, ++rank);
+                const std::vector<std::uint64_t> n = searcher.count_many(texts, o);
+                for (std::size_t i = at; i < end; ++i) {
+                    out.setInt(0, queries[i].first);
+                    out.setInt(1, static_cast<vint>(n[i - at]));
                     out.next();
+                }
+            } else {
+                const std::vector<std::vector<vtext::Hit>> hits = searcher.search_many(texts, o);
+                for (std::size_t i = at; i < end; ++i) {
+                    vint rank = 0;
+                    for (const vtext::Hit &h : hits[i - at]) {
+                        out.setInt(0, queries[i].first);
+                        out.setInt(1, h.doc_id);
+                        out.setFloat(2, h.score);
+                        out.setInt(3, ++rank);
+                        out.next();
+                    }
                 }
             }
         }
@@ -195,18 +175,7 @@ public:
         p.addVarchar(128, "index");
         p.addVarchar(65000, "query");
         p.addLongVarchar(32000000, "queries");
-        p.addInt("k");
-        p.addVarchar(16, "mode");
-        p.addVarchar(16, "match");
-        p.addVarchar(16, "lang");
-        p.addVarchar(8, "operator");
-        p.addBool("stopwords");
-        p.addVarchar(16, "syntax");
-        p.addVarchar(16, "bm25");
-        p.addInt("prefix_length");
-        p.addInt("max_expansions");
-        p.addInt("threads");
-        p.addVarchar(1024, "cache_dir");
+        add_search_parameters(p);
     }
     TransformFunction *createTransformFunction(ServerInterface &srv) override
     {

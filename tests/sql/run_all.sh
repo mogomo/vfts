@@ -3,7 +3,7 @@
 # drops its own schema and index (vt_*). Stops at the first failing test.
 set -uo pipefail
 cd "$(dirname "$0")"
-for t in test_tokenize test_search test_languages test_freshness test_snippet_hybrid; do
+for t in test_tokenize test_search test_languages test_freshness test_snippet_hybrid test_serve; do
     ./$t.sh || { echo "FAILED: $t"; exit 1; }
 done
 echo "All SQL tests passed."

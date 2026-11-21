@@ -65,6 +65,13 @@ public:
         if (job->error) std::rethrow_exception(job->error);
     }
 
+    // The threads a new call asking for `want` would get now (its fair share of the pool).
+    std::size_t share(std::size_t want) const
+    {
+        const std::size_t r = static_cast<std::size_t>(std::max(running_.load(), 0)) + 1;
+        return std::max<std::size_t>(1, std::min(want, size_ / r));
+    }
+
 private:
     struct Job {
         std::atomic<std::size_t> next{0};

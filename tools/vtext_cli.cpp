@@ -7,6 +7,9 @@
 //   vtext_cli search <cache_dir> <index> <queries.tsv> [--k 10] [--threads N] [--mode stem|exact]
 //                    [--repeat R] [--run out.tsv] [--no-pruning] [--count] [--plain] [--and]
 //                    [--max-expansions 50] [--prefix-length 0] [--classic] [--stats]
+//                    [--clients C]   C concurrent searchers, prints one JSON line with q/s
+//                    [--batch B]     each searcher sends B queries at a time (search_many)
+//                    [--times out.tsv]  per query: qid, best ms, and (with --stats) plan us, execute us
 //
 // docs.dat: records "doc_id \x01 lang \x01 body \x02" (bench/data/prepare.py). queries.tsv: qid \t query.
 // search prints the latency of every query over R runs (best run per query) as percentiles, and
@@ -185,7 +188,68 @@ static int search(int argc, char **argv)
         qs.emplace_back(line.substr(0, tab), line.substr(tab + 1));
     }
     std::vector<double> best(qs.size(), 1e9);
+    const int clients = std::atoi(opt(argc, argv, "--clients", "1"));
+    if (clients > 1 || std::atoi(opt(argc, argv, "--batch", "1")) > 1) {
+        // C concurrent searchers, one query at a time each (no SQL, no network): the ceiling of
+        // the engine for C clients. One warm-up run, then R measured runs; best q/s is printed.
+        o.stats = nullptr;
+        std::vector<std::atomic<double>> bq(qs.size());
+        for (auto &b : bq) b.store(1e9);
+        double best_qps = 0;
+        std::atomic<std::size_t> errs{0};
+        for (int r = 0; r <= repeat; ++r) {
+            std::atomic<std::size_t> next{0};
+            const auto t0 = Clock::now();
+            std::vector<std::thread> th;
+            const std::size_t batch = static_cast<std::size_t>(std::max(1, std::atoi(opt(argc, argv, "--batch", "1"))));
+            for (int c = 0; c < clients && batch > 1; ++c)
+                th.emplace_back([&] {
+                    // B queries per call of search_many (the tsearch batch path)
+                    for (std::size_t i; (i = next.fetch_add(batch)) < qs.size();) {
+                        const std::size_t e = std::min(qs.size(), i + batch);
+                        std::vector<std::string> texts;
+                        for (std::size_t j = i; j < e; ++j) texts.push_back(qs[j].second);
+                        const auto q0 = Clock::now();
+                        try {
+                            Searcher s(ao, li->refs);
+                            if (counting) (void)s.count_many(texts, o);
+                            else (void)s.search_many(texts, o);
+                        } catch (const std::exception &) { ++errs; }
+                        const double ms = secs(q0) * 1000.0 / static_cast<double>(e - i);
+                        for (std::size_t j = i; j < e; ++j) if (r > 0 && ms < bq[j].load()) bq[j].store(ms);
+                    }
+                });
+            for (int c = 0; c < clients && batch == 1; ++c)
+                th.emplace_back([&] {
+                    for (std::size_t i; (i = next++) < qs.size();) {
+                        const auto q0 = Clock::now();
+                        try {
+                            Searcher s(ao, li->refs);
+                            if (counting) (void)s.count(qs[i].second, o);
+                            else (void)s.search(qs[i].second, o);
+                        } catch (const std::exception &) { ++errs; }
+                        const double ms = secs(q0) * 1000.0;
+                        if (r > 0 && ms < bq[i].load()) bq[i].store(ms);
+                    }
+                });
+            for (auto &t : th) t.join();
+            if (r > 0) best_qps = std::max(best_qps, qs.size() / secs(t0));
+        }
+        std::vector<double> v;
+        for (auto &b : bq) v.push_back(b.load());
+        std::sort(v.begin(), v.end());
+        double sum = 0;
+        for (double x : v) sum += x;
+        auto pct = [&](double p) { return v.empty() ? 0.0 : v[std::min(v.size() - 1, static_cast<std::size_t>(p * v.size()))]; };
+        std::printf("{\"engine\": \"vtext_cli\", \"index\": \"%s\", \"queries\": %zu, \"clients\": %d, \"threads\": %d, \"errors\": %zu, "
+                    "\"ms\": {\"mean\": %.3f, \"p50\": %.3f, \"p90\": %.3f, \"p99\": %.3f, \"max\": %.3f}, \"qps_best\": %.1f}\n",
+                    index.c_str(), qs.size(), clients, o.threads, errs.load() / static_cast<std::size_t>(repeat + 1),
+                    v.empty() ? 0 : sum / v.size(), pct(0.5), pct(0.9), pct(0.99), v.empty() ? 0 : v.back(), best_qps);
+        return 0;
+    }
     std::FILE *out = run ? std::fopen(run, "w") : nullptr;
+    const char *times = opt(argc, argv, "--times", nullptr);
+    std::vector<double> bplan(qs.size(), 0), bexec(qs.size(), 0);     // of the best run of each query
     std::size_t errors = 0;
     for (int r = 0; r < repeat; ++r) {
         for (std::size_t i = 0; i < qs.size(); ++i) {
@@ -204,7 +268,11 @@ static int search(int argc, char **argv)
             } catch (const std::exception &e) {
                 if (r == 0 && errors++ < 5) std::fprintf(stderr, "query %s: %s\n", qs[i].first.c_str(), e.what());
             }
-            best[i] = std::min(best[i], secs(t0) * 1000.0);
+            const double ms = secs(t0) * 1000.0;
+            if (ms < best[i]) {
+                best[i] = ms;
+                if (o.stats) { bplan[i] = st.plan_us - last.plan_us; bexec[i] = st.exec_us - last.exec_us; }
+            }
             if (slow > 0 && r == 0 && secs(t0) * 1000.0 > slow && o.stats)
                 std::printf("slow %.1f ms: %s | cand %llu scored %llu skip %llu probes %llu\n", secs(t0) * 1000.0, qs[i].second.c_str(),
                             (unsigned long long)(st.candidates - last.candidates), (unsigned long long)(st.scored - last.scored),
@@ -213,6 +281,12 @@ static int search(int argc, char **argv)
         }
     }
     if (out) std::fclose(out);
+    if (times) {
+        std::FILE *tf = std::fopen(times, "w");
+        for (std::size_t i = 0; tf && i < qs.size(); ++i)
+            std::fprintf(tf, "%s\t%.4f\t%.1f\t%.1f\n", qs[i].first.c_str(), best[i], bplan[i], bexec[i]);
+        if (tf) std::fclose(tf);
+    }
     std::vector<double> v = best;
     std::sort(v.begin(), v.end());
     double sum = 0;

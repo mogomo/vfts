@@ -428,6 +428,39 @@ static void slices()
     }
 }
 
+// A batch (search_many / count_many, queries in parallel) gives what the queries give one by one.
+static void batches()
+{
+    Rng r(31);
+    SegmentBuilder b(aopts());
+    for (int i = 0; i < 150000; ++i) {
+        std::string t;
+        for (int k = 0; k < 6; ++k) t += std::string(VOCAB[r.below(NV)]) + " ";
+        b.add(i * 7, t);
+    }
+    const std::string bytes = b.finish(1);
+    Segment seg(bytes.data(), bytes.size());
+    Rng rq(32);
+    std::vector<std::string> qs;
+    for (int k = 0; k < 90; ++k) qs.push_back(rand_query(rq, 1 + k % 3));
+    for (int threads : {1, 4, 16}) {
+        Searcher one(aopts(), {SegmentRef{&seg, nullptr, nullptr}}), many(aopts(), {SegmentRef{&seg, nullptr, nullptr}});
+        SearchOptions o;
+        o.k = 15;
+        o.threads = threads;
+        const auto got = many.search_many(qs, o);
+        const auto cnt = many.count_many(qs, o);
+        CHECK(got.size() == qs.size() && cnt.size() == qs.size());
+        for (std::size_t i = 0; i < qs.size(); ++i) {
+            const auto x = one.search(qs[i], o);
+            bool same = x.size() == got[i].size();
+            for (std::size_t j = 0; same && j < x.size(); ++j) same = x[j].doc_id == got[i][j].doc_id && x[j].score == got[i][j].score;
+            if (!same || one.count(qs[i], o) != cnt[i]) { ++failures; std::printf("FAIL batch changes the result of %s\n", qs[i].c_str()); }
+            ++compared;
+        }
+    }
+}
+
 static void sloppy_phrase()
 {
     // Lucene's sloppy phrase: matchLength = |(p1 - 1) - p0| for two words; freq = sum 1/(1+len)
@@ -545,6 +578,7 @@ int main()
     single_segment();
     many_segments();
     slices();
+    batches();
     sloppy_phrase();
     prefix_wildcard_fuzzy();
     test_fuzzy_terms();

@@ -15,6 +15,7 @@
     --times FILE       write the time of every query: qid, server ms, client ms (best of the runs)
     --batch B          B queries per request (_msearch); times per query are the request's time
                        divided by B (the counterpart of run_vertica.py --batch)
+    --dump FILE        write the requests ("path<TAB>body" lines, for tools/httpload) and stop
     --cli PATH         vtext_cli (default build/tools/vtext_cli): parses the query syntax, so that
                        the engines get exactly the query vtext runs (see translate())
 
@@ -181,6 +182,16 @@ def main():
         # one _msearch request per batch of consecutive queries; its time is shared by them
         groups = [list(range(i, min(i + batch, n))) for i in range(0, n, batch)]
         mreqs = [(f"/{index}/_msearch", "".join(json.dumps({}) + "\n" + json.dumps(reqs[i][1]) + "\n" for i in g)) for g in groups]
+    dump = arg("--dump")
+    if dump:
+        with open(dump, "w", encoding="utf-8") as f:
+            if batch > 1:
+                for path, body in mreqs:
+                    f.write(path + "\t" + body.rstrip("\n").replace("\n", "\x1e") + "\n")
+            else:
+                for path, body in reqs:
+                    f.write(path + "\t" + json.dumps(body) + "\n")
+        return
     took = [1e18] * n
     client = [1e18] * n
     errors = [0]

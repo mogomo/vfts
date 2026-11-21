@@ -172,11 +172,21 @@ struct It {
     // by start, then end
     virtual void lspans(std::vector<LSpan> &) {}
     virtual std::uint64_t cost() const = 0;
+    // At most how many spans (lspans) the current document gives; ~0u: not known. Bounds the
+    // frequency of a phrase or w/N, whose matches each count at most 1.
+    virtual std::uint32_t max_spans() { return ~0u; }
+    // Top level only (set by the collector): the score a document must reach to enter the top k.
+    // Phrases and w/N skip reading positions of documents whose bound stays below it.
+    double threshold = -1e300;
 };
 
 // The documents of one leaf: one term, or the union of several (stem group, expansion).
 struct LeafIt : It {
     std::vector<PostingIter> its;
+    // A word of a stem group (several terms): the documents and summed tfs come from the group's
+    // own list (grp, one list instead of one per form); the forms' lists in its are moved only to
+    // read the positions of a document.
+    std::vector<PostingIter> grp;
     float weight = 0;
     bool constant = false;
     Scoring sc;
@@ -186,12 +196,14 @@ struct LeafIt : It {
     {
         if (positioned && (doc == NO_DOC || doc >= target)) return doc;
         positioned = true;
+        if (!grp.empty()) return doc = grp[0].advance(target);
         std::uint32_t m = NO_DOC;
         for (PostingIter &p : its) m = std::min(m, p.advance(target));
         return doc = m;
     }
     std::uint32_t tf() const
     {
+        if (!grp.empty()) return grp[0].doc() == doc ? grp[0].tf() : 0;
         std::uint32_t f = 0;
         for (const PostingIter &p : its) if (p.doc() == doc) f += p.tf();
         return f;
@@ -203,12 +215,15 @@ struct LeafIt : It {
         const float norm_inverse = sc.cache[sc.norms[doc]];
         return weight - weight / (1.0f + freq * norm_inverse);
     }
+    std::uint32_t max_spans() override { return tf(); }
     void positions(std::vector<std::uint32_t> &out)
     {
         out.clear();
         std::size_t parts = 0;
-        for (PostingIter &p : its)
+        for (PostingIter &p : its) {
+            if (!grp.empty()) p.advance(doc);     // never backwards; a no-op when already there
             if (p.doc() == doc) { p.positions(out); ++parts; }
+        }
         if (parts > 1) std::sort(out.begin(), out.end());
     }
     void spans(std::vector<Span> &out) override
@@ -223,10 +238,33 @@ struct LeafIt : It {
     }
     std::uint64_t cost() const override
     {
+        if (!grp.empty()) return grp[0].df();
         std::uint64_t c = 0;
         for (const PostingIter &p : its) c += p.df();
         return c;
     }
+};
+
+// The documents of a constant-score pattern with many terms (prefix / wildcard / fuzzy outside
+// w/N), collected once into a bit set: one cheap list instead of advancing every term's list at
+// every step (Lucene rewrites such patterns into a bit set as well). Score 1, like the leaf.
+struct SetIt : It {
+    std::vector<std::uint64_t> bits;
+    std::uint32_t n = 0;
+    std::uint64_t count = 0;
+    std::uint32_t advance(std::uint32_t target) override
+    {
+        if (positioned && (doc == NO_DOC || doc >= target)) return doc;
+        positioned = true;
+        if (target >= n) return doc = NO_DOC;
+        std::size_t w = target >> 6;
+        std::uint64_t x = bits[w] & (~0ull << (target & 63));
+        while (!x) { if (++w >= bits.size()) return doc = NO_DOC; x = bits[w]; }
+        return doc = static_cast<std::uint32_t>(w * 64 + static_cast<std::size_t>(__builtin_ctzll(x)));
+    }
+    float score() override { return 1.0f; }
+    void spans(std::vector<Span> &) override {}
+    std::uint64_t cost() const override { return count; }
 };
 
 struct AllIt : It {
@@ -292,9 +330,24 @@ struct PhraseIt : It {
     {
         if (positioned && (doc == NO_DOC || doc >= target)) return doc;
         positioned = true;
-        for (std::uint32_t d = conjunction(conj, target); d != NO_DOC; d = conjunction(conj, d + 1))
+        for (std::uint32_t d = conjunction(conj, target); d != NO_DOC; d = conjunction(conj, d + 1)) {
+            if (threshold > -1e299) {
+                // the phrase occurs at most min(tf) times: when even that cannot reach the
+                // threshold, the positions are not read (the top k is the same)
+                std::uint32_t f = ~0u;
+                for (auto &s : slots) f = std::min(f, s->tf());
+                const float b = weight - weight / (1.0f + static_cast<float>(f) * sc.cache[sc.norms[d]]);
+                if (static_cast<double>(b) * (1.0 + 1e-6) < threshold) continue;
+            }
             if (verify()) return doc = d;
+        }
         return doc = NO_DOC;
+    }
+    std::uint32_t max_spans() override
+    {
+        std::uint64_t f = 0;
+        for (auto &x : slots) f += x->tf();
+        return static_cast<std::uint32_t>(std::min<std::uint64_t>(f, ~0u - 1));
     }
     bool verify()
     {
@@ -427,9 +480,23 @@ struct NearIt : It {
     {
         if (positioned && (doc == NO_DOC || doc >= target)) return doc;
         positioned = true;
-        for (std::uint32_t d = conjunction(conj, target); d != NO_DOC; d = conjunction(conj, d + 1))
+        for (std::uint32_t d = conjunction(conj, target); d != NO_DOC; d = conjunction(conj, d + 1)) {
+            if (threshold > -1e299) {
+                // every match counts at most 1, and there are at most spans(a) + spans(b) matches
+                const std::uint64_t f = static_cast<std::uint64_t>(a->max_spans()) + b->max_spans();
+                if (f < ~0u) {
+                    const float bd = weight - weight / (1.0f + static_cast<float>(f) * sc.cache[sc.norms[d]]);
+                    if (static_cast<double>(bd) * (1.0 + 1e-6) < threshold) continue;
+                }
+            }
             if (verify()) return doc = d;
+        }
         return doc = NO_DOC;
+    }
+    std::uint32_t max_spans() override
+    {
+        const std::uint64_t f = static_cast<std::uint64_t>(a->max_spans()) + b->max_spans();
+        return f >= ~0u ? ~0u : static_cast<std::uint32_t>(f);
     }
     bool verify()
     {
@@ -504,6 +571,18 @@ struct BoolIt : It {
         for (auto &x : should) if (x->advance(doc) == doc) x->spans(out);
     }
     // as a clause of w/N: the spans of the matching should clauses merged (Lucene's SpanOrQuery)
+    std::uint32_t max_spans() override
+    {
+        if (!must.empty() || !must_not.empty()) return ~0u;
+        std::uint64_t f = 0;
+        for (auto &x : should) {
+            if (x->advance(doc) != doc) continue;
+            const std::uint32_t m = x->max_spans();
+            if (m == ~0u) return ~0u;
+            f += m;
+        }
+        return f >= ~0u ? ~0u : static_cast<std::uint32_t>(f);
+    }
     void lspans(std::vector<LSpan> &out) override
     {
         const std::size_t before = out.size();
@@ -814,18 +893,32 @@ struct Searcher::Impl {
         std::unique_ptr<LeafIt> it(new LeafIt());
         const Leaf &L = leaves[l];
         for (std::uint32_t t : L.ids[si]) it->its.emplace_back(*segs[si], t);
+        if (L.stem_entry[si] >= 0 && L.ids[si].size() > 1)
+            it->grp.emplace_back(*segs[si], segs[si]->group_info(static_cast<std::uint32_t>(L.stem_entry[si])));
         it->weight = weight;
         it->constant = L.constant;
         it->sc = sc;
         return it;
     }
 
-    std::unique_ptr<It> build(std::size_t si, const PNode &p, const Scoring &sc)
+    std::unique_ptr<It> build(std::size_t si, const PNode &p, const Scoring &sc, bool spans = false)
     {
         switch (p.kind) {
         case QKind::None: return std::unique_ptr<It>(new EmptyIt());
         case QKind::Term: case QKind::Prefix: case QKind::Wildcard: case QKind::Fuzzy: {
-            if (leaves[p.leaves[0]].ids[si].empty()) return std::unique_ptr<It>(new EmptyIt());
+            const Leaf &L = leaves[p.leaves[0]];
+            if (L.ids[si].empty()) return std::unique_ptr<It>(new EmptyIt());
+            if (!spans && L.constant && L.ids[si].size() > 8) {
+                std::unique_ptr<SetIt> it(new SetIt());
+                it->n = segs[si]->n_docs();
+                it->bits.assign((it->n + 63) / 64, 0);
+                for (std::uint32_t t : L.ids[si]) {
+                    PostingIter pi(*segs[si], t);
+                    for (std::uint32_t d = pi.advance(0); d != NO_DOC; d = pi.next()) it->bits[d >> 6] |= 1ull << (d & 63);
+                }
+                for (std::uint64_t w : it->bits) it->count += static_cast<std::uint64_t>(__builtin_popcountll(w));
+                return std::unique_ptr<It>(it.release());
+            }
             return leaf_it(si, p.leaves[0], p.weight, sc);
         }
         case QKind::Phrase: {
@@ -844,8 +937,8 @@ struct Searcher::Impl {
         }
         case QKind::Near: {
             std::unique_ptr<NearIt> it(new NearIt());
-            it->a = build(si, p.kids[0], sc);
-            it->b = build(si, p.kids[1], sc);
+            it->a = build(si, p.kids[0], sc, true);
+            it->b = build(si, p.kids[1], sc, true);
             it->dist = p.dist;
             it->ordered = p.ordered;
             it->weight = p.weight;
@@ -857,16 +950,16 @@ struct Searcher::Impl {
             std::unique_ptr<BoolIt> it(new BoolIt());
             it->n_docs = segs[si]->n_docs();
             for (const PNode &k : p.must) {
-                std::unique_ptr<It> c = build(si, k, sc);
+                std::unique_ptr<It> c = build(si, k, sc, spans);
                 if (c->cost() == 0 && dynamic_cast<EmptyIt *>(c.get())) return std::unique_ptr<It>(new EmptyIt());
                 it->must.push_back(std::move(c));
             }
             for (const PNode &k : p.should) {
-                std::unique_ptr<It> c = build(si, k, sc);
+                std::unique_ptr<It> c = build(si, k, sc, spans);
                 if (!dynamic_cast<EmptyIt *>(c.get())) it->should.push_back(std::move(c));
             }
             for (const PNode &k : p.must_not) {
-                std::unique_ptr<It> c = build(si, k, sc);
+                std::unique_ptr<It> c = build(si, k, sc, spans);
                 if (!dynamic_cast<EmptyIt *>(c.get())) it->must_not.push_back(std::move(c));
             }
             if (it->must.empty() && it->should.empty() && !p.should.empty()) return std::unique_ptr<It>(new EmptyIt());
@@ -1138,6 +1231,108 @@ struct Searcher::Impl {
         }
     }
 
+    // Bound of a phrase's score in [ws, we]: for every length level (norm) n, a document of norm n
+    // has tf_t <= the largest tf among word t's impacts with norm <= n, and the phrase's frequency
+    // is at most the smallest of these over the words (Lucene merges phrase impacts the same way).
+    float phrase_bound(const std::vector<MLeaf> &b, float w, std::uint32_t ws, std::uint32_t we) const
+    {
+        struct Pair { std::uint8_t norm; std::uint32_t tf; };
+        std::vector<std::vector<Pair>> per(b.size());
+        for (std::size_t t = 0; t < b.size(); ++t) {
+            if (b[t].its.size() != 1) {     // a union of terms: the simpler bound
+                float x = std::numeric_limits<float>::infinity();
+                for (const MLeaf &m : b) x = std::min(x, m.range_bound(ws, we, cache));
+                return x;
+            }
+            std::vector<Pair> &v = per[t];
+            const bool ok = b[t].its[0].cover(ws, we, 8, [&](const Impacts &im) {
+                for (int i = 0; i < im.n; ++i) v.push_back({im.norm[i], im.tf[i]});
+            });
+            if (!ok) return b[t].ub;
+            if (v.empty()) return 0.0f;     // the word has no document here
+            std::sort(v.begin(), v.end(), [](const Pair &x, const Pair &y) { return x.norm < y.norm; });
+            for (std::size_t i = 1; i < v.size(); ++i) v[i].tf = std::max(v[i].tf, v[i - 1].tf);   // largest tf with norm <= n
+        }
+        float best = 0.0f;
+        for (std::size_t t = 0; t < per.size(); ++t)
+            for (const Pair &c : per[t]) {
+                std::uint32_t f = c.tf;
+                for (std::size_t u = 0; u < per.size() && f; ++u) {
+                    if (u == t) continue;
+                    const std::vector<Pair> &v = per[u];
+                    // largest tf of word u with norm <= c.norm
+                    std::size_t lo = 0, hi = v.size();
+                    while (lo < hi) { const std::size_t mid = (lo + hi) / 2; if (v[mid].norm <= c.norm) lo = mid + 1; else hi = mid; }
+                    f = std::min<std::uint32_t>(f, lo ? v[lo - 1].tf : 0);
+                }
+                if (f) best = std::max(best, w - w / (1.0f + static_cast<float>(f) * cache[c.norm]));
+            }
+        return best;
+    }
+
+    // Top k of a query that is not a disjunction of leaves, from slice [lo, hi) of segment si. A
+    // top-level phrase skips windows of documents whose bound is below the threshold: a phrase
+    // occurs in a document at most as often as each of its words, so with the phrase's weight the
+    // best score a word allows in the window (its impacts) bounds the phrase's score there, and the
+    // smallest of these bounds is the window's bound (Lucene skips phrase blocks with impacts too).
+    void scored(std::size_t si, const PNode &p, TopK &top, std::atomic<float> &shared, std::uint32_t lo, std::uint32_t hi)
+    {
+        const Segment &seg = *segs[si];
+        Scoring sc{cache, seg.norms()};
+        std::unique_ptr<It> root = build(si, p, sc);
+        std::vector<MLeaf> bounds;
+        if (o.pruning && (p.kind == QKind::Phrase || p.kind == QKind::Near) && !dynamic_cast<EmptyIt *>(root.get())) {
+            for (int l : p.leaves) {
+                if (l < 0) continue;
+                const Leaf &L = leaves[static_cast<std::size_t>(l)];
+                MLeaf x;
+                x.w = p.weight;
+                if (L.stem_entry[si] >= 0 && L.ids[si].size() > 1) x.its.emplace_back(seg, seg.group_info(static_cast<std::uint32_t>(L.stem_entry[si])));
+                else for (std::uint32_t t : L.ids[si]) x.its.emplace_back(seg, t);
+                x.ub = x.term_bound(cache);
+                bounds.push_back(std::move(x));
+            }
+        }
+        It *ph = o.pruning && (p.kind == QKind::Phrase || p.kind == QKind::Near) ? root.get() : nullptr;
+        if (!ph) {
+            for (std::uint32_t d = root->advance(lo); d < hi; d = root->next()) {
+                if (is_dead(si, d)) continue;
+                top.offer(root->score(), seg.doc_id(d));
+            }
+            return;
+        }
+        const double slack = 1.0 + 1e-6;
+        const std::uint32_t W = o.window ? o.window : 4096;
+        double th = -1e300;
+        for (std::uint32_t ws = lo; ws < hi;) {
+            const std::uint32_t we = hi - ws > W ? ws + W - 1 : hi - 1;
+            th = std::max<double>(th, shared.load(std::memory_order_relaxed));
+            if (th > -1e299 && !bounds.empty() && phrase_bound(bounds, p.weight, ws, we) * slack < th) { ws = we + 1; continue; }
+            if (ph) ph->threshold = th;
+            for (std::uint32_t d = root->advance(ws); d <= we; d = root->next()) {
+                if (is_dead(si, d)) continue;
+                top.offer(root->score(), seg.doc_id(d));
+                if (top.heap.size() >= top.k) {
+                    const float kth = top.heap.front().score;
+                    if (kth > th) { th = kth; if (ph) ph->threshold = th; }
+                    float cur = shared.load(std::memory_order_relaxed);
+                    while (kth > cur && !shared.compare_exchange_weak(cur, kth)) {}
+                }
+            }
+            ws = we + 1;
+        }
+    }
+
+    // Estimated work of a planned query: the postings it reads (positions count more).
+    double cost(const PNode &p) const
+    {
+        double c = 0;
+        for (int l : p.leaves) if (l >= 0) c += static_cast<double>(leaves[static_cast<std::size_t>(l)].df);
+        if (p.kind == QKind::Phrase || p.kind == QKind::Near) c *= 4;
+        for (const auto *v : {&p.must, &p.should, &p.must_not, &p.kids}) for (const PNode &k : *v) c += cost(k);
+        return c;
+    }
+
     // Work items: every segment, cut into slices of docnos so that one large segment is searched by
     // several threads too (each slice has its own top k; they share the threshold).
     struct Task { std::size_t si; std::uint32_t lo, hi; };
@@ -1147,7 +1342,7 @@ struct Searcher::Impl {
         std::uint64_t total = 0;
         for (const Segment *s : segs) total += s->n_docs();
         const std::size_t threads = static_cast<std::size_t>(std::max(o.threads, 1));
-        constexpr std::uint32_t MIN_SLICE = 65536, ALIGN = 8192;
+        constexpr std::uint32_t MIN_SLICE = 16384, ALIGN = 8192;
         for (std::size_t si = 0; si < segs.size(); ++si) {
             const std::uint32_t nd = segs[si]->n_docs();
             std::uint64_t k = total ? (threads * static_cast<std::uint64_t>(nd) + total - 1) / total : 1;
@@ -1262,7 +1457,23 @@ std::vector<Hit> Searcher::search(const std::string &query, const SearchOptions 
     prepare();
     if (opts.k == 0) return {};
     const QNode q = parse_query(query, *analyzer_, opts.query);
-    if (q.kind == QKind::None) return {};
+    return run_search(q, opts);
+}
+
+std::vector<Hit> Searcher::search(const std::string &query, const SearchOptions &opts, Analyzer &analyzer)
+{
+    if (!prepared_) throw std::runtime_error("searcher: ready() before searching from several threads");
+    if (opts.k == 0) return {};
+    return run_search(parse_query(query, analyzer, opts.query), opts);
+}
+
+std::vector<Hit> Searcher::run_search(const QNode &q, const SearchOptions &opts_in)
+{
+    if (q.kind == QKind::None || opts_in.k == 0) return {};
+    // the threads this query gets now (the pool's fair share), so that the documents are cut into
+    // that many slices only
+    SearchOptions opts = opts_in;
+    opts.threads = static_cast<int>(Pool::instance().share(static_cast<std::size_t>(std::max(opts.threads, 1))));
     const auto t_plan = std::chrono::steady_clock::now();
     Impl im(*this, opts);
     const PNode p = im.plan(q);
@@ -1275,19 +1486,10 @@ std::vector<Hit> Searcher::search(const std::string &query, const SearchOptions 
     im.each_task(tasks, [&](std::size_t ti) {
         const Impl::Task &t = tasks[ti];
         const std::size_t si = t.si;
-        const Segment &seg = *im.segs[si];
         TopK top(opts.k);
         if (t.hi > t.lo) {
-            if (fast) {
-                im.maxscore(si, p, top, shared, t.lo, t.hi);
-            } else {
-                Scoring sc{im.cache, seg.norms()};
-                std::unique_ptr<It> root = im.build(si, p, sc);
-                for (std::uint32_t d = root->advance(t.lo); d < t.hi; d = root->next()) {
-                    if (im.is_dead(si, d)) continue;
-                    top.offer(root->score(), seg.doc_id(d));
-                }
-            }
+            if (fast) im.maxscore(si, p, top, shared, t.lo, t.hi);
+            else im.scored(si, p, top, shared, t.lo, t.hi);
         }
         per[ti] = std::move(top.heap);
     });
@@ -1306,7 +1508,14 @@ std::uint64_t Searcher::count(const std::string &query, const SearchOptions &opt
 {
     prepare();
     const QNode q = parse_query(query, *analyzer_, opts.query);
+    return run_count(q, opts);
+}
+
+std::uint64_t Searcher::run_count(const QNode &q, const SearchOptions &opts_in)
+{
     if (q.kind == QKind::None) return 0;
+    SearchOptions opts = opts_in;
+    opts.threads = static_cast<int>(Pool::instance().share(static_cast<std::size_t>(std::max(opts.threads, 1))));
     Impl im(*this, opts);
     const PNode p = im.plan(q);
     const std::vector<Impl::Task> tasks = im.tasks();
@@ -1323,6 +1532,110 @@ std::uint64_t Searcher::count(const std::string &query, const SearchOptions &opt
     std::uint64_t total = 0;
     for (std::uint64_t c : per) total += c;
     return total;
+}
+
+// A batch: the queries are parsed here, one after another (the analyzer is not shared), planned in
+// parallel, and then every (query, slice of documents) piece of the whole batch is one work item
+// of the pool. A slow query is cut into slices like a query alone, so the batch takes about its
+// total work divided by the threads, not the time of its slowest query. Results in query order.
+std::vector<std::vector<Hit>> Searcher::search_many(const std::vector<std::string> &queries, const SearchOptions &opts)
+{
+    prepare();
+    std::vector<QNode> qs;
+    qs.reserve(queries.size());
+    for (const std::string &q : queries) qs.push_back(parse_query(q, *analyzer_, opts.query));
+    std::vector<std::vector<Hit>> out(qs.size());
+    if (qs.size() == 1) { out[0] = run_search(qs[0], opts); return out; }
+    if (opts.k == 0) return out;
+    const std::size_t threads = Pool::instance().share(static_cast<std::size_t>(std::max(opts.threads, 1)));
+    struct Prep {
+        SearchOptions o;
+        std::unique_ptr<Impl> im;
+        PNode p;
+        std::vector<Impl::Task> tasks;
+        std::vector<std::vector<Cand>> per;
+        std::atomic<float> shared{-std::numeric_limits<float>::infinity()};
+        bool fast = false, none = false;
+        double cost = 0;
+    };
+    std::vector<std::unique_ptr<Prep>> prep(qs.size());
+    for (std::size_t i = 0; i < qs.size(); ++i) {
+        prep[i].reset(new Prep);
+        prep[i]->o = opts;
+        prep[i]->o.threads = static_cast<int>(threads);     // slices as for a query alone
+        prep[i]->o.stats = nullptr;
+        prep[i]->none = qs[i].kind == QKind::None;
+    }
+    const std::function<void(std::size_t)> plan_fn = [&](std::size_t i) {
+        Prep &x = *prep[i];
+        if (x.none) return;
+        x.im.reset(new Impl(*this, x.o));
+        x.p = x.im->plan(qs[i]);
+        x.fast = x.o.pruning && Impl::disjunction_of_leaves(x.p);
+        x.cost = x.im->cost(x.p);
+    };
+    Pool::instance().run(qs.size(), threads, plan_fn);
+    // Slices only for the expensive queries: a query whose estimated work is more than a share of
+    // the batch's is cut into as many slices (more slices cost more work in all, so cheap queries
+    // stay whole). The largest pieces go first, so that no long piece starts last.
+    double total = 0;
+    for (auto &x : prep) total += x->cost;
+    const double target = std::max(1.0, total / static_cast<double>(threads * 2));
+    std::vector<std::pair<double, std::pair<std::uint32_t, std::uint32_t>>> order;     // (cost of the piece, (query, task))
+    for (std::size_t i = 0; i < qs.size(); ++i) {
+        Prep &x = *prep[i];
+        if (x.none) continue;
+        // matches are often bunched in a few ranges of documents: an expensive query gets twice the
+        // slices it needs, so that the pool can balance them
+        double sl = std::max(1.0, std::ceil(x.cost / target));
+        if (sl > 1) sl = std::min<double>(static_cast<double>(threads) * 2, sl * 2);
+        x.o.threads = static_cast<int>(sl);
+        x.tasks = x.im->tasks();
+        x.per.resize(x.tasks.size());
+        for (std::size_t t = 0; t < x.tasks.size(); ++t)
+            order.push_back({x.cost / static_cast<double>(x.tasks.size()), {static_cast<std::uint32_t>(i), static_cast<std::uint32_t>(t)}});
+    }
+    std::stable_sort(order.begin(), order.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> items;     // (query, task)
+    items.reserve(order.size());
+    for (auto &o2 : order) items.push_back(o2.second);
+    const std::function<void(std::size_t)> run_fn = [&](std::size_t it) {
+        Prep &x = *prep[items[it].first];
+        const std::size_t ti = items[it].second;
+        const Impl::Task &t = x.tasks[ti];
+        Impl &im = *x.im;
+        TopK top(x.o.k);
+        if (t.hi > t.lo) {
+            if (x.fast) im.maxscore(t.si, x.p, top, x.shared, t.lo, t.hi);
+            else im.scored(t.si, x.p, top, x.shared, t.lo, t.hi);
+        }
+        x.per[ti] = std::move(top.heap);
+    };
+    Pool::instance().run(items.size(), threads, run_fn);
+    for (std::size_t i = 0; i < qs.size(); ++i) {
+        TopK all(opts.k);
+        for (auto &v : prep[i]->per) for (const Cand &c : v) all.offer(c.score, c.doc_id);
+        std::sort(all.heap.begin(), all.heap.end(), better);
+        out[i].reserve(all.heap.size());
+        for (const Cand &c : all.heap) out[i].push_back({c.doc_id, c.score});
+    }
+    return out;
+}
+
+std::vector<std::uint64_t> Searcher::count_many(const std::vector<std::string> &queries, const SearchOptions &opts)
+{
+    prepare();
+    std::vector<QNode> qs;
+    qs.reserve(queries.size());
+    for (const std::string &q : queries) qs.push_back(parse_query(q, *analyzer_, opts.query));
+    std::vector<std::uint64_t> out(qs.size(), 0);
+    if (qs.size() == 1) { out[0] = run_count(qs[0], opts); return out; }
+    SearchOptions one = opts;
+    one.threads = 1;
+    one.stats = nullptr;
+    const std::function<void(std::size_t)> fn = [&](std::size_t i) { out[i] = run_count(qs[i], one); };
+    Pool::instance().run(qs.size(), static_cast<std::size_t>(std::max(opts.threads, 1)), fn);
+    return out;
 }
 
 std::string Searcher::explain(const std::string &query, const SearchOptions &opts)

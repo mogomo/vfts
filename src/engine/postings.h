@@ -87,6 +87,13 @@ public:
         if (meta_[block_].last_doc < target) {
             // skip whole blocks by their last docno
             std::uint32_t b = block_ + 1;
+            if (l1_ && n_blocks_ - b > L1_BLOCKS) {
+                // whole groups of L1_BLOCKS blocks first, by the group's last docno
+                std::uint32_t g = b / L1_BLOCKS;
+                const std::uint32_t ng = l1_count(n_blocks_);
+                while (g + 1 < ng && l1_[g].last_doc < target) ++g;
+                b = std::max(b, g * L1_BLOCKS);
+            }
             while (b < n_blocks_ && meta_[b].last_doc < target) ++b;
             if (b >= n_blocks_) { block_ = n_blocks_ - 1; return doc_ = NO_DOC; }
             block_ = b;

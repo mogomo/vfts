@@ -96,6 +96,13 @@ public:
 
     std::vector<Hit> search(const std::string &query, const SearchOptions &opts);
     std::uint64_t count(const std::string &query, const SearchOptions &opts);
+    // For searches from several threads at once: call ready() first (after mask / add_tail), then
+    // each thread passes its own analyzer (Analyzer is not shared between threads).
+    void ready() { prepare(); }
+    std::vector<Hit> search(const std::string &query, const SearchOptions &opts, Analyzer &analyzer);
+    // Many queries at once, searched in parallel (one thread each); results in query order.
+    std::vector<std::vector<Hit>> search_many(const std::vector<std::string> &queries, const SearchOptions &opts);
+    std::vector<std::uint64_t> count_many(const std::vector<std::string> &queries, const SearchOptions &opts);
 
     const CollectionStats &stats() const { return stats_; }
     // The parsed query, for messages and tests.
@@ -105,6 +112,8 @@ public:
 
 private:
     void prepare();
+    std::vector<Hit> run_search(const QNode &q, const SearchOptions &opts);
+    std::uint64_t run_count(const QNode &q, const SearchOptions &opts);
     AnalyzerOptions aopts_;
     std::vector<SegmentRef> segs_;
     std::vector<std::shared_ptr<const std::string>> tail_bytes_;
