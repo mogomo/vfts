@@ -4,10 +4,15 @@
 #include "stemmer.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <limits>
 #include <map>
 #include <queue>
 #include <stdexcept>
+#include <chrono>
 #include <thread>
 #include <unordered_map>
 
@@ -774,6 +779,268 @@ struct Searcher::Impl {
         return std::unique_ptr<It>(new EmptyIt());
     }
 
+    // ---- top k of a disjunction of scored words: MaxScore with block-max windows
+    //
+    // The query is a single word, or words joined by OR (should clauses only). Lists are sorted by
+    // their upper bound; the lists whose bounds together stay below the current k-th score
+    // ("non-essential") cannot produce a hit alone, so candidates come from the other lists only,
+    // and the non-essential lists are probed for those candidates only while the score can still
+    // reach the threshold. Whole windows of blocks whose block-max bounds stay below the threshold
+    // are skipped. The threshold is shared by the segments searched in parallel. Pruning is strict
+    // (a document whose bound equals the threshold is still scored: it may win the tie by doc id),
+    // and the final score is summed in clause order, so the result is exactly that of the
+    // exhaustive search.
+    struct MLeaf {
+        std::vector<PostingIter> its;
+        float w = 0, ub = 0;
+        bool constant = false;
+        int clause = 0;
+        std::uint32_t doc = NO_DOC;
+        std::uint32_t advance(std::uint32_t t)
+        {
+            if (doc != NO_DOC && doc >= t) return doc;
+            std::uint32_t m = NO_DOC;
+            for (PostingIter &p : its) m = std::min(m, p.advance(t));
+            return doc = m;
+        }
+        std::uint32_t next() { return doc == NO_DOC ? NO_DOC : advance(doc + 1); }
+        float score(const float *cache, const std::uint8_t *norms) const
+        {
+            if (constant) return 1.0f;
+            std::uint32_t tf = 0;
+            for (const PostingIter &p : its) if (p.doc() == doc) tf += p.tf();
+            const float ni = cache[norms[doc]];
+            return w - w / (1.0f + static_cast<float>(tf) * ni);
+        }
+        // The best score of impacts (exact max over the pairs for one term; for a union of terms
+        // the sum of the largest tfs with the smallest norm, which is still an upper bound).
+        float bound(const Impacts *const *imps, std::size_t k, const float *cache) const
+        {
+            if (constant) return 1.0f;
+            if (k == 1) {
+                const Impacts &im = *imps[0];
+                float best = 0.0f;
+                for (int i = 0; i < im.n; ++i) best = std::max(best, w - w / (1.0f + static_cast<float>(im.tf[i]) * cache[im.norm[i]]));
+                return best;
+            }
+            std::uint32_t sum_tf = 0;
+            std::uint8_t min_norm = 255;
+            for (std::size_t j = 0; j < k; ++j) {
+                std::uint32_t mt = 0;
+                for (int i = 0; i < imps[j]->n; ++i) { mt = std::max(mt, imps[j]->tf[i]); min_norm = std::min(min_norm, imps[j]->norm[i]); }
+                sum_tf += mt;
+            }
+            return w - w / (1.0f + static_cast<float>(sum_tf) * cache[min_norm]);
+        }
+        float term_bound(const float *cache) const
+        {
+            std::vector<const Impacts *> v;
+            for (const PostingIter &p : its) v.push_back(&p.term_impacts());
+            return bound(v.data(), v.size(), cache);
+        }
+        // bound of the score of every document in [t, upto] (the term bound when that needs too many entries)
+        float range_bound(std::uint32_t t, std::uint32_t upto, const float *cache) const
+        {
+            if (constant) return 1.0f;
+            if (its.size() == 1) {
+                float best = 0.0f;
+                const bool ok = its[0].cover(t, upto, 8, [&](const Impacts &im) {
+                    for (int i = 0; i < im.n; ++i) best = std::max(best, w - w / (1.0f + static_cast<float>(im.tf[i]) * cache[im.norm[i]]));
+                });
+                return ok ? best : ub;
+            }
+            std::uint32_t sum_tf = 0;
+            std::uint8_t min_norm = 255;
+            for (const PostingIter &p : its) {
+                std::uint32_t mt = 0;
+                const bool ok = p.cover(t, upto, 8, [&](const Impacts &im) {
+                    for (int i = 0; i < im.n; ++i) { mt = std::max(mt, im.tf[i]); min_norm = std::min(min_norm, im.norm[i]); }
+                });
+                if (!ok) return ub;
+                sum_tf += mt;
+            }
+            if (sum_tf == 0) return 0.0f;
+            return w - w / (1.0f + static_cast<float>(sum_tf) * cache[min_norm]);
+        }
+        // bound of the score of every document in [t, *end]
+        float block_bound(std::uint32_t t, std::uint32_t &end, const float *cache) const
+        {
+            const Impacts *v[64];
+            std::size_t k = 0;
+            end = NO_DOC;
+            for (const PostingIter &p : its) {
+                std::uint32_t last;
+                const Impacts *imp;
+                if (!p.shallow(t, last, imp)) continue;
+                if (k < 64) v[k++] = imp;
+                end = std::min(end, last);
+            }
+            if (k == 0) return 0.0f;
+            if (k == 64) return ub;
+            return bound(v, k, cache);
+        }
+    };
+
+    static bool disjunction_of_leaves(const PNode &p)
+    {
+        auto leafy = [](const PNode &x) {
+            return x.kind == QKind::Term || x.kind == QKind::Fuzzy || x.kind == QKind::Prefix || x.kind == QKind::Wildcard;
+        };
+        if (leafy(p)) return true;
+        if (p.kind != QKind::Bool || !p.must.empty() || !p.must_not.empty() || p.should.empty()) return false;
+        for (const PNode &k : p.should) if (!leafy(k)) return false;
+        return true;
+    }
+
+    void maxscore(std::size_t si, const PNode &p, TopK &top, std::atomic<float> &shared)
+    {
+        const Segment &seg = *segs[si];
+        const std::uint8_t *norms = seg.norms();
+        std::vector<const PNode *> clauses;
+        if (p.kind == QKind::Bool) for (const PNode &k : p.should) clauses.push_back(&k);
+        else clauses.push_back(&p);
+        std::vector<MLeaf> m;
+        for (std::size_t c = 0; c < clauses.size(); ++c) {
+            const Leaf &L = leaves[clauses[c]->leaves[0]];
+            if (L.ids[si].empty()) continue;
+            MLeaf x;
+            x.clause = static_cast<int>(c);
+            x.w = clauses[c]->weight;
+            x.constant = L.constant;
+            if (L.stem_entry[si] >= 0 && L.ids[si].size() > 1) {
+                // the stem group's own postings: one list with the summed tf (same scores)
+                x.its.emplace_back(seg, seg.group_info(static_cast<std::uint32_t>(L.stem_entry[si])));
+                x.its.back().prefetch_norms(norms);
+            } else {
+                for (std::uint32_t t : L.ids[si]) { x.its.emplace_back(seg, t); x.its.back().prefetch_norms(norms); }
+            }
+            x.ub = x.term_bound(cache);
+            x.advance(0);
+            m.push_back(std::move(x));
+        }
+        if (m.empty()) return;
+        std::sort(m.begin(), m.end(), [](const MLeaf &a, const MLeaf &b) { return a.ub < b.ub; });
+        if (std::getenv("VTEXT_DEBUG")) {
+            for (const MLeaf &x : m) std::fprintf(stderr, "  list clause %d df %u w %.3f ub %.3f\n", x.clause, x.its[0].df(), x.w, x.ub);
+        }
+        const std::size_t n = m.size();
+        std::vector<double> prefix(n + 1, 0.0);
+        for (std::size_t i = 0; i < n; ++i) prefix[i + 1] = prefix[i] + m[i].ub;
+        std::vector<double> contrib(clauses.size(), 0.0);
+        const double slack = 1.0 + 1e-6;
+        auto theta = [&]() -> double {
+            const double sh = shared.load(std::memory_order_relaxed);
+            const double lo = top.heap.size() >= top.k ? top.heap.front().score : -1e300;
+            return std::max(sh, lo);
+        };
+        double th = theta();
+        // Windows of WINDOW docnos. In each window every list has a bound from its impacts; sorted by
+        // those bounds, the lists whose bounds together stay below the threshold are probed only
+        // ("non-essential" in the window), and candidates come from the others. A window whose lists
+        // together stay below the threshold is skipped. Before the top k is full, every list is
+        // essential.
+        constexpr std::uint32_t WINDOW = 4096;
+        std::uint64_t c_cand = 0, c_scored = 0, c_skip = 0, c_probe = 0;
+        struct Flush {
+            SearchOptions::Stats *st; std::uint64_t &a, &b, &c, &d; std::size_t terms;
+            ~Flush() { if (st) { st->candidates += a; st->scored += b; st->windows_skipped += c; st->probes += d; st->terms += terms; } }
+        } flush{o.stats, c_cand, c_scored, c_skip, c_probe, n};
+        std::vector<int> touched;
+        touched.reserve(n);
+        const DocSet *dset = dead[si];
+        std::vector<double> wb(n), wp(n + 1, 0.0);
+        std::vector<std::size_t> perm(n);       // lists by window bound, ascending
+        for (std::size_t i = 0; i < n; ++i) perm[i] = i;
+        std::size_t ne = 0;                     // perm[0 .. ne) are non-essential in this window
+        auto set_ne = [&]() { while (ne < n && wp[ne + 1] * slack < th) ++ne; };
+        auto offer = [&](std::uint32_t d, double sc) {
+            // probes the non-essential lists, largest bound first, while the score can still reach the threshold
+            for (std::size_t j = ne; j-- > 0;) {
+                if ((sc + wp[j + 1]) * slack < th) { for (int c : touched) contrib[c] = 0.0; touched.clear(); return; }
+                MLeaf &x = m[perm[j]];
+                ++c_probe;
+                if (x.advance(d) == d) { const float c = x.score(cache, norms); contrib[x.clause] = c; touched.push_back(x.clause); sc += c; }
+            }
+            double sum = 0;
+            if (touched.size() == 1) sum = contrib[touched[0]];
+            else for (double c : contrib) sum += c;
+            for (int c : touched) contrib[c] = 0.0;
+            touched.clear();
+            top.offer(static_cast<float>(sum), seg.doc_id(d));
+            if (top.heap.size() >= top.k) {
+                const float kth = top.heap.front().score;
+                float cur = shared.load(std::memory_order_relaxed);
+                while (kth > cur && !shared.compare_exchange_weak(cur, kth)) {}
+                if (kth > th) { th = kth; set_ne(); }
+            }
+        };
+        const std::uint32_t nd = seg.n_docs();
+        const std::uint32_t W = o.window ? o.window : 8192;
+        for (std::uint32_t ws = 0; ws < nd;) {
+            th = std::max(th, theta());
+            const std::uint32_t we = nd - ws > W ? ws + W - 1 : nd - 1;
+            if (th > -1e299) {
+                // bounds from the impacts: no list is decoded or moved for this
+                for (std::size_t i = 0; i < n; ++i) wb[i] = m[i].range_bound(ws, we, cache);
+                std::sort(perm.begin(), perm.end(), [&](std::size_t a, std::size_t b) { return wb[a] < wb[b]; });
+                for (std::size_t j = 0; j < n; ++j) wp[j + 1] = wp[j] + wb[perm[j]];
+                ne = 0;
+                set_ne();
+                if (ne >= n) { ++c_skip; ws = we + 1; continue; }
+            } else {
+                for (std::size_t j = 0; j < n; ++j) { perm[j] = j; wp[j + 1] = wp[j] + m[j].ub; }
+                ne = 0;
+            }
+            for (std::size_t j = ne; j < n; ++j) m[perm[j]].advance(ws);
+            if (ne == n - 1 && m[perm[ne]].its.size() == 1 && !m[perm[ne]].constant) {
+                // one essential list in the window (the usual state once the threshold has risen)
+                MLeaf &x = m[perm[ne]];
+                PostingIter &it = x.its[0];
+                const float w = x.w;
+                std::uint32_t d = x.doc;
+                while (d <= we) {
+                    ++c_cand;
+                    if (!(dset && dset->test(d))) {
+                        const float c = w - w / (1.0f + static_cast<float>(it.tf()) * cache[norms[d]]);
+                        if ((c + wp[ne]) * slack >= th) {
+                            ++c_scored;
+                            contrib[x.clause] = c;
+                            touched.push_back(x.clause);
+                            x.doc = d;
+                            offer(d, c);
+                            if (ne >= n) break;
+                            if (ne != n - 1) { d = it.next(); x.doc = d; goto general; }
+                        }
+                    }
+                    d = it.next();
+                }
+                x.doc = d;
+                ws = we + 1;
+                continue;
+            }
+        general:
+            // candidates in [ws, we] from the essential lists
+            for (;;) {
+                std::uint32_t d = NO_DOC;
+                for (std::size_t j = ne; j < n; ++j) d = std::min(d, m[perm[j]].doc);
+                if (d > we) break;
+                ++c_cand;
+                if (!(dset && dset->test(d))) {
+                    double sc = 0;
+                    for (std::size_t j = ne; j < n; ++j) {
+                        MLeaf &x = m[perm[j]];
+                        if (x.doc == d) { const float c = x.score(cache, norms); contrib[x.clause] = c; touched.push_back(x.clause); sc += c; }
+                    }
+                    if ((sc + wp[ne]) * slack >= th) { ++c_scored; offer(d, sc); }
+                    else { for (int c : touched) contrib[c] = 0.0; touched.clear(); }
+                    if (ne >= n) break;     // the threshold rose so far that nothing in the window can reach it
+                }
+                for (std::size_t j = ne; j < n; ++j) { MLeaf &x = m[perm[j]]; if (x.doc == d) x.next(); }
+            }
+            ws = we + 1;
+        }
+    }
+
     template <class F> void each_segment(F f)
     {
         const std::size_t n = segs.size();
@@ -883,21 +1150,32 @@ std::vector<Hit> Searcher::search(const std::string &query, const SearchOptions 
     if (opts.k == 0) return {};
     const QNode q = parse_query(query, *analyzer_, opts.query);
     if (q.kind == QKind::None) return {};
+    const auto t_plan = std::chrono::steady_clock::now();
     Impl im(*this, opts);
     const PNode p = im.plan(q);
+    const auto t_exec = std::chrono::steady_clock::now();
+    if (opts.stats) opts.stats->plan_us += std::chrono::duration<double, std::micro>(t_exec - t_plan).count();
     const std::size_t n = im.segs.size();
     std::vector<std::vector<Cand>> per(n);
+    const bool fast = opts.pruning && Impl::disjunction_of_leaves(p);
+    std::atomic<float> shared(-std::numeric_limits<float>::infinity());
     im.each_segment([&](std::size_t si) {
         const Segment &seg = *im.segs[si];
-        Scoring sc{im.cache, seg.norms()};
-        std::unique_ptr<It> root = im.build(si, p, sc);
         TopK top(opts.k);
-        for (std::uint32_t d = root->next(); d != NO_DOC; d = root->next()) {
-            if (im.is_dead(si, d)) continue;
-            top.offer(root->score(), seg.doc_id(d));
+        if (fast) {
+            im.maxscore(si, p, top, shared);
+        } else {
+            Scoring sc{im.cache, seg.norms()};
+            std::unique_ptr<It> root = im.build(si, p, sc);
+            for (std::uint32_t d = root->next(); d != NO_DOC; d = root->next()) {
+                if (im.is_dead(si, d)) continue;
+                top.offer(root->score(), seg.doc_id(d));
+            }
         }
         per[si] = std::move(top.heap);
     });
+    if (std::getenv("VTEXT_DEBUG")) std::fprintf(stderr, "  threshold at the end: %.3f\n", shared.load());
+    if (opts.stats) opts.stats->exec_us += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t_exec).count();
     TopK all(opts.k);
     for (auto &v : per) for (const Cand &c : v) all.offer(c.score, c.doc_id);
     std::sort(all.heap.begin(), all.heap.end(), better);

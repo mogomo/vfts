@@ -56,6 +56,18 @@ int main()
     CHECK_EQ(P("2024 3.14"), std::string("(t:2024 t:3.14)"));
     CHECK_EQ(P(""), std::string("<none>"));
     CHECK_EQ(P("  ,,, "), std::string("<none>"));
+    {   // plain: no syntax, every word a clause, repeated words kept
+        AnalyzerOptions ao;
+        ao.default_lang = parse_lang("en");
+        Analyzer a(ao);
+        QueryOptions o;
+        o.plain = true;
+        CHECK_EQ(to_string(parse_query("what is (the) \"price\" of new-york, new AND old?", a, o)),
+                 std::string("(t:what t:is t:the t:price t:of t:new t:york t:new t:and t:old)"));
+        CHECK_EQ(to_string(parse_query("holmes", a, o)), std::string("t:holmes"));
+        o.op_and = true;
+        CHECK_EQ(to_string(parse_query("a b", a, o)), std::string("(+t:a +t:b)"));
+    }
     // errors
     CHECK(E("a AND").find("AND without a right operand") != std::string::npos);
     CHECK(E("(a").find("missing )") != std::string::npos);

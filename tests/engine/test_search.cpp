@@ -225,6 +225,16 @@ static void compare(Searcher &s, const Corpus &live, const std::string &q, Match
     std::sort(want.begin(), want.end(), [](auto &x, auto &y) { return x.first != y.first ? x.first > y.first : x.second < y.second; });
     const auto got = s.search(q, o);
     const std::uint64_t n = s.count(q, o);
+    // top 10 with pruning (MaxScore) equals the first 10 of the full result
+    {
+        SearchOptions o10 = o;
+        o10.k = 10;
+        o10.threads = 2;
+        const auto top = s.search(q, o10);
+        bool same = top.size() == std::min<std::size_t>(10, got.size());
+        for (std::size_t i = 0; same && i < top.size(); ++i) same = top[i].doc_id == got[i].doc_id && top[i].score == got[i].score;
+        if (!same) { ++failures; std::printf("FAIL pruned top 10 differs for %s\n", q.c_str()); }
+    }
     ++compared;
     bool ok = got.size() == want.size() && n == want.size();
     for (std::size_t i = 0; ok && i < got.size(); ++i) {

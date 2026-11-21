@@ -31,6 +31,12 @@ struct SearchOptions {
     std::uint32_t max_expansions = 50;  // prefix, wildcard, fuzzy: terms per word at most
     float k1 = 1.2f, b = 0.75f;
     int threads = 1;                    // segments searched in parallel
+    bool pruning = true;                // MaxScore for OR queries (false: score every match; same result)
+    std::uint32_t window = 0;           // MaxScore window in docnos (0: 8192)
+    struct Stats {                      // filled when set (debugging and measurements)
+        double plan_us = 0, exec_us = 0;
+        std::uint64_t candidates = 0, scored = 0, windows_skipped = 0, probes = 0, terms = 0;
+    } *stats = nullptr;
 };
 
 // How deletions change the document frequencies of one segment: computed once per set of

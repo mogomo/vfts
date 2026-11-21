@@ -48,6 +48,7 @@ struct QueryOptions {
     Lang lang = LANG_NONE;              // query language (LANG_NONE: the index default)
     bool op_and = false;                // implicit operator AND
     bool stopwords = false;             // drop stopwords of the query language
+    bool plain = false;                 // no syntax: every analyzed word is a clause (like a match query)
     std::size_t max_clauses = 1024;
 };
 

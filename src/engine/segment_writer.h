@@ -37,6 +37,11 @@ public:
 
 private:
     void flush_block();
+    TermInfo write_postings(const std::vector<std::uint32_t> &docs, const std::vector<std::uint32_t> &tfs,
+                            std::uint64_t pos_off, const std::vector<std::uint64_t> *block_pos);
+    std::string assemble(SegmentHeader &h, const std::vector<std::uint8_t> &norms, const std::vector<StemEntry> &entries,
+                         const std::string &stem_pool, const std::vector<std::uint32_t> &stem_terms,
+                         const std::vector<TermInfo> &groups);
 
     std::int64_t segment_id_, max_ver_;
     std::vector<std::int64_t> doc_ids_;

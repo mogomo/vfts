@@ -103,6 +103,9 @@ private:
         if (op == "and" || op == "AND") o.query.op_and = true;
         else if (op != "or" && op != "OR") fail("operator must be 'or' or 'and', not '" + op + "'");
         o.query.stopwords = s.boolean("stopwords", false);
+        const std::string syntax = s.text("syntax", "query");
+        if (syntax == "plain") o.query.plain = true;
+        else if (syntax != "query") fail("syntax must be 'query' or 'plain', not '" + syntax + "'");
         const std::int64_t k = s.integer("k", 10);
         if (k < 1 || k > 1000000) fail("k must be 1 to 1000000");
         o.k = static_cast<std::uint32_t>(k);
@@ -176,6 +179,7 @@ public:
         p.addVarchar(16, "lang");
         p.addVarchar(8, "operator");
         p.addBool("stopwords");
+        p.addVarchar(16, "syntax");
         p.addInt("prefix_length");
         p.addInt("max_expansions");
         p.addInt("threads");

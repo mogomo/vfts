@@ -46,6 +46,31 @@ std::uint32_t norm_to_length(std::uint8_t norm)
     return static_cast<std::uint32_t>(NUM_FREE_VALUES + int4_to_long(norm - NUM_FREE_VALUES));
 }
 
+Impacts make_impacts(std::vector<std::pair<std::uint32_t, std::uint8_t>> pairs)
+{
+    // Pareto frontier: shortest first; a pair stays when its tf beats every shorter one
+    std::sort(pairs.begin(), pairs.end(), [](const auto &a, const auto &b) {
+        return a.second != b.second ? a.second < b.second : a.first > b.first;
+    });
+    std::vector<std::pair<std::uint32_t, std::uint8_t>> f;
+    for (const auto &p : pairs)
+        if (f.empty() || p.first > f.back().first) f.push_back(p);
+    Impacts imp{};
+    if (f.size() <= static_cast<std::size_t>(MAX_IMPACTS)) {
+        imp.n = static_cast<std::uint8_t>(f.size());
+        for (std::size_t i = 0; i < f.size(); ++i) { imp.tf[i] = f[i].first; imp.norm[i] = f[i].second; }
+        return imp;
+    }
+    // more pairs: MAX_IMPACTS groups of neighbours, each (its largest tf, its smallest norm)
+    imp.n = MAX_IMPACTS;
+    for (int g = 0; g < MAX_IMPACTS; ++g) {
+        const std::size_t a = f.size() * g / MAX_IMPACTS, b = f.size() * (g + 1) / MAX_IMPACTS - 1;
+        imp.tf[g] = f[b].first;
+        imp.norm[g] = f[a].second;
+    }
+    return imp;
+}
+
 std::string stem_key(std::string_view lang_code, std::string_view stem)
 {
     std::string k;
@@ -128,7 +153,7 @@ Segment::Segment(const void *data, std::size_t size) : base_(static_cast<const s
     const std::uint64_t nd = h->n_docs, nt = h->n_terms, ns = h->n_stems;
     if (h->len[S_DOC_IDS] != 8 * nd || h->len[S_DOC_LEN] != 4 * nd || h->len[S_NORMS] != nd ||
         h->len[S_TERM_OFF] != 4 * (nt + 1) || h->len[S_TERM_INFO] != sizeof(TermInfo) * nt ||
-        h->len[S_STEM_ENTRY] != sizeof(StemEntry) * ns)
+        h->len[S_STEM_ENTRY] != sizeof(StemEntry) * ns || h->len[S_GROUP_INFO] != sizeof(TermInfo) * ns)
         bad("section sizes do not match the counts");
     if (h->off[S_POSTINGS] + h->len[S_POSTINGS] + TAIL_PAD > size) bad("postings padding missing");
     if (h->len[S_BITMAP_DIR] % sizeof(BitmapEntry)) bad("bitmap directory size");
@@ -144,6 +169,7 @@ Segment::Segment(const void *data, std::size_t size) : base_(static_cast<const s
     stem_terms_ = reinterpret_cast<const std::uint32_t *>(base_ + h->off[S_STEM_TERMS]);
     post_ = base_ + h->off[S_POSTINGS];
     pos_ = base_ + h->off[S_POSITIONS];
+    groups_ = reinterpret_cast<const TermInfo *>(base_ + h->off[S_GROUP_INFO]);
     bitmap_dir_ = reinterpret_cast<const BitmapEntry *>(base_ + h->off[S_BITMAP_DIR]);
     n_bitmaps_ = h->len[S_BITMAP_DIR] / sizeof(BitmapEntry);
     bitmaps_ = base_ + h->off[S_BITMAPS];
@@ -243,15 +269,42 @@ void Segment::verify() const
         const TermInfo &ti = info_[t];
         if (ti.df == 0 || ti.df > h.n_docs) bad("df of term " + std::to_string(t));
         if (ti.pos_off > h.len[S_POSITIONS]) bad("positions offset of term " + std::to_string(t));
-        postings_total += ti.df;
+        if (verify_postings(ti, t)) postings_total += ti.df;
+    }
+    for (std::uint32_t g = 0; g < h.n_stems; ++g) {
+        if (groups_[g].df != stems_[g].union_df) bad("postings of stem group " + std::to_string(g));
+        if (stems_[g].count > 1) verify_postings(groups_[g], g);
+    }
+    (void)postings_total;
+}
+
+bool Segment::verify_postings(const TermInfo &ti, std::uint32_t t) const
+{
+    const SegmentHeader &h = *h_;
+    std::vector<std::uint32_t> docs(BLOCK), tfs(BLOCK);
+    {
         if (ti.df == 1) {
             if (ti.n_blocks != 0 || ti.post_off >= h.n_docs || ti.max_tf == 0) bad("single posting of term " + std::to_string(t));
-            continue;
+            return true;
         }
         if (ti.n_blocks != (ti.df + BLOCK - 1) / BLOCK) bad("block count of term " + std::to_string(t));
-        if (ti.post_off + ti.n_blocks * sizeof(BlockMeta) > h.len[S_POSTINGS]) bad("postings offset of term " + std::to_string(t));
-        const BlockMeta *bm = reinterpret_cast<const BlockMeta *>(post_ + ti.post_off);
-        const std::uint8_t *data = post_ + ti.post_off + ti.n_blocks * sizeof(BlockMeta);
+        if (ti.post_off + sizeof(Impacts) + ti.n_blocks * sizeof(BlockMeta) + l1_count(ti.n_blocks) * sizeof(L1Meta) > h.len[S_POSTINGS])
+            bad("postings offset of term " + std::to_string(t));
+        const Impacts *ti_imp = reinterpret_cast<const Impacts *>(post_ + ti.post_off);
+        if (ti_imp->n == 0 || ti_imp->n > MAX_IMPACTS) bad("impacts of term " + std::to_string(t));
+        const BlockMeta *bm = reinterpret_cast<const BlockMeta *>(post_ + ti.post_off + sizeof(Impacts));
+        const L1Meta *l1 = reinterpret_cast<const L1Meta *>(post_ + ti.post_off + sizeof(Impacts) + ti.n_blocks * sizeof(BlockMeta));
+        for (std::uint32_t g = 0; g < l1_count(ti.n_blocks); ++g) {
+            const std::uint32_t last = std::min(ti.n_blocks, (g + 1) * L1_BLOCKS) - 1;
+            if (l1[g].last_doc != bm[last].last_doc || l1[g].imp.n == 0 || l1[g].imp.n > MAX_IMPACTS) bad("level-1 impacts of term " + std::to_string(t));
+            for (std::uint32_t b = g * L1_BLOCKS; b <= last; ++b)       // every block's pairs are covered by the group's
+                for (int k = 0; k < bm[b].imp.n; ++k) {
+                    bool covered = false;
+                    for (int j = 0; j < l1[g].imp.n && !covered; ++j) covered = l1[g].imp.tf[j] >= bm[b].imp.tf[k] && l1[g].imp.norm[j] <= bm[b].imp.norm[k];
+                    if (!covered) bad("level-1 impacts of term " + std::to_string(t) + " do not cover a block");
+                }
+        }
+        const std::uint8_t *data = post_ + ti.post_off + sizeof(Impacts) + ti.n_blocks * sizeof(BlockMeta) + l1_count(ti.n_blocks) * sizeof(L1Meta);
         std::int64_t prev = -1;
         for (std::uint32_t b = 0; b < ti.n_blocks; ++b) {
             const std::uint32_t n = b + 1 < ti.n_blocks ? BLOCK : ti.df - b * BLOCK;
@@ -262,16 +315,20 @@ void Segment::verify() const
             if (p + 2 + packed_bytes(n, db) + packed_bytes(n, tb) > post_ + h.len[S_POSTINGS]) bad("block length of term " + std::to_string(t));
             unpack_bits(p + 2, n, db, docs.data());
             unpack_bits(p + 2 + packed_bytes(n, db), n, tb, tfs.data());
-            std::uint32_t mx = 0;
+            const Impacts &im = bm[b].imp;
+            if (im.n == 0 || im.n > MAX_IMPACTS) bad("impacts of a block in term " + std::to_string(t));
             for (std::uint32_t i = 0; i < n; ++i) {
                 prev += static_cast<std::int64_t>(docs[i]) + 1;
-                mx = std::max(mx, tfs[i] + 1);
+                if (prev >= h.n_docs) bad("docno out of range in term " + std::to_string(t));
+                // every document must be covered by a pair with tf >= its tf and norm <= its norm
+                bool covered = false;
+                for (int k = 0; k < im.n && !covered; ++k) covered = im.tf[k] >= tfs[i] + 1 && im.norm[k] <= norms_[prev];
+                if (!covered) bad("impacts of a block in term " + std::to_string(t) + " do not cover a document");
             }
-            if (prev >= h.n_docs || static_cast<std::uint32_t>(prev) != bm[b].last_doc) bad("last docno of a block in term " + std::to_string(t));
-            if (mx != bm[b].max_tf) bad("max tf of a block in term " + std::to_string(t));
+            if (static_cast<std::uint32_t>(prev) != bm[b].last_doc) bad("last docno of a block in term " + std::to_string(t));
         }
     }
-    (void)postings_total;
+    return true;
 }
 
 } // namespace vtext

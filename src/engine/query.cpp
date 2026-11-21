@@ -427,6 +427,27 @@ void append(std::string &s, const QNode &n)
 
 QNode parse_query(std::string_view query, Analyzer &analyzer, const QueryOptions &opts)
 {
+    if (opts.plain) {
+        // Every word is a clause, repeated words too (as Lucene's QueryBuilder does for a match query).
+        const Lang lang = opts.lang != LANG_NONE ? opts.lang : analyzer.options().default_lang;
+        std::unique_ptr<Stopwords> stop;
+        if (opts.stopwords) stop.reset(new Stopwords(lang, analyzer));
+        analyzer.analyze(query, lang);
+        if (analyzer.size() > opts.max_clauses) throw std::runtime_error("query has more than " + std::to_string(opts.max_clauses) + " words");
+        QNode b;
+        b.kind = QKind::Bool;
+        for (std::size_t i = 0; i < analyzer.size(); ++i) {
+            if (stop && stop->contains(analyzer.term(i))) continue;
+            QNode t;
+            t.kind = QKind::Term;
+            t.words.emplace_back(analyzer.term(i));
+            t.langs.push_back(analyzer.token(i).lang);
+            (opts.op_and ? b.must : b.should).push_back(std::move(t));
+        }
+        if (b.must.empty() && b.should.empty()) return QNode();
+        if (b.must.size() + b.should.size() == 1) return std::move(b.must.empty() ? b.should[0] : b.must[0]);
+        return b;
+    }
     Parser p(query, analyzer, opts);
     return p.parse();
 }

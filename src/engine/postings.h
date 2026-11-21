@@ -16,14 +16,15 @@ constexpr std::uint32_t NO_DOC = 0xFFFFFFFFu;
 class PostingIter {
 public:
     PostingIter() = default;
-    PostingIter(const Segment &seg, std::uint32_t term) { init(seg, term); }
+    PostingIter(const Segment &seg, std::uint32_t term) { init(seg, seg.info(term)); }
+    // A list given by its TermInfo (also the postings of a stem group, which have no positions).
+    PostingIter(const Segment &seg, const TermInfo &ti) { init(seg, ti); }
 
-    void init(const Segment &seg, std::uint32_t term)
+    void init(const Segment &seg, const TermInfo &ti)
     {
-        const TermInfo &ti = seg.info(term);
         df_ = ti.df;
         n_blocks_ = ti.n_blocks;
-        pos_base_ = seg.positions() + ti.pos_off;
+        pos_base_ = ti.pos_off == NO_POSITIONS ? nullptr : seg.positions() + ti.pos_off;
         max_tf_ = ti.max_tf;
         min_len_ = ti.min_len;
         if (df_ == 1) {
@@ -32,10 +33,17 @@ public:
             tfs_[0] = ti.max_tf;
             block_n_ = 1;
             meta_ = nullptr;
+            single_imp_ = Impacts{};
+            single_imp_.n = 1;
+            single_imp_.tf[0] = ti.max_tf;
+            single_imp_.norm[0] = seg.norm(docs_[0]);
+            term_imp_ = &single_imp_;
         } else {
             single_ = false;
-            meta_ = reinterpret_cast<const BlockMeta *>(seg.postings() + ti.post_off);
-            data_ = seg.postings() + ti.post_off + n_blocks_ * sizeof(BlockMeta);
+            term_imp_ = reinterpret_cast<const Impacts *>(seg.postings() + ti.post_off);
+            meta_ = reinterpret_cast<const BlockMeta *>(seg.postings() + ti.post_off + sizeof(Impacts));
+            l1_ = reinterpret_cast<const L1Meta *>(seg.postings() + ti.post_off + sizeof(Impacts) + n_blocks_ * sizeof(BlockMeta));
+            data_ = reinterpret_cast<const std::uint8_t *>(l1_ + l1_count(n_blocks_));
             block_n_ = 0;
         }
         block_ = 0;
@@ -49,6 +57,8 @@ public:
     }
 
     std::uint32_t df() const { return df_; }
+    // Norms to prefetch when a block is decoded (the scorer reads norms[doc] of its documents).
+    void prefetch_norms(const std::uint8_t *norms) { norms_ = norms; }
     std::uint32_t doc() const { return doc_; }
     std::uint32_t tf() const { return tfs_[i_]; }
     std::uint32_t term_max_tf() const { return max_tf_; }
@@ -87,19 +97,70 @@ public:
         return doc_ = docs_[i_];
     }
 
-    // Block-max support: the block that would hold `target`, without decoding it.
-    // Returns false when target is past the last document.
-    bool shallow(std::uint32_t target, std::uint32_t &last_doc, std::uint32_t &max_tf, std::uint32_t &min_len) const
+    // The impacts of all the term's documents.
+    const Impacts &term_impacts() const { return *term_imp_; }
+
+    // Block-max support: the block that would hold `target`, without decoding it: its last docno
+    // and its impacts. Returns false when target is past the last document.
+    bool shallow(std::uint32_t target, std::uint32_t &last_doc, const Impacts *&imp) const
     {
         if (single_) {
             if (docs_[0] < target) return false;
-            last_doc = docs_[0]; max_tf = tfs_[0]; min_len = min_len_;
+            last_doc = docs_[0];
+            imp = term_imp_;
             return true;
         }
         std::uint32_t b = block_;
         while (b < n_blocks_ && meta_[b].last_doc < target) ++b;
         if (b >= n_blocks_) return false;
-        last_doc = meta_[b].last_doc; max_tf = meta_[b].max_tf; min_len = meta_[b].min_len;
+        last_doc = meta_[b].last_doc;
+        imp = &meta_[b].imp;
+        return true;
+    }
+
+    // Calls f(impacts) for impacts that together cover every document in [t, upto] (and maybe more):
+    // single blocks near the edges, groups of L1_BLOCKS blocks where a whole group starts inside.
+    // Without decoding. Returns false (having stopped) after max_calls calls.
+    template <class F> bool cover(std::uint32_t t, std::uint32_t upto, int max_calls, F f) const
+    {
+        if (single_) {
+            if (docs_[0] >= t && docs_[0] <= upto) f(*term_imp_);
+            return true;
+        }
+        std::uint32_t b = block_;
+        if (b < n_blocks_ && meta_[b].last_doc < t) {
+            std::uint32_t g = b / L1_BLOCKS;
+            while (g + 1 < l1_count(n_blocks_) && l1_[g].last_doc < t) ++g;
+            b = std::max(b, g * L1_BLOCKS);
+            while (b < n_blocks_ && meta_[b].last_doc < t) ++b;
+        }
+        if (b >= n_blocks_) return true;
+        if (meta_[b].last_doc >= upto) { f(meta_[b].imp); return true; }
+        if (b + 1 < n_blocks_ && meta_[b + 1].last_doc >= upto) { f(meta_[b].imp); f(meta_[b + 1].imp); return true; }
+        int calls = 0;
+        for (std::uint32_t g = b / L1_BLOCKS; g < l1_count(n_blocks_); ++g) {     // groups: a superset of the range
+            if (++calls > max_calls) return false;
+            f(l1_[g].imp);
+            if (l1_[g].last_doc >= upto) break;
+        }
+        return true;
+    }
+
+    // Calls f(impacts) for every block that overlaps [t, upto], without decoding. Returns false
+    // (having stopped) when that is more than max_blocks blocks.
+    template <class F> bool blocks_upto(std::uint32_t t, std::uint32_t upto, int max_blocks, F f) const
+    {
+        if (single_) {
+            if (docs_[0] >= t && docs_[0] <= upto) f(*term_imp_);
+            return true;
+        }
+        std::uint32_t b = block_;
+        while (b < n_blocks_ && meta_[b].last_doc < t) ++b;
+        for (int k = 0; b < n_blocks_; ++b) {
+            if (++k > max_blocks) return false;
+            f(meta_[b].imp);
+            if (meta_[b].last_doc >= upto) break;
+        }
         return true;
     }
 
@@ -129,6 +190,7 @@ private:
         unpack_bits(p + 2 + packed_bytes(n, db), n, tb, tfs_);
         std::uint32_t prev = b == 0 ? NO_DOC : meta_[b - 1].last_doc;     // NO_DOC + 1 wraps to 0
         for (std::uint32_t k = 0; k < n; ++k) { prev += docs_[k] + 1; docs_[k] = prev; tfs_[k] += 1; }
+        if (norms_) for (std::uint32_t k = 0; k < n; k += 1) __builtin_prefetch(norms_ + docs_[k]);
         block_n_ = n;
         decoded_ = b;
     }
@@ -136,6 +198,10 @@ private:
     std::uint32_t df_ = 0, n_blocks_ = 0, max_tf_ = 0, min_len_ = 0;
     bool single_ = false, positioned_ = false;
     const BlockMeta *meta_ = nullptr;
+    const L1Meta *l1_ = nullptr;
+    const Impacts *term_imp_ = nullptr;
+    const std::uint8_t *norms_ = nullptr;
+    Impacts single_imp_{};
     const std::uint8_t *data_ = nullptr;
     const std::uint8_t *pos_base_ = nullptr;
     std::uint32_t block_ = 0, decoded_ = NO_DOC, block_n_ = 0, i_ = 0, doc_ = NO_DOC;

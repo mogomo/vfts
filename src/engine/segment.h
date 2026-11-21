@@ -14,6 +14,8 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error "vtext segments are little-endian only"
@@ -22,7 +24,7 @@
 namespace vtext {
 
 constexpr char SEGMENT_MAGIC[8] = {'V', 'T', 'E', 'X', 'T', 'S', 'G', '1'};
-constexpr std::uint32_t SEGMENT_FORMAT = 1;
+constexpr std::uint32_t SEGMENT_FORMAT = 4;      // 2: impacts; 3: postings of stem groups; 4: level-1 impacts
 constexpr std::uint32_t BLOCK = 128;                 // documents per postings block
 constexpr std::size_t HEADER_BYTES = 512;
 constexpr std::size_t TAIL_PAD = 16;                 // zero bytes after the postings for unaligned 8-byte reads
@@ -42,6 +44,8 @@ enum Section {
     S_POSITIONS,        // per term, per document in docno order: tf varints (position deltas)
     S_BITMAP_DIR,       // BitmapEntry[], ascending by term id: terms with a stored bitmap
     S_BITMAPS,          // CRoaring portable bitmaps of docnos
+    S_GROUP_INFO,       // TermInfo[n_stems]: postings of each stem group (docs and summed tf, no
+                        // positions: pos_off = NO_POSITIONS); for a group of one term, that term's
     S_COUNT
 };
 
@@ -65,6 +69,8 @@ struct SegmentHeader {
 };
 static_assert(sizeof(SegmentHeader) == HEADER_BYTES, "header size");
 
+constexpr std::uint64_t NO_POSITIONS = ~0ull;
+
 // A term with df == 1 has no blocks: post_off holds its docno and max_tf its tf.
 struct TermInfo {
     std::uint32_t df;           // documents that contain the term
@@ -76,19 +82,47 @@ struct TermInfo {
 };
 static_assert(sizeof(TermInfo) == 32, "TermInfo size");
 
-// Block b of a term holds documents b*128 .. b*128+127 of its list. Data at
-// post_off + n_blocks*sizeof(BlockMeta) + data_off: one byte doc_bits, one byte tf_bits, then n
-// values gap-1 packed in doc_bits each (gap = docno - previous docno; the previous docno of a
-// block's first document is the last docno of the block before, or -1), then n values tf-1 packed
-// in tf_bits each. Bits are packed LSB first. A run of consecutive docnos with tf 1 takes 0 bits.
+// Competitive (tf, norm) pairs of a set of documents (Lucene's "impacts"): every document of the
+// set scores at most the best of these pairs, because BM25 grows with tf and falls with the length.
+// Pairs are the Pareto frontier (norm ascending, tf ascending); when it has more than MAX_IMPACTS
+// pairs, neighbours are merged into (larger tf, smaller norm), which keeps the bound valid.
+constexpr int MAX_IMPACTS = 4;
+struct Impacts {
+    std::uint8_t n;
+    std::uint8_t norm[MAX_IMPACTS];
+    std::uint8_t pad[3];
+    std::uint32_t tf[MAX_IMPACTS];
+};
+static_assert(sizeof(Impacts) == 24, "Impacts size");
+
+// A term with blocks: at post_off its Impacts over all documents, then BlockMeta[n_blocks], then
+// L1Meta[l1_count(n_blocks)], then the block data (data_off counts from the end of the L1Meta array). Block b holds documents b*128 .. b*128+127 of the term's list. Block data at
+// post_off + sizeof(Impacts) + n_blocks*sizeof(BlockMeta) + data_off: one byte doc_bits, one byte
+// tf_bits, then n values gap-1 packed in doc_bits each (gap = docno - previous docno; the previous
+// docno of a block's first document is the last docno of the block before, or -1), then n values
+// tf-1 packed in tf_bits each. Bits are packed LSB first. A run of consecutive docnos with tf 1
+// takes 0 bits.
 struct BlockMeta {
     std::uint32_t last_doc;     // docno of the block's last document
     std::uint32_t data_off;     // byte offset of the block data after the BlockMeta array
-    std::uint32_t max_tf;       // within the block
-    std::uint32_t min_len;      // within the block
     std::uint64_t pos_off;      // offset of the block's first document's positions, from TermInfo::pos_off
+    Impacts imp;                // of the block's documents
 };
-static_assert(sizeof(BlockMeta) == 24, "BlockMeta size");
+static_assert(sizeof(BlockMeta) == 40, "BlockMeta size");
+
+// Level-1 impacts: one per L1_BLOCKS blocks of a term, after its BlockMeta array, so that the bound
+// of a long range of documents needs one entry per 4,096 postings instead of one per block.
+constexpr std::uint32_t L1_BLOCKS = 32;
+struct L1Meta {
+    std::uint32_t last_doc;     // last docno of the group of blocks
+    std::uint32_t pad;
+    Impacts imp;                // of the group's documents
+};
+static_assert(sizeof(L1Meta) == 32, "L1Meta size");
+inline std::uint32_t l1_count(std::uint32_t n_blocks) { return (n_blocks + L1_BLOCKS - 1) / L1_BLOCKS; }
+
+// The impacts of (tf, norm) pairs.
+Impacts make_impacts(std::vector<std::pair<std::uint32_t, std::uint8_t>> pairs);
 
 struct StemEntry {
     std::uint32_t key_off;      // in S_STEM_POOL
@@ -168,6 +202,8 @@ public:
     const std::uint32_t *stem_terms_at(std::uint32_t i, std::uint32_t &count) const;
 
     std::uint32_t stem_union_df(std::uint32_t i) const { return stems_[i].union_df; }
+    // The postings of stem group i (summed tf, no positions; for one term, the term's).
+    const TermInfo &group_info(std::uint32_t i) const { return groups_[i]; }
     // Index of a stem key in the stem table, or -1.
     std::int64_t find_stem(std::string_view key) const;
 
@@ -179,6 +215,7 @@ public:
     std::size_t positions_bytes() const { return h_->len[S_POSITIONS]; }
 
 private:
+    bool verify_postings(const TermInfo &ti, std::uint32_t t) const;
     const std::uint8_t *base_ = nullptr;
     std::size_t size_ = 0;
     const SegmentHeader *h_ = nullptr;
@@ -193,6 +230,7 @@ private:
     const std::uint32_t *stem_terms_ = nullptr;
     const std::uint8_t *post_ = nullptr;
     const std::uint8_t *pos_ = nullptr;
+    const TermInfo *groups_ = nullptr;
     const BitmapEntry *bitmap_dir_ = nullptr;
     std::size_t n_bitmaps_ = 0;
     const std::uint8_t *bitmaps_ = nullptr;
