@@ -12,7 +12,7 @@ A milestone is done when all its tests pass, it is committed, and this file and
 | M5 | Freshness: segments, live tail, journal deletes, global statistics, merge | correctness rules 3 and 4 pass | done 2026-11-21 |
 | M6 | `tsnippet`, `hybrid` with vvector | RRF output tested on a small fixture | done 2026-11-21 |
 | M7 | Multi-node Enterprise and Eon with a secondary subcluster; per-node cache | the same results on every system | done 2026-11-21 (Enterprise: 1 node only) |
-| M8 | Benchmark, README, `blog/` article with charts | every number comes from a recorded run | |
+| M8 | Benchmark, README, `blog/` article with charts | every number comes from a recorded run | done 2026-11-21 |
 
 ## Test systems
 
@@ -80,7 +80,16 @@ equal plain SQL; BM25 scores equal the formula within 1e-4), tests/sql/test_fres
 - [x] speed work: MaxScore with impacts, windows, stem group postings, doc-range slices, thread pool
 - [x] build path in Vertica: PARTITION BEST, declared widths, local cache write
 - [x] MS MARCO measured on vtext, Elasticsearch, OpenSearch
-- [ ] Enron, PubMed, Wikipedia he/ar on all three
-- [ ] fenced run, refresh of 1% new rows
-- [ ] report, README performance, blog, demo run
-- [ ] Eon retest after the M8 changes
+- [x] Enron, PubMed, Wikipedia he/ar on all three (bench/run_all.sh, 2026-11-21)
+- [x] fenced run, refresh of 1% new rows, batches (`queries` / `_msearch`), resource pool test
+- [x] answers compared query by query; fixes found that way: w/N and pre/N with Lucene's span
+      enumeration and widths, words cut at script changes, fuzzy expansion as a dictionary walk
+- [x] report (bench/results/summary.md, charts), README performance, blog, demo run
+- [x] Eon retest after the M8 changes: engine tests, 105 SQL checks, digest identical on Enterprise
+      (1 node), the Eon primary subcluster (3 nodes) and the secondary subcluster (2 nodes)
+
+Result: bench/results/summary.md. Same matches for 139 of 140 syntax queries; same top 10 and scores
+for 97% of MS MARCO and 133 of 140 syntax queries; MRR@10 0.1815 / 0.1815 / 0.1813. Latency on MS
+MARCO between OpenSearch and Elasticsearch (snap view), p99 half of theirs; slower on small
+collections and on single-query throughput (Vertica's statement cost, about 2 ms); faster on
+proximity, on Enron batches, on refresh; index half to two thirds of the engines' size.
