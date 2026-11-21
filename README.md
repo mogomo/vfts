@@ -71,8 +71,9 @@ Use cases it was built and measured for: legal e-discovery (Enron email), pharma
   scores on 1 node, on 3 nodes and on the secondary subcluster (`tests/sql/digest.sql`). Multi-node
   Enterprise was not available for testing.
 - **Benchmark** against Elasticsearch 9.5.6 and OpenSearch 3.10.0 on the same machine with the
-  same data and equivalent analyzers ([Performance](#performance)). MS MARCO relevance: MRR@10
-  0.1815 (vtext) and 0.1814 (Elasticsearch).
+  same data and equivalent analyzers ([Performance](#performance)): the same matches and, for 97%
+  of the MS MARCO queries and 133 of 140 syntax queries, the same top 10 with the same scores.
+  MS MARCO relevance: MRR@10 0.1815 (vtext), 0.1815 (Elasticsearch), 0.1813 (OpenSearch).
 
 ## Quick start
 
@@ -171,7 +172,7 @@ into segments or nodes.
     make             # build/libvtext.so (all three libraries linked in; nothing to install on the nodes)
     make test        # engine unit tests, no Vertica needed
     make deploy      # library, functions, procedures and tables in schema vtext (unfenced)
-    make deploy FENCED=yes      # the same, fenced (about 10% slower, a crash cannot stop the node)
+    make deploy FENCED=yes      # the same, fenced (a crash cannot stop the node; about 2x the query time, see Performance)
     tests/sql/run_all.sh        # SQL tests against the database
 
 `CREATE LIBRARY` reads the .so on the initiator node and copies it to the others. `make undeploy`
@@ -514,7 +515,199 @@ Output: library version, build flags, ICU version, the Snowball stemmers linked 
 
 ## Performance
 
-PERFORMANCE_PLACEHOLDER
+vtext against Elasticsearch 9.5.6 and OpenSearch 3.10.0, on one machine, with the same documents,
+equivalent analyzers and the same queries. Every number below is in `bench/results/` (the full
+tables: [bench/results/summary.md](bench/results/summary.md)), and one script runs it all again
+([Run the benchmark yourself](#run-the-benchmark-yourself)).
+
+**In short.**
+
+- **Same answers.** The engines and vtext return the same matches (counts equal for 139 of 140
+  syntax queries) and, query by query, the same top 10 with the same scores: 97% of the 6,980
+  MS MARCO queries and 133 of 140 syntax queries have identical scores at every rank. Relevance on
+  MS MARCO: MRR@10 0.1815 (vtext), 0.1815 (Elasticsearch), 0.1813 (OpenSearch).
+- **Latency on a large collection** (MS MARCO, 8.8 million passages, one client): vtext 3.90 ms
+  per query on the snap view, 5.03 ms on the live view; Elasticsearch 4.10 ms, OpenSearch 3.68 ms.
+  vtext's 99th percentile is half theirs: 7.7 ms against 15.9 and 15.4 ms.
+- **Latency on smaller collections** (300,000 to 930,000 documents): Elasticsearch and OpenSearch
+  win, 1.3 to 1.9 ms against vtext's 3.0 to 3.5 ms (snap). A Vertica statement costs about 2 ms by
+  itself (a UDx call over a view, measured in [docs/VERTICA_NOTES.md](docs/VERTICA_NOTES.md));
+  the engines answer a small query in well under 1 ms.
+- **Throughput** with 32 clients and one query per statement: the engines are 2.5 to 4 times
+  ahead (vtext 820 to 1,430 queries per second on the snap view). With batches of 20 queries per
+  request on both sides (vtext's parameter `queries`, the engines' `_msearch`), vtext does 4,033
+  queries per second on Enron against 3,172 (Elasticsearch) and 3,276 (OpenSearch); on MS MARCO
+  1,669 against 2,674 and 2,751.
+- **Proximity**: `w/N` over OR groups is where vtext is fastest; `california w/5 (energy OR power OR
+  electricity)` on Enron: 10.5 ms against 26.3 ms (Elasticsearch) and 34.7 ms (OpenSearch).
+- **Index size**: vtext's node cache is half to two thirds of the engines' store (the engines also
+  keep their copy of the text); the index tables in Vertica are a third of it or less.
+- **Build** (vtext: build + merge into one segment): OpenSearch is the fastest everywhere. vtext is
+  faster than Elasticsearch on Enron (62 s against 90 s), PubMed (64 against 100) and both
+  Wikipedias (154 against 159, 111 against 119), and slower on MS MARCO (377 s against 214 s).
+- **New rows**: searchable in vtext at once, without a refresh (the live tail); a refresh of 1% of
+  MS MARCO (88,418 rows) takes 3.1 s against 8.6 s and 8.1 s. But a live tail that large is slow to
+  search (2.0 s for one query): refresh often, so that the tail stays small.
+
+![Mean latency, one client](bench/results/charts/latency.svg)
+
+![Throughput, 32 clients](bench/results/charts/throughput.svg)
+
+![Index size](bench/results/charts/size.svg)
+
+![Build time](bench/results/charts/build.svg)
+
+### Latency, one client (mean of the per-query best of 3 runs, client round trip)
+
+| Dataset | Documents | vtext live (ms) | vtext snap (ms) | Elasticsearch (ms) | OpenSearch (ms) | p99: vtext snap / ES / OS (ms) |
+|---|---:|---:|---:|---:|---:|---|
+| MS MARCO passages (6,980 queries, plain text) | 8,841,823 | 5.03 | 3.90 | 4.10 | 3.68 | 7.72 / 15.87 / 15.41 |
+| Enron email (40 syntax queries) | 517,401 | 4.53 | 3.47 | 3.78 | 3.80 | 10.47 / 26.28 / 34.73 |
+| PubMed abstracts (40) | 932,746 | 4.16 | 2.97 | 1.86 | 1.56 | 4.64 / 5.41 / 3.57 |
+| Wikipedia, Hebrew (30) | 300,000 | 4.29 | 3.09 | 1.53 | 1.32 | 6.68 / 4.47 / 4.84 |
+| Wikipedia, Arabic (30) | 300,000 | 4.22 | 3.07 | 1.38 | 1.27 | 6.75 / 4.17 / 4.41 |
+
+**live** searches every committed row (the default view, `<index>_live`); **snap** searches the
+rows up to the last refresh (`<index>_snap`), the guarantee Elasticsearch and OpenSearch give
+(a document is searchable after a refresh).
+
+By kind of query (the 140 syntax queries, mean ms): words 2.71 (vtext snap) / 1.19 (ES) / 0.99 (OS);
+boolean 2.67 / 1.30 / 1.18; phrases 3.46 / 1.93 / 1.82; `w/N`, `pre/N` 3.27 / 3.37 / 3.10;
+prefix and wildcard 3.29 / 2.55 / 2.52; fuzzy 4.73 / 2.17 / 2.47.
+
+### Throughput, 32 clients (queries per second)
+
+| Dataset | vtext live | vtext snap | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|---:|
+| MS MARCO | 721 | 820 | 2,494 | 2,754 |
+| Enron | 1,053 | 1,266 | 3,131 | 3,052 |
+| PubMed | 1,077 | 1,306 | 4,538 | 4,539 |
+| Wikipedia, Hebrew | 1,154 | 1,399 | 4,515 | 4,979 |
+| Wikipedia, Arabic | 1,170 | 1,429 | 4,924 | 5,155 |
+| MS MARCO, batches of 20 | 1,669 | 1,665 | 2,674 | 2,751 |
+| Enron, batches of 20 | **4,033** | 4,002 | 3,172 | 3,276 |
+
+A resource pool for search (`EXECUTIONPARALLELISM 1`, `PLANNEDCONCURRENCY 64`,
+`bench/pool_test.sh`) did not change vtext's throughput (within 3%): the limit is the cost of a
+statement in Vertica, not the planning of resources.
+
+### Index build and size
+
+| Dataset | vtext build + merge (s) | Elasticsearch (s) | OpenSearch (s) | vtext cache (MB) | vtext tables (MB) | Elasticsearch (MB) | OpenSearch (MB) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| MS MARCO | 376.8 | 214.3 | 207.2 | 2,787 | 1,599 | 4,119 | 4,167 |
+| Enron | 62.0 | 90.1 | 52.8 | 627 | 343 | 1,226 | 1,227 |
+| PubMed | 63.8 | 100.0 | 51.3 | 637 | 406 | 1,190 | 1,190 |
+| Wikipedia, Hebrew | 153.6 | 159.1 | 66.1 | 1,233 | 745 | 2,279 | 2,275 |
+| Wikipedia, Arabic | 111.1 | 119.0 | 47.3 | 933 | 525 | 1,588 | 1,588 |
+
+vtext: `create_index` (analysis, index tables, node cache) and `merge(name, 1)`; the COPY of the
+text into Vertica is not included (MS MARCO 275 s). The engines: bulk load, refresh and force merge
+into one segment. Without the merge, vtext's MS MARCO build takes 167 s (16 segments); the merge
+is single-threaded (future work).
+
+### Same answers
+
+| Dataset | Queries | Same count | Same scores at every rank (vs ES / OS) | Same documents above the 10th score |
+|---|---:|---:|---:|---:|
+| MS MARCO | 6,980 | - | 6,786 / 6,786 | 6,920 |
+| Enron | 40 | 40 | 39 / 39 | 39 |
+| PubMed | 40 | 40 | 39 / 39 | 40 |
+| Wikipedia, Hebrew | 30 | 29 | 29 / 29 | 29 |
+| Wikipedia, Arabic | 30 | 30 | 26 / 26 | 29 |
+
+Elasticsearch is compared with vtext's `bm25='classic'` (its scale), OpenSearch with the default.
+The differences that remain: fuzzy words (the engines blend the statistics of the expansions; one
+query each in Enron and PubMed), and words the analyzers see differently: Snowball 3.2 (vtext)
+against Lucene's older Snowball (`international` stems to `internat` in one and `intern` in the
+other), and a few tokens in mixed or broken text. Ties (documents with the same score) are broken
+by doc_id in vtext and by internal order in the engines.
+
+### Where Elasticsearch and OpenSearch win, and why
+
+- **Small, cheap queries.** A Vertica statement costs about 2 ms before vtext runs: `SELECT 1`
+  takes 1.0 ms through vsql, a transform UDx without input 1.55 ms, the same over a one-row view
+  1.74 ms; vtext's own work for a word query on Enron is 0.02 ms. A profile of thousands of search
+  statements shows 2% of the time in the library. The engines answer such queries in 1 to 2 ms
+  round trip.
+- **Throughput with one query per request.** Each statement goes through the parser, planner and
+  executor of Vertica; 32 clients reach 800 to 1,400 statements per second. Batches (`queries`)
+  remove most of that cost.
+- **Phrases of frequent words** and **single fuzzy words**: Lucene skips blocks of documents that
+  cannot enter the top 10 for phrases, and intersects a Levenshtein automaton with its term
+  dictionary; vtext checks every document that has all the words of a phrase (in parallel slices),
+  and walks its dictionary as a trie.
+- **Build of large collections**: the merge into one segment is single-threaded.
+- **The live view** costs about 1 ms more than the snap view per statement (a `UNION ALL` in the
+  plan); and a large live tail is analyzed for every query.
+
+### Where vtext wins
+
+- **The 99th percentile** on MS MARCO (7.7 ms against 15 to 16 ms), and the mean there with the snap
+  view against Elasticsearch.
+- **Proximity over OR groups** (`w/N`, `pre/N`): on Enron `california w/5 (energy OR power OR
+  electricity)` 10.5 ms against 26.3 and 34.7 ms, `(stock OR shares) w/3 (sell OR sold OR selling)`
+  4.3 ms against 13.3 and 10.0 ms.
+- **Batches**: 4,033 queries per second on Enron against 3,172 and 3,276 with `_msearch`.
+- **Size**: half to two thirds of the engines' store; the text is not copied.
+- **Freshness**: every committed row is searchable without a refresh; a refresh of 88,418 rows
+  takes 3.1 s against about 8.5 s.
+- **No second system**: the index is in Vertica tables, backed up and secured with the database,
+  searched with SQL next to the data.
+
+### Method
+
+- Machine: Intel Core Ultra 7 165H (22 logical cores), 61 GB RAM, NVMe disk, Ubuntu 26.04.1.
+  Vertica 26.3.0-2 Enterprise, one node; vtext 0.1.0 (g++ 15.2, -O3), unfenced (fenced: 10.1 ms
+  against 5.0 ms on MS MARCO, live view). Elasticsearch 9.5.6 and OpenSearch 3.10.0 from their
+  tarballs, 16 GB heap, security off, 1 shard, 0 replicas, force-merged into one segment. One
+  engine runs at a time; the clients run on the same machine (127.0.0.1).
+- Data (`bench/data/fetch.sh`, `prepare.py`): MS MARCO passage ranking (8.8M passages, the 6,980
+  dev queries with judgements), Enron email (CMU release), PubMed (every citation with an abstract
+  in the first 60 baseline files: 932,746), Hebrew and Arabic Wikipedia (the first 300,000
+  articles of the CirrusSearch dumps). The same prepared file is loaded into Vertica (COPY) and into the engines
+  (`_bulk`).
+- Analyzers: the engines use `icu_tokenizer`, `icu_normalizer` (nfkc_cf), Latin accent folding,
+  Lucene's Arabic and Persian normalization, Hebrew points removed, and English Snowball on a
+  stemmed field next to an exact one (`bench/load_engines.py`); vtext's own analyzer does the same
+  steps. English sets are searched with stemming, Hebrew and Arabic in exact mode (no equivalent
+  stemmer in the engines).
+- Queries: MS MARCO as plain text (a `match` query; vtext `syntax='plain'`); the other sets with 40
+  or 30 syntax queries each (`bench/queries/`), translated from vtext's parsed query into the
+  engines' query DSL (`bench/run_engines.py`: bool, match_phrase, span_near, span_multi, prefix,
+  wildcard, fuzzy). Throughput uses each set repeated 25 times. Top 10, no total hit count.
+- Timing: one warm-up run, then 3 measured runs; per query the best of the 3. Client time is the
+  whole round trip seen by the client (vsql `\timing`; HTTP), the numbers above; server time
+  (Vertica's `query_requests`, the engines' `took`) is in the full tables. Every client connection
+  sends one unmeasured request first.
+
+### Run the benchmark yourself
+
+On a Linux machine with Vertica (one node is enough), 22 cores or more recommended, 32 GB of RAM
+and about 40 GB of free disk:
+
+    # 1. vtext
+    git clone <this repository> && cd vertica-text-udx
+    make deps && make && make test
+    export VSQL_HOST=localhost VSQL_PORT=5433 VSQL_USER=dbadmin VSQL_PASSWORD=... VSQL_DATABASE=...
+    make deploy
+
+    # 2. data (downloads about 12 GB into ~/vtext_data; check each dataset's license, see fetch.sh)
+    bench/run_all.sh data
+
+    # 3. Elasticsearch and OpenSearch (tarballs into ~/vtext_bench, ports 9200 and 9201, 127.0.0.1 only)
+    bench/run_all.sh engines
+
+    # 4. everything else: vtext, fenced, Elasticsearch, OpenSearch, refresh, report (about 2 hours)
+    bench/run_all.sh env vtext fenced es os refresh report
+
+    # 5. optional: batches and the resource pool
+    bench/pool_test.sh msmarco enron
+
+The results are appended to `bench/results/*.jsonl`; `python3 -I bench/report.py` writes
+`bench/results/summary.md` and the charts again. `VTEXT_SETS="enron pubmed"` limits the datasets,
+`VTEXT_REPEAT` changes the number of measured runs. Every step is capped in time, so a stalled
+download or engine never blocks the run.
 
 ## FAQ
 
@@ -548,8 +741,9 @@ session there (docs/design.md).
 **Is the cache safe to delete?** Yes. It is a copy of the index tables; `CALL vtext.load_all('<index>')`
 writes it again. A node without its cache answers with an error that says so.
 
-**Fenced or unfenced?** Unfenced is faster (no process boundary); fenced protects the node from a
-crash in the library. Both are tested; the benchmark reports both.
+**Fenced or unfenced?** Unfenced is faster (no process boundary): on MS MARCO 5.0 ms per query
+against 10.1 ms fenced, because the input rows and the results cross into a separate process.
+Fenced protects the node from a crash in the library. Both are tested.
 
 **How much memory?** The node cache is memory-mapped: the operating system keeps the used parts in
 its file cache, shared by every query. A build needs about the size of the segments it writes; a
@@ -587,6 +781,9 @@ SQL (UNION ALL, `vtext.hybrid` with weights).
   was not available for testing.
 
 **Future work** (out of scope for this version):
+
+- A parallel merge (the merge into one segment is single-threaded: 210 s of MS MARCO's 377 s).
+- Block-max skipping for phrases, as Lucene does.
 
 - Dictionary-based lemmatization.
 - German compound splitting.

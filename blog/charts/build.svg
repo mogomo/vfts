@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="465" viewBox="0 0 720 465" role="img" aria-label="Index build time">
+<style>
+.bg{fill:#fcfcfb}.t1{fill:#0b0b0b}.t2{fill:#52514e}.ax{stroke:#d9d8d4}
+.vtext{fill:#2a78d6}.es{fill:#eb6834}.os{fill:#1baf7a}
+.vtext_snap{fill:url(#hatch);stroke:#2a78d6;stroke-width:1}
+@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.ax{stroke:#3a3a38}.vtext{fill:#3987e5}.es{fill:#d95926}.os{fill:#199e70}.vtext_snap{fill:url(#hatch);stroke:#3987e5}}
+text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+</style>
+<defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)"><rect class="bg" width="6" height="6"/><rect class="vtext" width="3" height="6"/></pattern></defs>
+<rect class="bg" width="720" height="465" rx="6"/>
+<text class="t1" x="16" y="24" font-size="15" font-weight="600">Index build time</text>
+<text class="t2" x="16" y="42" font-size="12">seconds, lower is better</text>
+<rect class="vtext" x="16" y="52" width="10" height="10" rx="2"/>
+<text class="t2" x="30" y="61" font-size="12">vtext (Vertica)</text>
+<rect class="es" x="156.0" y="52" width="10" height="10" rx="2"/>
+<text class="t2" x="170.0" y="61" font-size="12">Elasticsearch</text>
+<rect class="os" x="281.6" y="52" width="10" height="10" rx="2"/>
+<text class="t2" x="295.6" y="61" font-size="12">OpenSearch</text>
+<text class="t1" x="110" y="109.5" font-size="12" text-anchor="end">MS MARCO</text>
+<path class="vtext" d="M120,80 h506.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-506.0 z"><title>vtext: 376.8</title></path>
+<text class="t2" x="636.0" y="91" font-size="11">377</text>
+<path class="es" d="M120,97 h286.05573248407643 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-286.05573248407643 z"><title>es: 214.3</title></path>
+<text class="t2" x="416.05573248407643" y="108" font-size="11">214</text>
+<path class="os" d="M120,114 h276.44585987261144 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-276.44585987261144 z"><title>os: 207.2</title></path>
+<text class="t2" x="406.44585987261144" y="125" font-size="11">207</text>
+<text class="t1" x="110" y="178.5" font-size="12" text-anchor="end">Enron</text>
+<path class="vtext" d="M120,149 h79.9171974522293 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-79.9171974522293 z"><title>vtext: 62.0</title></path>
+<text class="t2" x="209.9171974522293" y="160" font-size="11">62.0</text>
+<path class="es" d="M120,166 h117.95063694267516 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-117.95063694267516 z"><title>es: 90.1</title></path>
+<text class="t2" x="247.95063694267515" y="177" font-size="11">90.1</text>
+<path class="os" d="M120,183 h67.46496815286623 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-67.46496815286623 z"><title>os: 52.8</title></path>
+<text class="t2" x="197.46496815286622" y="194" font-size="11">52.8</text>
+<text class="t1" x="110" y="247.5" font-size="12" text-anchor="end">PubMed</text>
+<path class="vtext" d="M120,218 h82.35350318471338 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-82.35350318471338 z"><title>vtext: 63.8</title></path>
+<text class="t2" x="212.35350318471336" y="229" font-size="11">63.8</text>
+<path class="es" d="M120,235 h131.35031847133757 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-131.35031847133757 z"><title>es: 100.0</title></path>
+<text class="t2" x="261.3503184713376" y="246" font-size="11">100</text>
+<path class="os" d="M120,252 h65.43471337579618 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-65.43471337579618 z"><title>os: 51.3</title></path>
+<text class="t2" x="195.43471337579618" y="263" font-size="11">51.3</text>
+<text class="t1" x="110" y="316.5" font-size="12" text-anchor="end">Wikipedia he</text>
+<path class="vtext" d="M120,287 h203.89808917197453 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-203.89808917197453 z"><title>vtext: 153.6</title></path>
+<text class="t2" x="333.89808917197456" y="298" font-size="11">154</text>
+<path class="es" d="M120,304 h211.34235668789808 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-211.34235668789808 z"><title>es: 159.1</title></path>
+<text class="t2" x="341.3423566878981" y="315" font-size="11">159</text>
+<path class="os" d="M120,321 h85.46656050955413 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-85.46656050955413 z"><title>os: 66.1</title></path>
+<text class="t2" x="215.46656050955414" y="332" font-size="11">66.1</text>
+<text class="t1" x="110" y="385.5" font-size="12" text-anchor="end">Wikipedia ar</text>
+<path class="vtext" d="M120,356 h146.37420382165604 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-146.37420382165604 z"><title>vtext: 111.1</title></path>
+<text class="t2" x="276.374203821656" y="367" font-size="11">111</text>
+<path class="es" d="M120,373 h157.06687898089172 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-157.06687898089172 z"><title>es: 119.0</title></path>
+<text class="t2" x="287.0668789808917" y="384" font-size="11">119</text>
+<path class="os" d="M120,390 h60.02070063694268 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-60.02070063694268 z"><title>os: 47.3</title></path>
+<text class="t2" x="190.02070063694268" y="401" font-size="11">47.3</text>
+<line class="ax" x1="120" y1="74" x2="120" y2="411" stroke-width="1"/>
+</svg>
