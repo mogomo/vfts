@@ -139,3 +139,24 @@ milestone). Check again on other versions.
 - A node's local vsql needs the database password in the environment where it is not set by the
   shell profile (VSQL_PASSWORD); the scripts never store it.
 - (M8) `QUOTE_LITERAL(x)` of a VARCHAR(65000) variable fails: "ERROR 9688: Function quote_literal may give a 130003-octet result; the limit is 65000 octets". Declare the variable at most 32,000 long.
+
+## Verified in milestone M8 (26.3.0-2, single node, 22 cores, 61 GB)
+- The declared width of a transform function's output column decides its speed: tbuild over
+  300,000 MS MARCO passages, 5.67 million output rows into a temporary table: 164 s with a
+  `LONG VARBINARY(32000000)` column, 75 s with `LONG VARBINARY(1048576)`, 8.4 s with
+  `LONG VARBINARY(65000)` and `VARCHAR(256)` strings. A profile of the slow case: 73% kernel time
+  (futexes, TLB-shootdown interrupts), 0.2% in the library. vtext declares 65,000 bytes and cuts
+  larger position payloads into parts. A table-to-table copy of the same rows takes 2.1 s.
+- `OVER(PARTITION BY expr)` over 8.8 million rows with a LONG VARCHAR text column sorts the input
+  first: the build function waited (0.2% of the samples in the library) while Vertica sorted and
+  moved the text. `OVER(PARTITION BEST)` runs several instances per node on local rows without
+  sorting: 1,310% CPU instead of 354%.
+- With `PARTITION BEST` the number of instances is Vertica's choice (on 22 cores: about one per
+  core); an id unique per instance cannot be read from the SDK, so tbuild draws random segment ids
+  under a per-build sequence number and the procedure checks them.
+- `CLOSE_SESSION` is a meta-function and cannot be used in a SELECT list with other columns
+  ("ERROR 6809: Inappropriate usage of meta-function"); `SELECT INTERRUPT_STATEMENT(session_id,
+  statement_id)` with literals stops a running statement.
+- COPY of a 3 GB file with custom delimiters (`DELIMITER E'\001' RECORD TERMINATOR E'\002' NO
+  ESCAPE`) into a single-node table took about 4 minutes (8.8 million rows).
+- (M8) After a redeploy of an unfenced library (CREATE OR REPLACE LIBRARY), threads that the previous version started stay in the server process; a query that waited for the old pool's queue slowed from 4 to 10 ms until the database was restarted. Benchmarks start from a restarted database.

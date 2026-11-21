@@ -1,5 +1,6 @@
 #include "search.h"
 #include "expand.h"
+#include "parallel.h"
 #include "postings.h"
 #include "stemmer.h"
 
@@ -468,7 +469,7 @@ struct Searcher::Impl {
     std::vector<const std::vector<std::uint32_t> *> masked;
     std::vector<Leaf> leaves;
     float cache[256];
-    float boost;                // 1 + k1: the BM25 of Elasticsearch / OpenSearch (LegacyBM25Similarity)
+    float boost;                // 1, or 1 + k1 with bm25='classic' (Elasticsearch's LegacyBM25Similarity)
     Stemmer stemmer;
 
     Impl(Searcher &searcher, const SearchOptions &opts) : s(searcher), o(opts)
@@ -483,7 +484,7 @@ struct Searcher::Impl {
         }
         for (auto &t : s.tail_segs_) { segs.push_back(t.get()); dead.push_back(nullptr); dcs.push_back(nullptr); masked.push_back(&none); }
         (void)n;
-        boost = 1.0f + o.k1;
+        boost = o.classic ? 1.0f + o.k1 : 1.0f;
         const float avgdl = s.stats_.avgdl();
         for (int i = 0; i < 256; ++i)
             cache[i] = 1.0f / (o.k1 * ((1.0f - o.b) + o.b * static_cast<float>(norm_to_length(static_cast<std::uint8_t>(i))) / avgdl));
@@ -894,7 +895,7 @@ struct Searcher::Impl {
         return true;
     }
 
-    void maxscore(std::size_t si, const PNode &p, TopK &top, std::atomic<float> &shared)
+    void maxscore(std::size_t si, const PNode &p, TopK &top, std::atomic<float> &shared, std::uint32_t lo, std::uint32_t hi)
     {
         const Segment &seg = *segs[si];
         const std::uint8_t *norms = seg.norms();
@@ -917,7 +918,7 @@ struct Searcher::Impl {
                 for (std::uint32_t t : L.ids[si]) { x.its.emplace_back(seg, t); x.its.back().prefetch_norms(norms); }
             }
             x.ub = x.term_bound(cache);
-            x.advance(0);
+            x.advance(lo);
             m.push_back(std::move(x));
         }
         if (m.empty()) return;
@@ -976,9 +977,9 @@ struct Searcher::Impl {
                 if (kth > th) { th = kth; set_ne(); }
             }
         };
-        const std::uint32_t nd = seg.n_docs();
+        const std::uint32_t nd = hi;            // this task's docnos: [lo, hi)
         const std::uint32_t W = o.window ? o.window : 8192;
-        for (std::uint32_t ws = 0; ws < nd;) {
+        for (std::uint32_t ws = lo; ws < nd;) {
             th = std::max(th, theta());
             const std::uint32_t we = nd - ws > W ? ws + W - 1 : nd - 1;
             if (th > -1e299) {
@@ -1043,20 +1044,36 @@ struct Searcher::Impl {
         }
     }
 
-    template <class F> void each_segment(F f)
+    // Work items: every segment, cut into slices of docnos so that one large segment is searched by
+    // several threads too (each slice has its own top k; they share the threshold).
+    struct Task { std::size_t si; std::uint32_t lo, hi; };
+    std::vector<Task> tasks() const
     {
-        const std::size_t n = segs.size();
-        const std::size_t threads = std::min<std::size_t>(static_cast<std::size_t>(std::max(o.threads, 1)), n);
-        if (threads <= 1) { for (std::size_t si = 0; si < n; ++si) f(si); return; }
-        std::vector<std::thread> pool;
-        std::vector<std::exception_ptr> errors(threads);
-        for (std::size_t t = 0; t < threads; ++t)
-            pool.emplace_back([&, t] {
-                try { for (std::size_t si = t; si < n; si += threads) f(si); }
-                catch (...) { errors[t] = std::current_exception(); }
-            });
-        for (auto &th : pool) th.join();
-        for (auto &e : errors) if (e) std::rethrow_exception(e);
+        std::vector<Task> t;
+        std::uint64_t total = 0;
+        for (const Segment *s : segs) total += s->n_docs();
+        const std::size_t threads = static_cast<std::size_t>(std::max(o.threads, 1));
+        constexpr std::uint32_t MIN_SLICE = 65536, ALIGN = 8192;
+        for (std::size_t si = 0; si < segs.size(); ++si) {
+            const std::uint32_t nd = segs[si]->n_docs();
+            std::uint64_t k = total ? (threads * static_cast<std::uint64_t>(nd) + total - 1) / total : 1;
+            k = std::max<std::uint64_t>(1, std::min<std::uint64_t>(k, nd / MIN_SLICE));
+            std::uint32_t lo = 0;
+            for (std::uint64_t j = 1; j <= k; ++j) {
+                std::uint32_t hi = j == k ? nd : static_cast<std::uint32_t>((static_cast<std::uint64_t>(nd) * j / k) / ALIGN * ALIGN);
+                if (hi <= lo) continue;
+                t.push_back({si, lo, hi});
+                lo = hi;
+            }
+            if (nd == 0) t.push_back({si, 0, 0});
+        }
+        return t;
+    }
+
+    template <class F> void each_task(const std::vector<Task> &t, F f)
+    {
+        const std::function<void(std::size_t)> fn = f;
+        Pool::instance().run(t.size(), static_cast<std::size_t>(std::max(o.threads, 1)), fn);
     }
 };
 
@@ -1157,24 +1174,28 @@ std::vector<Hit> Searcher::search(const std::string &query, const SearchOptions 
     const PNode p = im.plan(q);
     const auto t_exec = std::chrono::steady_clock::now();
     if (opts.stats) opts.stats->plan_us += std::chrono::duration<double, std::micro>(t_exec - t_plan).count();
-    const std::size_t n = im.segs.size();
-    std::vector<std::vector<Cand>> per(n);
+    const std::vector<Impl::Task> tasks = im.tasks();
+    std::vector<std::vector<Cand>> per(tasks.size());
     const bool fast = opts.pruning && Impl::disjunction_of_leaves(p);
     std::atomic<float> shared(-std::numeric_limits<float>::infinity());
-    im.each_segment([&](std::size_t si) {
+    im.each_task(tasks, [&](std::size_t ti) {
+        const Impl::Task &t = tasks[ti];
+        const std::size_t si = t.si;
         const Segment &seg = *im.segs[si];
         TopK top(opts.k);
-        if (fast) {
-            im.maxscore(si, p, top, shared);
-        } else {
-            Scoring sc{im.cache, seg.norms()};
-            std::unique_ptr<It> root = im.build(si, p, sc);
-            for (std::uint32_t d = root->next(); d != NO_DOC; d = root->next()) {
-                if (im.is_dead(si, d)) continue;
-                top.offer(root->score(), seg.doc_id(d));
+        if (t.hi > t.lo) {
+            if (fast) {
+                im.maxscore(si, p, top, shared, t.lo, t.hi);
+            } else {
+                Scoring sc{im.cache, seg.norms()};
+                std::unique_ptr<It> root = im.build(si, p, sc);
+                for (std::uint32_t d = root->advance(t.lo); d < t.hi; d = root->next()) {
+                    if (im.is_dead(si, d)) continue;
+                    top.offer(root->score(), seg.doc_id(d));
+                }
             }
         }
-        per[si] = std::move(top.heap);
+        per[ti] = std::move(top.heap);
     });
     if (std::getenv("VTEXT_DEBUG")) std::fprintf(stderr, "  threshold at the end: %.3f\n", shared.load());
     if (opts.stats) opts.stats->exec_us += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t_exec).count();
@@ -1194,14 +1215,16 @@ std::uint64_t Searcher::count(const std::string &query, const SearchOptions &opt
     if (q.kind == QKind::None) return 0;
     Impl im(*this, opts);
     const PNode p = im.plan(q);
-    const std::size_t n = im.segs.size();
-    std::vector<std::uint64_t> per(n, 0);
-    im.each_segment([&](std::size_t si) {
-        Scoring sc{im.cache, im.segs[si]->norms()};
-        std::unique_ptr<It> root = im.build(si, p, sc);
+    const std::vector<Impl::Task> tasks = im.tasks();
+    std::vector<std::uint64_t> per(tasks.size(), 0);
+    im.each_task(tasks, [&](std::size_t ti) {
+        const Impl::Task &t = tasks[ti];
+        if (t.hi <= t.lo) return;
+        Scoring sc{im.cache, im.segs[t.si]->norms()};
+        std::unique_ptr<It> root = im.build(t.si, p, sc);
         std::uint64_t c = 0;
-        for (std::uint32_t d = root->next(); d != NO_DOC; d = root->next()) c += !im.is_dead(si, d);
-        per[si] = c;
+        for (std::uint32_t d = root->advance(t.lo); d < t.hi; d = root->next()) c += !im.is_dead(t.si, d);
+        per[ti] = c;
     });
     std::uint64_t total = 0;
     for (std::uint64_t c : per) total += c;

@@ -5,9 +5,10 @@
 // deleted and masked documents. A document's score therefore depends only on the document and on
 // the live collection, never on how documents are split into segments or nodes.
 //
-// BM25 (k1 = 1.2, b = 0.75) as Elasticsearch and OpenSearch compute it: Lucene's BM25Similarity
-// with the weight multiplied by (1 + k1) (their LegacyBM25Similarity, the classic BM25 formula), in
-// the same float arithmetic, with Lucene's one-byte length norms (segment.h). docs/design.md "Scoring".
+// BM25 (k1 = 1.2, b = 0.75) as Lucene's BM25Similarity computes it, the scores of OpenSearch, in the
+// same float arithmetic, with Lucene's one-byte length norms (segment.h). With classic = true the
+// weights are multiplied by (1 + k1), the classic BM25 formula and the scores of Elasticsearch
+// (its LegacyBM25Similarity). The order of the hits is the same. docs/design.md "Scoring".
 #ifndef VTEXT_ENGINE_SEARCH_H
 #define VTEXT_ENGINE_SEARCH_H
 
@@ -31,6 +32,7 @@ struct SearchOptions {
     int prefix_length = 0;              // fuzzy: leading code points that must match exactly
     std::uint32_t max_expansions = 50;  // prefix, wildcard, fuzzy: terms per word at most
     float k1 = 1.2f, b = 0.75f;
+    bool classic = false;               // bm25='classic': weights times (1 + k1), the scores of Elasticsearch
     int threads = 1;                    // segments searched in parallel
     bool pruning = true;                // MaxScore for OR queries (false: score every match; same result)
     std::uint32_t window = 0;           // MaxScore window in docnos (0: 8192)

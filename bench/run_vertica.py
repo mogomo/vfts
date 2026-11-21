@@ -14,6 +14,8 @@
     --repeat R         measured runs; per query the best time is kept (default 3)
     --run FILE         write the hits of the first measured run: qid, doc_id, rank, score
     --param 'x=y'      more tsearch parameters (for example threads=1, max_expansions=100000)
+    --batch B          B queries per statement (the parameter queries, one per line); times per
+                       query are the statement's time divided by B
 
 Every client is one vsql session that runs its share of the queries, each a labelled statement.
 Server time per query: v_monitor.query_requests (end - start, microseconds). Client time: vsql
@@ -54,6 +56,7 @@ def main():
     repeat = int(arg("--repeat", 3))
     run_path = arg("--run")
     extra = [sys.argv[i + 1] for i, a in enumerate(sys.argv) if a == "--param"]
+    batch = int(arg("--batch", 1))
     queries = []
     with open(qpath, encoding="utf-8") as f:
         for line in f:
@@ -65,13 +68,21 @@ def main():
     params = [f"index={lit(index)}", f"mode={lit(mode)}"] + ([] if counting else [f"k={k}"]) + (["syntax='plain'"] if plain else []) + extra
 
     def statement(i, label):
+        if batch > 1:
+            # queries i .. i+batch-1 in the parameter queries (one "qid<TAB>query" per line)
+            ids = list(range(i, min(i + batch, n)))
+            lines = "\n".join(f"{j}\t{queries[j][1]}" for j in ids)
+            cols = "qid, count" if counting else "qid, doc_id, rank, score"
+            return (f"SELECT /*+LABEL({label}_{i})*/ {cols} FROM (SELECT vtext.{fn}(* USING PARAMETERS queries={lit(lines)}, "
+                    f"{', '.join(params)}) OVER() FROM {schema}.{index}_{view}) r;\n")
         qid, text = queries[i]
         cols = f"{i}, count" if counting else f"{i}, doc_id, rank, score"
         return (f"SELECT /*+LABEL({label}_{i})*/ {cols} FROM (SELECT vtext.{fn}(* USING PARAMETERS query={lit(text)}, "
                 f"{', '.join(params)}) OVER() FROM {schema}.{index}_{view}) r;\n")
 
     def run_once(label, record):
-        parts = [list(range(c, n, clients)) for c in range(clients)]
+        starts = list(range(0, n, batch))           # one statement per batch of consecutive queries
+        parts = [starts[c::clients] for c in range(clients)]
         outs = [None] * clients
         errs = [0]
 
@@ -98,7 +109,9 @@ def main():
                 m = re.match(r"Time: First fetch.*All rows formatted: ([0-9.]+) ms", line)
                 if m:
                     if last is not None:
-                        client_ms[last] = float(m.group(1))
+                        b0 = last - last % batch if batch > 1 else last
+                        for j in range(b0, min(b0 + batch, n)):
+                            client_ms[j] = float(m.group(1)) / min(batch, n - b0)
                     continue
                 p = line.split("\t")
                 if len(p) >= 2 and p[0].isdigit():
@@ -131,7 +144,9 @@ def main():
         for line in out.splitlines():
             lab, us, st, en = line.split("\t")
             i = int(lab.rsplit("_", 1)[1])
-            server[i] = min(server[i], int(us) / 1000.0)
+            m = min(batch, n - i)
+            for j in range(i, i + m):
+                server[j] = min(server[j], int(us) / 1000.0 / m)
             starts.append(st)
             ends.append(en)
         if starts:
@@ -151,7 +166,7 @@ def main():
     def pct(v, p):
         return round(v[min(len(v) - 1, int(p * len(v)))], 3) if v else 0
 
-    print(json.dumps({"engine": "vtext", "index": index, "view": view, "queries": n, "measured": len(s), "clients": clients,
+    print(json.dumps({"engine": "vtext", "index": index, "view": view, "batch": batch, "queries": n, "measured": len(s), "clients": clients,
                       "mode": mode, "plain": plain, "count": counting, "k": k, "params": extra, "errors": errors,
                       "server_ms": {"mean": round(sum(s) / max(len(s), 1), 3), "p50": pct(s, .5), "p90": pct(s, .9), "p99": pct(s, .99), "max": pct(s, 1)},
                       "client_ms": {"mean": round(sum(c) / max(len(c), 1), 3), "p50": pct(c, .5), "p90": pct(c, .9), "p99": pct(c, .99), "max": pct(c, 1)},

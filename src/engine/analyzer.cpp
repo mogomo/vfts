@@ -6,6 +6,7 @@
 #include <unicode/unistr.h>
 #include <unicode/uscript.h>
 #include <unicode/utext.h>
+#include <unicode/utf8.h>
 #include <unicode/uversion.h>
 
 #include <mutex>
@@ -141,6 +142,23 @@ void unify_apostrophes(icu::UnicodeString &u)
     }
 }
 
+// Emoji are words too, as in Lucene's ICUTokenizer (ICU's word rules give them no word status):
+// characters shown as emoji by default (Emoji_Presentation), a character followed by the emoji
+// variation selector U+FE0F (❤️), flags (regional indicators) and keycaps (U+20E3). Symbols in text
+// presentation (© ™) are not words.
+bool is_emoji(std::string_view seg)
+{
+    if (seg.empty() || static_cast<unsigned char>(seg[0]) < 0xC0 && seg.find("\xE2\x83\xA3") == std::string_view::npos) return false;
+    UChar32 c;
+    for (int32_t i = 0, n = static_cast<int32_t>(seg.size()); i < n;) {
+        U8_NEXT(reinterpret_cast<const uint8_t *>(seg.data()), i, n, c);
+        if (c < 0) continue;
+        if (c == 0xFE0F || c == 0x20E3) return true;
+        if (u_hasBinaryProperty(c, UCHAR_EMOJI_PRESENTATION) || u_hasBinaryProperty(c, UCHAR_REGIONAL_INDICATOR)) return true;
+    }
+    return false;
+}
+
 } // namespace
 
 struct Analyzer::Impl {
@@ -224,8 +242,8 @@ void Analyzer::analyze(std::string_view text, Lang doc_lang)
     std::uint32_t pos = 0;
     int32_t start = bi.first();
     for (int32_t end = bi.next(); end != icu::BreakIterator::DONE; start = end, end = bi.next()) {
-        if (bi.getRuleStatus() < UBRK_WORD_NONE_LIMIT) continue;      // spaces, punctuation
         const std::string_view word = text.substr(static_cast<std::size_t>(start), static_cast<std::size_t>(end - start));
+        if (bi.getRuleStatus() < UBRK_WORD_NONE_LIMIT && !is_emoji(word)) continue;      // spaces, punctuation
         const Script s = normalize_piece(word, doc_lang, norm);
         if (norm.empty() || norm.size() > opts_.max_token_bytes) continue;
         Lang stem_lang = LANG_NONE;

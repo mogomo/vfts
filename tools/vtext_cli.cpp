@@ -161,6 +161,7 @@ static int search(int argc, char **argv)
     o.match = std::string(opt(argc, argv, "--mode", "stem")) == "exact" ? MatchMode::Exact : MatchMode::Stem;
     o.pruning = !flag(argc, argv, "--no-pruning");
     o.query.plain = flag(argc, argv, "--plain");
+    o.classic = flag(argc, argv, "--classic");
     o.window = static_cast<std::uint32_t>(std::atoi(opt(argc, argv, "--window", "0")));
     o.query.op_and = flag(argc, argv, "--and");
     const bool counting = flag(argc, argv, "--count");
@@ -263,6 +264,26 @@ static std::string to_json(const QNode &n)
     return "{}";
 }
 
+// tokens <file.tsv> [--lang en]: per line "id<TAB>text", prints "id<TAB>count<TAB>terms" (debugging)
+static int tokens(int argc, char **argv)
+{
+    AnalyzerOptions ao;
+    ao.default_lang = parse_lang(opt(argc, argv, "--lang", "en"));
+    ao.unsupported_plain = true;
+    Analyzer a(ao);
+    std::ifstream in(argv[2]);
+    std::string line;
+    while (std::getline(in, line)) {
+        const std::size_t tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        a.analyze(line.substr(tab + 1));
+        std::printf("%s\t%zu\t", line.substr(0, tab).c_str(), a.size());
+        for (std::size_t i = 0; i < a.size(); ++i) std::printf("%s%.*s", i ? " " : "", static_cast<int>(a.term(i).size()), a.term(i).data());
+        std::printf("\n");
+    }
+    return 0;
+}
+
 static int explain(int argc, char **argv)
 {
     AnalyzerOptions ao;
@@ -291,6 +312,7 @@ int main(int argc, char **argv)
         if (argc >= 5 && std::strcmp(argv[1], "merge") == 0) return merge(argc, argv);
         if (argc >= 5 && std::strcmp(argv[1], "search") == 0) return search(argc, argv);
         if (argc >= 3 && std::strcmp(argv[1], "explain") == 0) return explain(argc, argv);
+        if (argc >= 3 && std::strcmp(argv[1], "tokens") == 0) return tokens(argc, argv);
     } catch (const std::exception &e) {
         std::fprintf(stderr, "vtext_cli: %s\n", e.what());
         return 1;

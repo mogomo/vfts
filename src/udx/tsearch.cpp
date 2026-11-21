@@ -51,6 +51,24 @@ private:
         const std::string index = read_index_name(s);
         std::vector<std::pair<vint, std::string>> queries;
         if (s.has("query")) queries.emplace_back(0, s.text("query", ""));
+        if (s.has("queries")) {
+            // many queries in one parameter: one per line, "qid<TAB>query" (or only the query: qid = line number)
+            const std::string all = s.text("queries", "");
+            std::size_t at = 0;
+            vint line = 0;
+            while (at < all.size()) {
+                std::size_t e = all.find('\n', at);
+                if (e == std::string::npos) e = all.size();
+                const std::string l = all.substr(at, e - at);
+                ++line;
+                if (!l.empty()) {
+                    const std::size_t tab = l.find('\t');
+                    if (tab == std::string::npos) queries.emplace_back(line, l);
+                    else queries.emplace_back(std::stoll(l.substr(0, tab)), l.substr(tab + 1));
+                }
+                at = e + 1;
+            }
+        }
         std::vector<std::int64_t> mask;
         std::vector<TailDoc> tail;
         std::set<std::int64_t> in_tail;
@@ -103,6 +121,9 @@ private:
         if (op == "and" || op == "AND") o.query.op_and = true;
         else if (op != "or" && op != "OR") fail("operator must be 'or' or 'and', not '" + op + "'");
         o.query.stopwords = s.boolean("stopwords", false);
+        const std::string bm25 = s.text("bm25", "lucene");
+        if (bm25 == "classic") o.classic = true;
+        else if (bm25 != "lucene") fail("bm25 must be 'lucene' (the scores of OpenSearch) or 'classic' (times k1 + 1: the scores of Elasticsearch)");
         const std::string syntax = s.text("syntax", "query");
         if (syntax == "plain") o.query.plain = true;
         else if (syntax != "query") fail("syntax must be 'query' or 'plain', not '" + syntax + "'");
@@ -117,8 +138,8 @@ private:
         o.max_expansions = static_cast<std::uint32_t>(me);
         std::int64_t th = s.integer("threads", 0);
         if (th < 0 || th > 256) fail("threads must be 0 (automatic) to 256");
-        if (th == 0) th = std::max<std::int64_t>(1, std::min<std::int64_t>(static_cast<std::int64_t>(li->refs.size()) + (tail.empty() ? 0 : 1),
-                                                                         std::thread::hardware_concurrency()));
+        // 0: one thread per core; large segments are cut into slices of documents (search.h)
+        if (th == 0) th = std::max<std::int64_t>(1, std::thread::hardware_concurrency());
         o.threads = static_cast<int>(th);
 
         for (auto &q : queries) {
@@ -173,6 +194,7 @@ public:
     {
         p.addVarchar(128, "index");
         p.addVarchar(65000, "query");
+        p.addLongVarchar(32000000, "queries");
         p.addInt("k");
         p.addVarchar(16, "mode");
         p.addVarchar(16, "match");
@@ -180,6 +202,7 @@ public:
         p.addVarchar(8, "operator");
         p.addBool("stopwords");
         p.addVarchar(16, "syntax");
+        p.addVarchar(16, "bm25");
         p.addInt("prefix_length");
         p.addInt("max_expansions");
         p.addInt("threads");

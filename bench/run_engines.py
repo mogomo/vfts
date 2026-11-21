@@ -108,7 +108,7 @@ class Translator:
         if k == "wildcard":
             return {"wildcard": {"body.exact": {"value": t["p"], "rewrite": "constant_score"}}}
         if k == "fuzzy":
-            return {"fuzzy": {"body.exact": {"value": t["w"], "fuzziness": t["edits"], "transpositions": True, "max_expansions": 50}}}
+            return {"fuzzy": {"body.exact": {"value": t["w"], "fuzziness": t["edits"], "transpositions": True, "max_expansions": 1000}}}
         if k == "near":
             field = "body.exact" if self.has_pattern(t) else self.field   # one field per span query
             return self.span(t, field)

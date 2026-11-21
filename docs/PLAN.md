@@ -75,4 +75,12 @@ equal plain SQL; BM25 scores equal the formula within 1e-4), tests/sql/test_fres
 - [x] hybrid (RRF and weighted) with vvector; test on a small fixture with hand-computed answers, and tsearch + vsearch fused in SQL
 
 ### M8 benchmark and documents
-Filled in when it starts.
+- [x] datasets downloaded and prepared (bench/data), Elasticsearch 9.5.6 and OpenSearch 3.10.0 installed natively
+- [x] loaders and runners (vtext through vsql, engines through HTTP), relevance evaluation
+- [x] speed work: MaxScore with impacts, windows, stem group postings, doc-range slices, thread pool
+- [x] build path in Vertica: PARTITION BEST, declared widths, local cache write
+- [x] MS MARCO measured on vtext, Elasticsearch, OpenSearch
+- [ ] Enron, PubMed, Wikipedia he/ar on all three
+- [ ] fenced run, refresh of 1% new rows
+- [ ] report, README performance, blog, demo run
+- [ ] Eon retest after the M8 changes

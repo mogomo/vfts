@@ -453,8 +453,11 @@ BEGIN
     --    views show a wider tail, which is still exact).
     PERFORM CALL vtext.make_views(nm);
     RAISE NOTICE 'vtext: index % generation %: % (% s)', nm, g_new, note, ROUND(secs, 1);
-    -- 9. Tiered merge, when the policy finds a tier with merge_factor segments.
-    PERFORM CALL vtext.merge(nm, 0);
+    -- 9. Tiered merge, when the policy finds a tier with merge_factor segments. Not after a full build:
+    --    its segments are the parallel units of a search (merge them with vtext.merge when wanted).
+    IF NOT full_ THEN
+        PERFORM CALL vtext.merge(nm, 0);
+    END IF;
 END;
 $$;
 

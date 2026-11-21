@@ -24,7 +24,9 @@ the README; the exact bytes are in docs/format.md.
 One pipeline for documents and queries (`src/engine/analyzer.cpp`):
 
 1. ICU word boundaries (UAX #29) over the UTF-8 text, so offsets are byte offsets. Segments with
-   no word status (spaces, punctuation) are dropped. "Holmes'", "Holmes," and "Holmes-style" give
+   no word status (spaces, punctuation) are dropped, except emoji, which are words as in Lucene's
+   ICUTokenizer (found comparing token counts with Elasticsearch on MS MARCO: 7,600 of 506
+   million tokens differed, all emoji). "Holmes'", "Holmes," and "Holmes-style" give
    "holmes"; צה"ל and צה״ל stay one word.
 2. NFKC with case folding (ICU `nfkc_cf`); in Turkish documents I -> ı and İ -> i first. An ASCII
    word takes a fast path (lower-casing is all NFKC_CF does to ASCII).
@@ -52,18 +54,18 @@ only. A wrong stem changes which terms a query expands to; it never changes the 
 
 ## Scoring
 
-BM25 (k1 = 1.2, b = 0.75) exactly as Elasticsearch and OpenSearch compute it, in the same float
-operations: Lucene's `BM25Similarity` with the weight multiplied by (1 + k1) (their
-`LegacyBM25Similarity`; the classic form `idf * tf * (k1 + 1) / (tf + K)`):
+BM25 (k1 = 1.2, b = 0.75) exactly as Lucene's `BM25Similarity` and OpenSearch compute it, in the
+same float operations:
 
     idf    = (float) ln(1 + (N - df + 0.5) / (df + 0.5))
-    w      = (1 + k1) * idf                                               float
     norm_i = 1 / (k1 * ((1 - b) + b * length(norm byte i) / avgdl))       per norm byte, float
-    score  = w - w / (1 + tf * norm_i)
+    score  = idf - idf / (1 + tf * norm_i)
 
-Measured on MS MARCO: the first check against Elasticsearch showed every score 2.2 times smaller
-than Elasticsearch's with the same ranking, because Lucene's own `BM25Similarity` leaves out the
-constant (1 + k1); vtext now includes it.
+`bm25='classic'` multiplies the weight by (1 + k1) first (in float): the classic formula
+`idf * tf * (k1 + 1) / (tf + K)`, which Elasticsearch uses (its `LegacyBM25Similarity`). Measured on
+MS MARCO: Elasticsearch 9.5.6 scores are exactly 2.2 times those of OpenSearch 3.10.0 for the
+same documents; the order is the same. vtext defaults to OpenSearch's scale (the formula the
+design asks for) and offers Elasticsearch's.
 
 with the one-byte document length of Lucene (exact below 24 tokens, 4 significant bits above).
 A phrase scores with the sum of its words' idf and its frequency (exact: matches; sloppy: the sum of

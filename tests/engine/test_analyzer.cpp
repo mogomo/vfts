@@ -92,6 +92,9 @@ static void latin()
     CHECK_EQ(terms("Straße"), V({"strasse"}));                  // case folding: ß -> ss
     CHECK_EQ(terms("ﬁle ＡＢＣ"), V({"file", "abc"}));           // NFKC: ligature, full width
     CHECK_EQ(terms("e-mail"), V({"e", "mail"}));
+    // emoji are words (as in Lucene's ICUTokenizer); other symbols are not
+    CHECK_EQ(terms("I love pizza 🍕 and ❤️ hearts"), V({"i", "love", "pizza", "🍕", "and", "❤", "hearts"}));
+    CHECK_EQ(terms("price: $5 & 10% ©2020 ™"), V({"price", "5", "10", "2020"}));
     // English Snowball
     CHECK_EQ(stem("running", "en"), std::string("run"));
     CHECK_EQ(stem("connections", "en"), std::string("connect"));

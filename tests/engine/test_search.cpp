@@ -64,7 +64,7 @@ struct Ref {
     }
     float bm25(float idf, float freq, std::size_t len)
     {
-        const float w = 2.2f * idf;     // (1 + k1) * idf, as Elasticsearch / OpenSearch
+        const float w = idf;            // Lucene's BM25Similarity (OpenSearch)
         return w - w / (1.0f + freq * cache[length_to_norm(static_cast<std::uint32_t>(len))]);
     }
     static std::vector<std::uint32_t> positions(const Doc &d, const std::set<std::string> &ts)
@@ -353,6 +353,33 @@ static void many_segments()
     }
 }
 
+// One segment of 200,000 documents, searched with 1 thread and with 8 (slices of the docnos):
+// the same hits and counts.
+static void slices()
+{
+    Rng r(21);
+    SegmentBuilder b(aopts());
+    for (int i = 0; i < 200000; ++i) {
+        std::string t;
+        for (int k = 0; k < 6; ++k) t += std::string(VOCAB[r.below(NV)]) + " ";
+        b.add(i * 3, t);
+    }
+    const std::string bytes = b.finish(1);
+    Segment seg(bytes.data(), bytes.size());
+    Rng rq(22);
+    for (int k = 0; k < 60; ++k) {
+        const std::string q = rand_query(rq, 2);
+        Searcher s1(aopts(), {SegmentRef{&seg, nullptr, nullptr}}), s8(aopts(), {SegmentRef{&seg, nullptr, nullptr}});
+        SearchOptions o1, o8;
+        o1.k = o8.k = 20;
+        o8.threads = 8;
+        const auto x = s1.search(q, o1), y = s8.search(q, o8);
+        bool same = x.size() == y.size();
+        for (std::size_t j = 0; same && j < x.size(); ++j) same = x[j].doc_id == y[j].doc_id && x[j].score == y[j].score;
+        if (!same || s1.count(q, o1) != s8.count(q, o8)) { ++failures; std::printf("FAIL slices change the result of %s\n", q.c_str()); }
+    }
+}
+
 static void sloppy_phrase()
 {
     // Lucene's sloppy phrase: matchLength = |(p1 - 1) - p0| for two words; freq = sum 1/(1+len)
@@ -419,6 +446,7 @@ int main()
 {
     single_segment();
     many_segments();
+    slices();
     sloppy_phrase();
     prefix_wildcard_fuzzy();
     std::printf("%d query comparisons\n", compared);
