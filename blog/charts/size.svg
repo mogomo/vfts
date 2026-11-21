@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="465" viewBox="0 0 720 465" role="img" aria-label="Index size">
 <style>
 .bg{fill:#fcfcfb}.t1{fill:#0b0b0b}.t2{fill:#52514e}.ax{stroke:#d9d8d4}
-.vtext{fill:#2a78d6}.es{fill:#eb6834}.os{fill:#1baf7a}
+.vtext{fill:#2a78d6}.es{fill:#eb6834}.os{fill:#1baf7a}.vtext_b{fill:#eda100}.vtext_s{fill:#6250d6}
 .vtext_snap{fill:url(#hatch);stroke:#2a78d6;stroke-width:1}
-@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.ax{stroke:#3a3a38}.vtext{fill:#3987e5}.es{fill:#d95926}.os{fill:#199e70}.vtext_snap{fill:url(#hatch);stroke:#3987e5}}
+@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.ax{stroke:#3a3a38}.vtext{fill:#3987e5}.es{fill:#d95926}.os{fill:#199e70}.vtext_b{fill:#c98500}.vtext_s{fill:#9085e9}.vtext_snap{fill:url(#hatch);stroke:#3987e5}}
 text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}
 </style>
 <defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)"><rect class="bg" width="6" height="6"/><rect class="vtext" width="3" height="6"/></pattern></defs>

@@ -18,6 +18,7 @@ log() { echo "$(date +%T) $*"; }
 W() { local t=$1; shift; timeout 3600 python3 -I bench/plan_c/cpuwrap.py "$RES" "$t" -- "$@"; }
 
 qfile() { case $1 in msmarco) echo "$DATA/msmarco/queries.dev.small.tsv" ;; *) echo "bench/queries/$1_x25.tsv" ;; esac; }
+lfile() { case $1 in msmarco) echo "$DATA/msmarco/queries.dev.small.tsv" ;; *) echo "bench/queries/$1.tsv" ;; esac; }   # one-client sets
 qextra() { case $1 in msmarco) echo "--plain" ;; *) echo "" ;; esac; }
 VT() {   # test dataset view clients [run_vertica options...]
     local t=$1 ds=$2 view=$3 c=$4; shift 4
@@ -232,6 +233,74 @@ step_e2() {   # Elasticsearch / OpenSearch, native client, as many requests as s
         done
         bench/engines/engines.sh stop "$e" > /dev/null
     done
+}
+
+governor() {   # set the CPU frequency governor of every CPU (performance for the measurements)
+    for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo "$1" | sudo -n tee "$g" > /dev/null 2>&1 || { log "governor: no passwordless sudo, left as it is"; break; }; done
+    log "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
+}
+f1_vtext() {   # round: vtext through the broker in three modes, every dataset
+    local r=$1
+    bench/engines/engines.sh stop all > /dev/null 2>&1
+    for ds in $F1_SETS; do
+        [ -f "$O/v1_$ds.req" ] || python3 -I bench/plan_c/mkreq.py "$ds" "$(qfile "$ds")" "$O/v1_$ds.req" --min "$MINREQ"
+        python3 -I bench/plan_c/mkreq.py "$ds" "$(lfile "$ds")" "$O/l1_$ds.req"
+        for m in serve batch single; do
+            local extra
+            case $m in
+                serve)  extra="--mode serve" ;;
+                batch)  extra="--mode sql --sessions 8 --max-batch 32" ;;      # batches of whatever waits
+                single) extra="--mode sql --sessions 32 --max-batch 1" ;;      # one statement per query
+            esac
+            pkill -x vtext_broker 2> /dev/null; sleep 0.5
+            # shellcheck disable=SC2046
+            build/tools/vtext_broker --port 9300 --schema bench $extra $(broker_params "$ds") > "$O/f1_broker.log" 2>&1 &
+            local bp=$!
+            sleep 1
+            kill -0 $bp 2> /dev/null || { log "f1: broker did not start: $(cat "$O/f1_broker.log")"; continue; }
+            W "f1_r${r}_vtext_${m}_$ds" timeout 900 build/tools/httpload 9300 "$O/v1_$ds.req" --clients 32 --repeat 3
+            # one client: latency (the set once, not cycled; best time per query over 3 runs)
+            [ "$m" != batch ] && W "f1l_r${r}_vtext_${m}_$ds" timeout 900 build/tools/httpload 9300 "$O/l1_$ds.req" --clients 1 --repeat 3 \
+                --times "$O/f1l_r${r}_vtext_${m}_$ds.times"
+            kill $bp 2> /dev/null; wait $bp 2> /dev/null
+        done
+    done
+}
+f1_engine() {   # round: Elasticsearch or OpenSearch, every dataset
+    local r=$1 e=$2 port=9200
+    [ "$e" = os ] && port=9201
+    bench/engines/engines.sh stop all > /dev/null 2>&1
+    timeout 600 bench/engines/engines.sh start "$e" > /dev/null || { log "f1: $e did not start"; return; }
+    for ds in $F1_SETS; do
+        [ -f "$O/e1_${e}_$ds.req" ] || timeout 1800 python3 -I bench/run_engines.py "$e" "$ds" "$(qfile "$ds")" --mode "$(modeof "$ds")" \
+            --lang "$(langof "$ds")" $(qextra "$ds") --dump "$O/e1_${e}_$ds.req"
+        [ -f "$O/e2_${e}_$ds.req" ] || cycle "$O/e1_${e}_$ds.req" "$MINREQ" "$O/e2_${e}_$ds.req"
+        W "f1_r${r}_${e}_native_$ds" timeout 900 build/tools/httpload "$port" "$O/e2_${e}_$ds.req" --clients 32 --repeat 3
+        [ -f "$O/l1_${e}_$ds.req" ] || timeout 1800 python3 -I bench/run_engines.py "$e" "$ds" "$(lfile "$ds")" --mode "$(modeof "$ds")" \
+            --lang "$(langof "$ds")" $(qextra "$ds") --dump "$O/l1_${e}_$ds.req"
+        W "f1l_r${r}_${e}_native_$ds" timeout 900 build/tools/httpload "$port" "$O/l1_${e}_$ds.req" --clients 1 --repeat 3 \
+            --times "$O/f1l_r${r}_${e}_native_$ds.times"
+    done
+    bench/engines/engines.sh stop "$e" > /dev/null
+}
+step_f1() {   # final 32-client comparison: 3 rounds, engines in a different order each round
+    F1_SETS=${F1_SETS:-enron pubmed msmarco wiki_he wiki_ar}
+    timeout 900 make tools > /dev/null || return 1
+    local old; old=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2> /dev/null || echo none)
+    governor performance
+    f1_engine 1 es; f1_engine 1 os; f1_vtext 1
+    f1_vtext 2; f1_engine 2 os; f1_engine 2 es
+    f1_engine 3 os; f1_vtext 3; f1_engine 3 es
+    governor "$old"
+}
+
+step_f1v() {   # vtext rounds of f1 only (after a change to vtext; the engines' rounds stay as they are)
+    F1_SETS=${F1_SETS:-enron pubmed msmarco wiki_he wiki_ar}
+    timeout 900 make tools > /dev/null || return 1
+    local old; old=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2> /dev/null || echo none)
+    governor performance
+    f1_vtext 1; f1_vtext 2; f1_vtext 3
+    governor "$old"
 }
 
 step_s1() {   # statement shapes: which part of a UDx statement costs (scalar vs transform, volatility)

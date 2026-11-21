@@ -1137,6 +1137,10 @@ struct Searcher::Impl {
         } flush{o.stats, c_cand, c_scored, c_skip, c_probe, n};
         std::vector<int> touched;
         touched.reserve(n);
+        constexpr std::uint32_t TW = 8192;      // term-at-a-time windows: scores and a bit per document
+        std::vector<double> acc;
+        std::vector<std::uint64_t> bits;
+        if (n >= 2) { acc.assign(TW, 0.0); bits.assign(TW / 64, 0); }
         const DocSet *dset = dead[si];
         std::vector<double> wb(n), wp(n + 1, 0.0);
         std::vector<std::size_t> perm(n);       // lists by window bound, ascending
@@ -1207,6 +1211,65 @@ struct Searcher::Impl {
                 x.doc = d;
                 ws = we + 1;
                 continue;
+            }
+            if (n - ne >= 2 && we - ws < TW) {
+                // several essential lists: term at a time over the window (Lucene's MaxScore does
+                // this too). Each list adds its contributions into acc; then every document with a
+                // bit set is a candidate. The sums are exact in double (a few float terms), so the
+                // scores are the same as document at a time. The window keeps its essential set:
+                // a later rise of the threshold only makes the check below stricter.
+                bool simple = true;
+                for (std::size_t j = ne; j < n && simple; ++j) simple = m[perm[j]].its.size() == 1;
+                if (simple) {
+                    const std::size_t nw = ne;
+                    for (std::size_t j = nw; j < n; ++j) {
+                        MLeaf &x = m[perm[j]];
+                        PostingIter &it = x.its[0];
+                        const float w = x.w;
+                        std::uint32_t d = x.doc;
+                        while (d <= we) {
+                            const std::uint32_t o = d - ws;
+                            const float c = x.constant ? 1.0f : w - w / (1.0f + static_cast<float>(it.tf()) * cache[norms[d]]);
+                            acc[o] += c;
+                            bits[o >> 6] |= 1ull << (o & 63);
+                            d = it.next();
+                        }
+                        x.doc = d;
+                    }
+                    const std::size_t nwords = ((we - ws) >> 6) + 1;
+                    for (std::size_t wi = 0; wi < nwords; ++wi) {
+                        std::uint64_t b = bits[wi];
+                        bits[wi] = 0;
+                        while (b) {
+                            const std::uint32_t o = static_cast<std::uint32_t>(wi * 64 + static_cast<std::size_t>(__builtin_ctzll(b)));
+                            b &= b - 1;
+                            double sc = acc[o];
+                            acc[o] = 0.0;
+                            const std::uint32_t d = ws + o;
+                            ++c_cand;
+                            if (dset && dset->test(d)) continue;
+                            if ((sc + wp[nw]) * slack < th) continue;
+                            bool out = false;
+                            for (std::size_t j = nw; j-- > 0;) {
+                                if ((sc + wp[j + 1]) * slack < th) { out = true; break; }
+                                MLeaf &x = m[perm[j]];
+                                ++c_probe;
+                                if (x.advance(d) == d) sc += x.score(cache, norms);
+                            }
+                            if (out) continue;
+                            ++c_scored;
+                            top.offer(static_cast<float>(sc), seg.doc_id(d));
+                            if (top.heap.size() >= top.k) {
+                                const float kth = top.heap.front().score;
+                                float cur = shared.load(std::memory_order_relaxed);
+                                while (kth > cur && !shared.compare_exchange_weak(cur, kth)) {}
+                                if (kth > th) th = kth;
+                            }
+                        }
+                    }
+                    ws = we + 1;
+                    continue;
+                }
             }
         general:
             // candidates in [ws, we] from the essential lists
@@ -1509,6 +1572,31 @@ std::uint64_t Searcher::count(const std::string &query, const SearchOptions &opt
     prepare();
     const QNode q = parse_query(query, *analyzer_, opts.query);
     return run_count(q, opts);
+}
+
+std::vector<std::int64_t> Searcher::matches(const std::string &query, const SearchOptions &opts_in)
+{
+    prepare();
+    const QNode q = parse_query(query, *analyzer_, opts_in.query);
+    if (q.kind == QKind::None) return {};
+    SearchOptions opts = opts_in;
+    opts.threads = static_cast<int>(Pool::instance().share(static_cast<std::size_t>(std::max(opts.threads, 1))));
+    Impl im(*this, opts);
+    const PNode p = im.plan(q);
+    const std::vector<Impl::Task> tasks = im.tasks();
+    std::vector<std::vector<std::int64_t>> per(tasks.size());
+    im.each_task(tasks, [&](std::size_t ti) {
+        const Impl::Task &t = tasks[ti];
+        if (t.hi <= t.lo) return;
+        Scoring sc{im.cache, im.segs[t.si]->norms()};
+        std::unique_ptr<It> root = im.build(t.si, p, sc);
+        const Segment &seg = *im.segs[t.si];
+        for (std::uint32_t d = root->advance(t.lo); d < t.hi; d = root->next())
+            if (!im.is_dead(t.si, d)) per[ti].push_back(seg.doc_id(d));
+    });
+    std::vector<std::int64_t> out;
+    for (auto &v : per) out.insert(out.end(), v.begin(), v.end());
+    return out;
 }
 
 std::uint64_t Searcher::run_count(const QNode &q, const SearchOptions &opts_in)

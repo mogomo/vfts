@@ -22,7 +22,13 @@ ENGINES = [("vtext", "vtext (Vertica)"), ("es", "Elasticsearch"), ("os", "OpenSe
 # last refresh: the guarantee of Elasticsearch and OpenSearch)
 Q_ENGINES = [("vtext", "vtext live"), ("vtext_snap", "vtext snap"), ("es", "Elasticsearch"), ("os", "OpenSearch")]
 # categorical slots 1-3 of the validated reference palette (light, dark): fixed per engine
-COLORS = {"vtext": ("#2a78d6", "#3987e5"), "es": ("#eb6834", "#d95926"), "os": ("#1baf7a", "#199e70")}
+COLORS = {"vtext": ("#2a78d6", "#3987e5"), "es": ("#eb6834", "#d95926"), "os": ("#1baf7a", "#199e70"),
+          # vtext sent as batches / one statement per query (throughput.json): palette slots 4 and 7
+          "vtext_b": ("#eda100", "#c98500"), "vtext_s": ("#6250d6", "#9085e9")}
+# the native-client comparison (bench/run_all.sh throughput -> throughput.json)
+T_ENGINES = [("vtext", "vtext, tserve"), ("vtext_b", "vtext, batches"), ("vtext_s", "vtext, 1 statement per query"),
+             ("es", "Elasticsearch"), ("os", "OpenSearch")]
+T_KEYS = {"vtext": "vtext_serve", "vtext_b": "vtext_batch", "vtext_s": "vtext_single", "es": "es_native", "os": "os_native"}
 SETS = [("msmarco", "MS MARCO"), ("enron", "Enron"), ("pubmed", "PubMed"), ("wiki_he", "Wikipedia he"), ("wiki_ar", "Wikipedia ar")]
 
 
@@ -103,6 +109,64 @@ def svg_bars(path, title, unit, groups, better, series=None):
     s.append("</svg>")
     with open(path, "w") as f:
         f.write("\n".join(s))
+
+
+def svg_glance(path, f):
+    """One-page summary card: hero numbers (each from a recorded result) and the throughput ratio
+    per collection. f: dict of facts; tiles whose fact is missing are left out."""
+    W, H = 960, 490
+    blue, orange, aqua = COLORS["vtext"], COLORS["es"], COLORS["os"]
+    s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="vtext at a glance">',
+         "<style>.bg{fill:#fcfcfb}.tile{fill:#f2f1ee}.t1{fill:#0b0b0b}.t2{fill:#52514e}.ax{stroke:#bdbcb7}"
+         f".v{{fill:{blue[0]}}}.e{{fill:{orange[0]}}}"
+         "@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.tile{fill:#262624}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.ax{stroke:#55544f}"
+         f".v{{fill:{blue[1]}}}.e{{fill:{orange[1]}}}}}"
+         "text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}</style>",
+         f'<rect class="bg" width="{W}" height="{H}" rx="8"/>',
+         '<text class="t1" x="24" y="38" font-size="20" font-weight="700">vtext: full-text search inside Vertica, against Elasticsearch and OpenSearch</text>',
+         '<text class="t2" x="24" y="60" font-size="13">One machine, the same documents, analyzers and queries; every number is a recorded run (bench/results/).</text>']
+    tiles = []
+    if f.get("tp_min"):
+        tiles.append((f"{f['tp_min']:.1f}-{f['tp_max']:.1f}x", "queries per second, 32 clients",
+                      f"tserve vs the faster engine, {f['tp_wins']} of {f['tp_sets']} collections"))
+    if f.get("same_pct"):
+        tiles.append((f"{f['same_pct']:.0f}%", "same top 10, same scores",
+                      f"MS MARCO; MRR@10 {f['mrr_v']:.4f} vs {f['mrr_e']:.4f}"))
+    if f.get("j2_v") and f.get("j2_e"):
+        tiles.append((f"{f['j2_e'] / f['j2_v']:.0f}x faster", "change an attribute of 1% of docs",
+                      f"UPDATE {f['j2_v']:.3f} s vs rewrite {f['j2_e']:.1f} s"))
+    if f.get("size_lo"):
+        tiles.append((f"{f['size_lo']:.2f}-{f['size_hi']:.2f}x", "index size of the engines'",
+                      "the text is not copied out of Vertica"))
+    tw = (W - 48 - 16 * (len(tiles) - 1)) / max(len(tiles), 1)
+    for i, (big, l1, l2) in enumerate(tiles):
+        x = 24 + i * (tw + 16)
+        s += [f'<rect class="tile" x="{x}" y="80" width="{tw}" height="112" rx="6"/>',
+              f'<text class="t1" x="{x + 16}" y="124" font-size="30" font-weight="700">{big}</text>',
+              f'<text class="t1" x="{x + 16}" y="150" font-size="13" font-weight="600">{l1}</text>',
+              f'<text class="t2" x="{x + 16}" y="172" font-size="12">{l2}</text>']
+    # ratio bars: tserve q/s divided by the faster engine's, per collection; 1.0x line
+    ratios = f.get("ratios", [])
+    if ratios:
+        top, left, bw, bh, gap = 236, 170, W - 170 - 110, 22, 10
+        vmax = max(2.0, max(r for _, r in ratios))
+        sc = bw / vmax
+        s.append('<text class="t1" x="24" y="222" font-size="14" font-weight="600">Throughput, 32 clients, one query per request: vtext tserve / the faster of Elasticsearch and OpenSearch</text>')
+        for i, (name, r) in enumerate(ratios):
+            y = top + i * (bh + gap)
+            w = r * sc
+            s += [f'<text class="t1" x="{left - 10}" y="{y + 16}" font-size="13" text-anchor="end">{name}</text>',
+                  f'<path class="v" d="M{left},{y} h{w - 4} a4,4 0 0 1 4,4 v{bh - 8} a4,4 0 0 1 -4,4 h{-(w - 4)} z"><title>{name}: {r:.2f}x</title></path>',
+                  f'<text class="t2" x="{left + w + 8}" y="{y + 16}" font-size="12">{r:.2f}x</text>']
+        x1 = left + sc
+        y_end = top + len(ratios) * (bh + gap) - gap
+        s += [f'<line class="ax" x1="{x1}" y1="{top - 6}" x2="{x1}" y2="{y_end + 6}" stroke-width="1.5" stroke-dasharray="4 3"/>',
+              f'<text class="t2" x="{x1}" y="{y_end + 22}" font-size="11" text-anchor="middle">1.0x = the faster engine</text>']
+    for i, line in enumerate(f.get("lose", [])):
+        s.append(f'<text class="t2" x="24" y="{H - 38 + 17 * i}" font-size="12">{line}</text>')
+    s.append("</svg>")
+    with open(path, "w") as fh:
+        fh.write("\n".join(s))
 
 
 def relevance():
@@ -250,8 +314,14 @@ def main():
                  size_g, "lower is better")
 
     # queries
-    for clients, title in ((1, "Latency, 1 client"), (32, "Throughput, 32 clients")):
-        md += [f"## {title}", "",
+    for clients, title in ((1, "Latency, 1 client (vtext through vsql, one statement per query)"),
+                           (32, "Throughput, 32 clients (first run: vsql per client, engines through one Python process)")):
+        md += [f"## {title}", ""]
+        if clients == 32:
+            md += ["Kept for the record. The engines' client here was one Python process with 32 threads, which limited them "
+                   "(Elasticsearch on PubMed, same 1,000 requests: 4,138 q/s through it, 5,943 through a native client). Use the section "
+                   "'Throughput and latency through one native client' below.", ""]
+        md += [
                "Server time: Vertica `v_monitor.query_requests` (statement start to end) / the engines' `took`. Client time: the whole "
                "round trip seen by the client (vsql `\\timing` / HTTP). Best of the measured runs per query, after a warm-up.", "",
                "| Dataset | Engine | Queries | Server mean (ms) | Server p50 | Server p99 | Client mean (ms) | Client p50 | Client p99 | Queries/s |",
@@ -408,6 +478,101 @@ def main():
             else:
                 md.append(f"| {dict(ENGINES)[r['engine']]} | {fmt(r['added'])} | after refresh | {fmt(r['refresh_s'])} | - |")
         md.append("")
+
+    # throughput and latency with one native HTTP client for every engine (bench/plan_c/stage1.sh f1)
+    tp = os.path.join(RES, "throughput.json")
+    if os.path.exists(tp):
+        t = json.load(open(tp))
+        md += ["## Throughput and latency through one native client (step throughput)", "",
+               "32 closed-loop clients (tools/httpload, keep-alive HTTP), one query per request; 3 rounds in alternating order, "
+               "median of the rounds' best q/s; CPU governor performance. vtext through tools/vtext_broker: tserve (one "
+               "statement per session, searches over a channel), batches (8 sessions, idle-else-queue), one statement per query "
+               "(32 sessions). Full table with ranges: throughput.md.", "",
+               "| Dataset | " + " | ".join(n for _, n in T_ENGINES) + " |", "|---|" + "---:|" * len(T_ENGINES)]
+        q_g, l_g = [], []
+        for ds, name in SETS:
+            row, vq, vl = [], {}, {}
+            for e, _ in T_ENGINES:
+                x = t.get(T_KEYS[e], {}).get(ds)
+                y = t.get(T_KEYS[e] + "_1client", {}).get(ds)
+                row.append(fmt(x and x["qps_median"], 0))
+                if x:
+                    vq[e] = x["qps_median"]
+                if y:
+                    vl[e] = y["ms_mean"]
+            md.append(f"| {name} | " + " | ".join(row) + " |")
+            if vq:
+                q_g.append((name, vq))
+            if vl:
+                l_g.append((name, vl))
+        md += ["", "One client, mean ms per query (best of 3 runs per query, median of the rounds):", "",
+               "| Dataset | " + " | ".join(n for e, n in T_ENGINES if e != "vtext_b") + " |", "|---|" + "---:|" * (len(T_ENGINES) - 1)]
+        for ds, name in SETS:
+            md.append(f"| {name} | " + " | ".join(fmt((t.get(T_KEYS[e] + "_1client", {}).get(ds) or {}).get("ms_mean"), 2)
+                                                  for e, _ in T_ENGINES if e != "vtext_b") + " |")
+        md.append("")
+        if q_g:
+            svg_bars(os.path.join(CHARTS, "throughput.svg"), "Throughput, 32 clients", "queries per second, one query per request", q_g,
+                     "higher is better", T_ENGINES)
+        if l_g:
+            svg_bars(os.path.join(CHARTS, "latency_http.svg"), "Mean latency, 1 client, same HTTP client for all", "milliseconds", l_g,
+                     "lower is better", [x for x in T_ENGINES if x[0] != "vtext_b"])
+
+    # search next to other data (bench/join_test.py -> join.jsonl)
+    jn = {r["engine"]: r for r in jsonl("join.jsonl")}
+    if jn:
+        md += ["## Search next to other data (Enron, bench/join_test.py)", "",
+               "An attribute custodian (150 values) for every document; 10 custodians on hold. vtext: a table joined at query time; "
+               "the engines: a field in every document (_update_by_query on a clone of the index). J3 and J4: 40 queries, one "
+               "client, best of 3 per query, mean.", "",
+               "| Test | " + " | ".join(dict(ENGINES)[e] for e in ("vtext", "es", "os") if e in jn) + " |",
+               "|---|" + "---:|" * len(jn)]
+        for key, label, unit in (("j1_add_attribute_s", "J1 add the attribute to every document", "s"),
+                                 ("j2_update_1pct_s", "J2 change it for 1% of the documents", "s"),
+                                 ("j3_mean_ms", "J3 top 10 among the custodians on hold", "ms"),
+                                 ("j4_mean_ms", "J4 matches per custodian", "ms")):
+            md.append(f"| {label} ({unit}) | " + " | ".join(fmt(jn[e].get(key), 3 if unit == "s" else 2) for e in ("vtext", "es", "os") if e in jn) + " |")
+        md.append("")
+
+    # the summary card
+    facts = {}
+    if os.path.exists(tp):
+        t = json.load(open(tp))
+        ratios = []
+        for ds, name in SETS:
+            v = t.get("vtext_serve", {}).get(ds)
+            e = [t.get(k, {}).get(ds) for k in ("es_native", "os_native")]
+            e = [x["qps_median"] for x in e if x]
+            if v and e:
+                ratios.append((name, v["qps_median"] / max(e)))
+        if ratios:
+            facts.update(ratios=ratios, tp_min=min(r for _, r in ratios), tp_max=max(r for _, r in ratios),
+                         tp_wins=sum(r > 1 for _, r in ratios), tp_sets=len(ratios))
+    a = top_agreement("msmarco", "os")
+    if a and a["queries"]:
+        facts["same_pct"] = 100.0 * a["same_scores"] / a["queries"]
+        if rel and "vtext" in rel and "es" in rel:
+            facts["mrr_v"], facts["mrr_e"] = rel["vtext"]["mrr@10"], rel["es"]["mrr@10"]
+        else:
+            facts.pop("same_pct")
+    sz = [g["vtext"] / min(x for x in (g.get("es"), g.get("os")) if x) for _, g in size_g if g.get("vtext") and (g.get("es") or g.get("os"))]
+    if sz:
+        facts["size_lo"], facts["size_hi"] = min(sz), max(sz)
+    if "vtext" in jn and ("es" in jn or "os" in jn):
+        facts["j2_v"] = jn["vtext"]["j2_update_1pct_s"]
+        facts["j2_e"] = min(jn[e]["j2_update_1pct_s"] for e in ("es", "os") if e in jn)
+    facts["lose"] = ["Where Elasticsearch and OpenSearch win: one SQL statement per search (a third to an eighth of their throughput),",
+                     "filtering or counting matches by an attribute (1-3 ms vs 17-18 ms), PubMed with one client, phrases of very frequent words."]
+    if facts.get("ratios"):
+        svg_glance(os.path.join(CHARTS, "glance.svg"), facts)
+
+    # the article uses the same charts
+    blog = os.path.join(HERE, "..", "blog", "charts")
+    if os.path.isdir(blog):
+        import shutil
+        for c in os.listdir(CHARTS):
+            if c.endswith(".svg"):
+                shutil.copyfile(os.path.join(CHARTS, c), os.path.join(blog, c))
 
     with open(os.path.join(RES, "summary.md"), "w") as f:
         f.write("\n".join(md))

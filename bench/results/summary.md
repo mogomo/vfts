@@ -29,7 +29,7 @@ vtext: `CALL vtext.create_index` (analysis, index tables, node cache) + `CALL vt
 | Wikipedia he | 300,000 | 153.6 | 16.4 | 159.1 | 66.1 | 1,233 | 745 | 2,279 | 2,275 |
 | Wikipedia ar | 300,000 | 111.1 | 13.5 | 119.0 | 47.3 | 933 | 525 | 1,588 | 1,588 |
 
-## Latency, 1 client
+## Latency, 1 client (vtext through vsql, one statement per query)
 
 Server time: Vertica `v_monitor.query_requests` (statement start to end) / the engines' `took`. Client time: the whole round trip seen by the client (vsql `\timing` / HTTP). Best of the measured runs per query, after a warm-up.
 
@@ -56,7 +56,9 @@ Server time: Vertica `v_monitor.query_requests` (statement start to end) / the e
 | Wikipedia ar | Elasticsearch | 30 | 0.43 | 0 | 3 | 1.38 | 1.18 | 4.17 | 619.8 |
 | Wikipedia ar | OpenSearch | 30 | 0.43 | 0 | 4 | 1.27 | 1.09 | 4.41 | 730.4 |
 
-## Throughput, 32 clients
+## Throughput, 32 clients (first run: vsql per client, engines through one Python process)
+
+Kept for the record. The engines' client here was one Python process with 32 threads, which limited them (Elasticsearch on PubMed, same 1,000 requests: 4,138 q/s through it, 5,943 through a native client). Use the section 'Throughput and latency through one native client' below.
 
 Server time: Vertica `v_monitor.query_requests` (statement start to end) / the engines' `took`. Client time: the whole round trip seen by the client (vsql `\timing` / HTTP). Best of the measured runs per query, after a warm-up.
 
@@ -194,3 +196,36 @@ Queries where an engine is faster than vtext snap, the largest differences first
 | Elasticsearch | 88,418 | after refresh | 8.6 | - |
 | OpenSearch | 88,418 | after refresh | 8.1 | - |
 | vtext | 88,418 | yes (live tail) | 3.1 | 1,965.4 |
+
+## Throughput and latency through one native client (step throughput)
+
+32 closed-loop clients (tools/httpload, keep-alive HTTP), one query per request; 3 rounds in alternating order, median of the rounds' best q/s; CPU governor performance. vtext through tools/vtext_broker: tserve (one statement per session, searches over a channel), batches (8 sessions, idle-else-queue), one statement per query (32 sessions). Full table with ranges: throughput.md.
+
+| Dataset | vtext, tserve | vtext, batches | vtext, 1 statement per query | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|---:|---:|
+| MS MARCO | 3,227 | 1,812 | 934 | 2,729 | 2,907 |
+| Enron | 5,785 | 2,344 | 1,166 | 3,902 | 3,881 |
+| PubMed | 9,891 | 3,024 | 1,241 | 7,964 | 8,122 |
+| Wikipedia he | 20,526 | 3,607 | 1,308 | 10,100 | 10,166 |
+| Wikipedia ar | 17,588 | 3,473 | 1,327 | 10,050 | 10,469 |
+
+One client, mean ms per query (best of 3 runs per query, median of the rounds):
+
+| Dataset | vtext, tserve | vtext, 1 statement per query | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|---:|
+| MS MARCO | 2.94 | 3.83 | 3.95 | 3.60 |
+| Enron | 2.12 | 3.39 | 2.75 | 2.40 |
+| PubMed | 1.19 | 3.18 | 1.30 | 1.07 |
+| Wikipedia he | 0.55 | 3.12 | 1.09 | 1.06 |
+| Wikipedia ar | 0.63 | 3.12 | 1.07 | 1.09 |
+
+## Search next to other data (Enron, bench/join_test.py)
+
+An attribute custodian (150 values) for every document; 10 custodians on hold. vtext: a table joined at query time; the engines: a field in every document (_update_by_query on a clone of the index). J3 and J4: 40 queries, one client, best of 3 per query, mean.
+
+| Test | vtext (Vertica) | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|
+| J1 add the attribute to every document (s) | 0.028 | 223.016 | 228.425 |
+| J2 change it for 1% of the documents (s) | 0.015 | 2.777 | 8.909 |
+| J3 top 10 among the custodians on hold (ms) | 16.81 | 2.92 | 2.74 |
+| J4 matches per custodian (ms) | 18.74 | 1.37 | 1.23 |

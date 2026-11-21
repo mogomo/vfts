@@ -6,6 +6,7 @@
 
 #include "segment.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -100,7 +101,10 @@ public:
             i_ = 0;
         }
         if (decoded_ != block_) { decode(block_); i_ = 0; }
-        while (docs_[i_] < target) ++i_;     // the block's last doc is >= target
+        // the block's last doc is >= target: a few steps first (the next document is the usual
+        // target), then a binary search for a far one
+        for (int k = 0; k < 8 && docs_[i_] < target; ++k) ++i_;
+        if (docs_[i_] < target) i_ = static_cast<std::uint32_t>(std::lower_bound(docs_ + i_ + 1, docs_ + block_n_, target) - docs_);
         return doc_ = docs_[i_];
     }
 
@@ -187,7 +191,9 @@ public:
     }
 
 private:
-    void decode(std::uint32_t b)
+    // prefetch: also the norms of the block's documents (a list that is read document by document;
+    // a list that is only probed at a few documents does not need them)
+    void decode(std::uint32_t b, bool prefetch = true)
     {
         const BlockMeta &m = meta_[b];
         const std::uint32_t n = b + 1 < n_blocks_ ? BLOCK : df_ - b * BLOCK;
@@ -197,7 +203,7 @@ private:
         unpack_bits(p + 2 + packed_bytes(n, db), n, tb, tfs_);
         std::uint32_t prev = b == 0 ? NO_DOC : meta_[b - 1].last_doc;     // NO_DOC + 1 wraps to 0
         for (std::uint32_t k = 0; k < n; ++k) { prev += docs_[k] + 1; docs_[k] = prev; tfs_[k] += 1; }
-        if (norms_) for (std::uint32_t k = 0; k < n; k += 1) __builtin_prefetch(norms_ + docs_[k]);
+        if (norms_ && prefetch) for (std::uint32_t k = 0; k < n; k += 1) __builtin_prefetch(norms_ + docs_[k]);
         block_n_ = n;
         decoded_ = b;
     }

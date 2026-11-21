@@ -15,6 +15,10 @@
 #   es         Elasticsearch: load every dataset, run the queries
 #   os         OpenSearch: the same
 #   refresh    vtext: refresh after 1% new rows (MS MARCO)
+#   throughput 32 clients and 1 client through one native HTTP load generator (tools/httpload):
+#              vtext through tools/vtext_broker (tserve, batches, one statement per query),
+#              Elasticsearch, OpenSearch; 3 rounds in alternating order, CPU governor
+#              "performance" while it runs (bench/plan_c/stage1.sh f1)  -> bench/results/throughput.*
 #   report     tables and charts                           (bench/report.py)
 #
 # Requirements: a Vertica node with vtext deployed (make deploy) and vsql connection variables set
@@ -29,7 +33,7 @@ mkdir -p "$R" "$OUT"
 DATA=${VTEXT_DATA:-$HOME/vtext_data}
 SETS=${VTEXT_SETS:-msmarco enron pubmed wiki_he wiki_ar}
 REPEAT=${VTEXT_REPEAT:-3}
-STEPS=${*:-env data engines vtext fenced es os refresh report}
+STEPS=${*:-env data engines vtext fenced es os refresh throughput report}
 log() { echo "$(date +%T) $*"; }
 
 queries_of() {   # dataset -> "file throughput_file extra_args"
@@ -151,6 +155,13 @@ step_refresh() {
     done
     bench/engines/engines.sh stop all
     timeout 7200 bench/refresh_test.sh msmarco | tee -a "$R/vtext_refresh.jsonl"
+}
+
+step_throughput() {   # needs the indexes of step vtext and the engines' indexes of steps es and os
+    timeout 900 make tools > /dev/null || return 1
+    VTEXT_DATA=$DATA F1_SETS="$SETS" timeout 10000 bench/plan_c/stage1.sh f1
+    grep '"test": "f1' bench/out/plan_c/results.jsonl > "$R/throughput.jsonl"
+    python3 -I bench/plan_c/f1_report.py "$R/throughput.jsonl" --json "$R/throughput.json" | tee "$R/throughput.md"
 }
 
 step_report() { python3 -I bench/report.py; }

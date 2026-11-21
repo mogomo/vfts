@@ -96,6 +96,8 @@ public:
 
     std::vector<Hit> search(const std::string &query, const SearchOptions &opts);
     std::uint64_t count(const std::string &query, const SearchOptions &opts);
+    // The doc_ids of every match (no scores, no order): for joins and GROUP BY over all matches.
+    std::vector<std::int64_t> matches(const std::string &query, const SearchOptions &opts);
     // For searches from several threads at once: call ready() first (after mask / add_tail), then
     // each thread passes its own analyzer (Analyzer is not shared between threads).
     void ready() { prepare(); }

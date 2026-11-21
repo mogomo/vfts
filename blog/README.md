@@ -14,27 +14,60 @@ analysis for every language written with spaces (Arabic and Hebrew included), an
 never stale. This article shows what it does, how to use each function, and how it compares with
 Elasticsearch 9.5 and OpenSearch 3.10 on the same machine, with the same data and the same queries.
 
-**The results, in one paragraph.** On 8.8 million MS MARCO passages, vtext answers a query in
-3.9 ms on average from SQL (5.0 ms when it also searches rows no refresh has seen yet), between
-OpenSearch (3.7 ms) and Elasticsearch (4.1 ms), with half their 99th-percentile latency (7.7 ms
-against 15 to 16 ms). It returns the same documents with the same BM25 scores for 97% of those
-queries, and the same relevance (MRR@10 0.1815). It is fastest on proximity queries and on batched
-queries over the Enron email, and its index is half to two thirds the size. Elasticsearch and
-OpenSearch are faster on small collections and on throughput with one query per request, because
-every Vertica statement costs about 2 ms before the search even starts. Every number here was
-measured, and one script runs it all again.
+**The results, in one paragraph.** With 32 clients sending one query each, vtext answers 1.1 to
+2.0 times as many queries per second as the faster of Elasticsearch and OpenSearch on all five
+collections (Enron 5,785 against 3,902; MS MARCO 3,227 against 2,907; Hebrew Wikipedia 20,526
+against 10,166), when the searches reach it through `vtext.tserve`: one long statement per user
+session that answers searches over a local channel. Sent as one SQL statement each, the same
+searches top out at 934 to 1,327 per second, because every Vertica statement that calls an extension
+costs about 2 ms of parsing, planning and set-up. With a single client, vtext through `tserve` is
+faster on four of the five collections; OpenSearch is faster on PubMed. vtext returns the same
+documents with the same BM25 scores for 97% of the MS MARCO queries, the same relevance (MRR@10
+0.1815), and its index is half to two thirds the size. Every number here was measured, with the same
+load generator for all three, and one script runs it all again.
+
+![vtext at a glance](charts/glance.svg)
 
 ## Contents
 
-1. [What vtext is](#what-vtext-is)
-2. [The functions in ten minutes](#the-functions-in-ten-minutes)
-3. [Fresh without rebuilding](#fresh-without-rebuilding)
-4. [Languages](#languages)
-5. [The benchmark](#the-benchmark)
-6. [Results](#results)
-7. [Where Elasticsearch and OpenSearch win](#where-elasticsearch-and-opensearch-win)
-8. [Run it yourself](#run-it-yourself)
-9. [Conclusion](#conclusion)
+1. [Full-text search, and why it is hard](#full-text-search-and-why-it-is-hard)
+2. [Why inside Vertica](#why-inside-vertica)
+3. [What vtext is](#what-vtext-is)
+4. [The functions in ten minutes](#the-functions-in-ten-minutes) (and [every function on one page](#every-function-on-one-page))
+5. [Fresh without rebuilding](#fresh-without-rebuilding)
+6. [Languages](#languages)
+7. [The benchmark](#the-benchmark)
+8. [Results](#results)
+9. [Search next to other data](#search-next-to-other-data)
+10. [Where Elasticsearch and OpenSearch win](#where-elasticsearch-and-opensearch-win)
+11. [Install it in your Vertica](#install-it-in-your-vertica)
+12. [What is in the repository](#what-is-in-the-repository)
+13. [Run it yourself](#run-it-yourself)
+14. [Conclusion](#conclusion)
+
+## Full-text search, and why it is hard
+
+`LIKE '%contract%'` finds a string. Full-text search finds the documents *about* something, best
+first. That takes four things: **analysis** (split text into words, fold case and accents, reduce
+*contracts* and *contracting* to *contract*, in every language), **ranking** (BM25: frequent use
+of rare query words in a short document scores high), **a query language** (phrases, `w/N`
+proximity, boolean logic, wildcards, typos), and **an inverted index** with top-k algorithms that
+skip documents which cannot make the top ten.
+
+The hard parts are the same for every engine: many languages, stable scores, fast top-k over
+millions of documents, new rows searchable at once, and many users at the same time.
+Elasticsearch and OpenSearch answer them with a separate cluster. vtext answers them inside the
+database that already holds the text.
+
+## Why inside Vertica
+
+| | Search engine next to the database | vtext inside Vertica |
+|---|---|---|
+| Joins | none: copy every attribute into every document | results are rows: `JOIN`, `GROUP BY`, window functions over any table |
+| An attribute changes | rewrite and re-analyze each affected document | `UPDATE` one table; the text index is untouched |
+| Consistency | searchable after a refresh, no transactions | ACID: committed rows are searchable at once |
+| Copies of the text | two, plus a sync pipeline | one; the index is half to two thirds the engines' size |
+| Security, backup | a second system | Vertica logins, grants, resource pools, backups |
 
 ## What vtext is
 
@@ -198,6 +231,30 @@ the two ranked lists with Reciprocal Rank Fusion:
 All of this is `scripts/demo.sh`: it creates the table, runs every step with an explanation, and
 `scripts/demo.sh --pause` waits between the steps for a presentation.
 
+## Every function on one page
+
+The README has each one's parameters and a full example with its output (`scripts/examples.sh`
+runs them all).
+
+| Function | Syntax | Example |
+|---|---|---|
+| create_index | `CALL vtext.create_index(index, source_table [, options])` | `CALL vtext.create_index('notes', 'ex.notes', 'lang=en journal=ex.notes_journal');` |
+| refresh_index | `CALL vtext.refresh_index(index)` | `CALL vtext.refresh_index('notes');` |
+| merge | `CALL vtext.merge(index [, max_segments])` | `CALL vtext.merge('notes', 1);` |
+| rebuild | `CALL vtext.rebuild(index)` | `CALL vtext.rebuild('notes');` |
+| load_all | `CALL vtext.load_all(index)` | `CALL vtext.load_all('notes');` |
+| info | `CALL vtext.info(index)` | `CALL vtext.info('notes');` |
+| drop_index | `CALL vtext.drop_index(index)` | `CALL vtext.drop_index('notes');` |
+| tsearch | `vtext.tsearch(* USING PARAMETERS index, query \| queries [, k, mode, syntax, ...]) OVER() FROM <view>` | `SELECT * FROM (SELECT vtext.tsearch(* USING PARAMETERS index='notes', query='contract w/5 indemn*', k=10) OVER() FROM ex.notes_live) r;` |
+| tcount | `vtext.tcount(* USING PARAMETERS index, query [, ...]) OVER() FROM <view>` | `SELECT * FROM (SELECT vtext.tcount(* USING PARAMETERS index='notes', query='contract') OVER() FROM ex.notes_live) c;` |
+| tmatch | `vtext.tmatch(* USING PARAMETERS index, query [, ...]) OVER() FROM <view>` | `SELECT o.owner, COUNT(*) FROM (SELECT vtext.tmatch(* USING PARAMETERS index='notes', query='contract*') OVER() FROM ex.notes_live) m JOIN ex.owners o USING (doc_id) GROUP BY 1;` |
+| tserve | `vtext.tserve(* USING PARAMETERS index, endpoint, token [, workers, ...]) OVER() FROM <index>_snap` (run by `tools/vtext_broker`) | `curl -XPOST localhost:9300/notes/_search -d '{"query": "contract"}'` |
+| tsnippet | `vtext.tsnippet(text, query [, lang] USING PARAMETERS index [, words, fragments, ...])` | `SELECT vtext.tsnippet(body, 'indemnity' USING PARAMETERS index='notes') FROM ex.notes;` |
+| hybrid | `vtext.hybrid(source, doc_id, rank, score USING PARAMETERS [k, method, ...]) OVER()` | fuse `tsearch` with a vector search: `... FROM (<tsearch list> UNION ALL <vsearch list>) u` |
+| tokenize | `vtext.tokenize(text [, lang] [USING PARAMETERS ...]) OVER()` | `SELECT * FROM (SELECT vtext.tokenize('Holmes'' contracts') OVER()) t;` |
+| tinfo | `vtext.tinfo(USING PARAMETERS index) OVER(PARTITION NODES) FROM vtext.probe` | the cache of every node |
+| tversion | `vtext.tversion() OVER()` | `SELECT * FROM (SELECT vtext.tversion() OVER()) v;` |
+
 ## Fresh without rebuilding
 
 A search index that has to be rebuilt after every load is a batch job, not a search engine. vtext
@@ -256,41 +313,58 @@ next to an exact one; vtext does the same steps itself. The syntax queries are p
 translated into the engines' query DSL (bool, match_phrase, span_near, span_multi, prefix,
 wildcard, fuzzy), so all three run the same query.
 
-**Measured.** Top 10. One warm-up run, then three measured runs; for each query the best of the
-three. Latency is the whole round trip seen by the client (vsql for Vertica, HTTP for the engines);
-throughput is 32 concurrent clients. vtext is measured on both of its views: **live** (every
-committed row) and **snap** (rows up to the last refresh, the guarantee the engines give).
+**Measured.** Top 10, no total hit count. Throughput: 32 closed-loop clients, one query per
+request, from one native load generator (keep-alive HTTP) for all three; vtext is reached through
+`vtext_broker`, an HTTP front end that logs every user in to Vertica with their own credentials.
+Each round sends at least 20,000 requests three times after a warm-up; three rounds, the engines in
+a different order each time, CPU governor `performance`; the median round is reported. Latency: the
+same client with one connection. The first run (latency through vsql, on both of vtext's views:
+**live**, every committed row, and **snap**, rows up to the last refresh) is in the repository.
 
 ## Results
 
-![Mean latency, one client](charts/latency.svg)
-
-**Latency.** On MS MARCO, the collection that is large enough for the search itself to matter,
-vtext's snap view (3.90 ms) sits between OpenSearch (3.68) and Elasticsearch (4.10), and its 99th
-percentile is half of theirs (7.7 ms against 15.4 and 15.9). The live view, which also searches
-rows that no refresh has seen yet, costs about one millisecond more. On the smaller collections the
-engines answer in 1.3 to 1.9 ms and vtext in about 3 ms: the cost of a Vertica statement.
-
-| Collection | vtext live | vtext snap | Elasticsearch | OpenSearch |
-|---|---:|---:|---:|---:|
-| MS MARCO | 5.03 ms | 3.90 ms | 4.10 ms | 3.68 ms |
-| Enron | 4.53 | 3.47 | 3.78 | 3.80 |
-| PubMed | 4.16 | 2.97 | 1.86 | 1.56 |
-| Hebrew Wikipedia | 4.29 | 3.09 | 1.53 | 1.32 |
-| Arabic Wikipedia | 4.22 | 3.07 | 1.38 | 1.27 |
-
-**By kind of query** (the 140 syntax queries, mean ms, vtext snap / Elasticsearch / OpenSearch):
-words 2.71 / 1.19 / 0.99; boolean 2.67 / 1.30 / 1.18; phrases 3.46 / 1.93 / 1.82; proximity
-3.27 / 3.37 / 3.10; prefix and wildcard 3.29 / 2.55 / 2.52; fuzzy 4.73 / 2.17 / 2.47. Proximity over
-OR groups is vtext's strongest case: `california w/5 (energy OR power OR electricity)` on Enron
-takes 10.5 ms against 26.3 and 34.7 ms.
-
 ![Throughput, 32 clients](charts/throughput.svg)
 
-**Throughput.** With one query per statement and 32 clients, the engines serve 2.5 to 4 times more
-queries per second. Sent in batches of 20 (vtext's `queries` parameter, the engines' `_msearch`),
-vtext serves 4,033 queries per second on Enron against 3,172 and 3,276, and 1,669 on MS MARCO
-against 2,674 and 2,751.
+**Throughput.** Queries per second with 32 clients, one query per request:
+
+| Collection | vtext, tserve | vtext, batches | vtext, one statement per query | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|---:|---:|
+| Enron | **5,785** | 2,344 | 1,166 | 3,902 | 3,881 |
+| PubMed | **9,891** | 3,024 | 1,241 | 7,964 | 8,122 |
+| MS MARCO | **3,227** | 1,812 | 934 | 2,729 | 2,907 |
+| Hebrew Wikipedia | **20,526** | 3,607 | 1,308 | 10,100 | 10,166 |
+| Arabic Wikipedia | **17,588** | 3,473 | 1,327 | 10,050 | 10,469 |
+
+The three vtext columns send the same searches three ways. **One statement per query** is what
+an application gets when it runs `SELECT ... vtext.tsearch(...)` for each search: Vertica parses,
+plans and starts an executor for every statement, and statements that call an extension peak at
+about 2,000 per second on this machine with most cores idle (`SELECT 1` reaches 6,000; a scalar
+extension that the planner folds into a constant, 2,571). **Batches** put whatever waits into one
+statement and help, but not enough. **tserve** removes the statement from each search: the broker
+opens a normal session as the user (Vertica checks the password, the grants and the resource pool),
+runs one `vtext.tserve` statement in it, and sends that user's searches to the statement over a
+Unix socket. The statement answers from the snapshot it read when it started, on its own threads.
+
+A note on fairness: the first version of this benchmark sent the engines' queries from one Python
+process, and that client held them back (PubMed: 4,138 queries per second through it, 5,943 through
+a native client on the same requests). All numbers here use the native client for all three.
+
+![Mean latency, one client](charts/latency_http.svg)
+
+**Latency, one client** (mean ms per query, same HTTP client):
+
+| Collection | vtext, tserve | vtext, one statement | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|---:|
+| Enron | **2.12** | 3.39 | 2.75 | 2.40 |
+| PubMed | 1.19 | 3.18 | 1.30 | **1.07** |
+| MS MARCO | **2.94** | 3.83 | 3.95 | 3.60 |
+| Hebrew Wikipedia | **0.55** | 3.12 | 1.09 | 1.06 |
+| Arabic Wikipedia | **0.63** | 3.12 | 1.07 | 1.09 |
+
+**By kind of query** (vtext's engine against Elasticsearch's profile, one thread): words and
+boolean queries cost about the same; `w/N` is faster in vtext (proximity over OR groups is its
+strongest case: `california w/5 (energy OR power OR electricity)` on Enron took 10.5 ms through
+SQL against 26.3 and 34.7 ms); phrases of very frequent words and fuzzy words are faster in Lucene.
 
 **Same answers.** For every syntax query but one the three return the same number of matches; for
 97% of the MS MARCO queries and 133 of the 140 syntax queries, the same top 10 with the same BM25
@@ -312,22 +386,66 @@ single-threaded.
 live view. But a live tail that large costs 2 seconds per query: it is meant to stay small between
 frequent refreshes.
 
+## Search next to other data
+
+Search rarely stands alone. In e-discovery every email belongs to a custodian, and custodians go on
+and off legal hold; in a research warehouse papers have journals, years and grants. A search engine
+has no joins, so each attribute is copied into every document. vtext leaves it in a table.
+
+Enron, 517,401 emails, an attribute *custodian* (150 values), 10 custodians on hold:
+
+| Test | vtext (Vertica) | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|
+| Add the attribute to every document | **0.028 s** | 223 s | 228 s |
+| Move 1% of the documents to another custodian | **0.015 s** | 2.8 s | 8.9 s |
+| Top 10 of a query among the custodians on hold | 16.8 ms | 2.9 ms | **2.7 ms** |
+| Matches per custodian, every match | 18.7 ms | 1.4 ms | **1.2 ms** |
+
+Both sides of this are real. Changing the data around the text is an `UPDATE` of one column in
+Vertica, and a rewrite and re-analysis of whole documents in a search engine: three to four orders
+of magnitude apart. Filtering and counting by an attribute during the search is faster in the
+engines, which keep it next to their postings; vtext passes every match to Vertica's join, which
+costs 17 to 18 ms when thousands of documents match. The answers are the same on both sides.
+
 ## Where Elasticsearch and OpenSearch win
 
 Honestly, and with the reasons:
 
-- **Small queries on small collections.** A Vertica statement costs about 2 ms before vtext runs:
-  `SELECT 1` through vsql takes 1.0 ms, a UDx over a one-row view 1.74 ms. vtext's own work for a
-  one-word query on Enron is 0.02 ms, and a profile of thousands of search statements shows 2% of
-  the time in the library. Elasticsearch and OpenSearch answer such a query in 1 to 2 ms.
-- **Throughput with one query per request**, for the same reason. A resource pool tuned for small
-  statements did not change it; batches do.
-- **Phrases of frequent words and single fuzzy words.** Lucene skips whole blocks of documents that
-  cannot reach the top 10 for phrases and matches fuzzy words with a Levenshtein automaton on its
-  term dictionary; vtext checks every document that has all the words of a phrase (in parallel),
-  and walks its dictionary as a trie with automaton-like jumps.
+- **Many small searches sent as SQL statements.** One statement per query reaches a third to an
+  eighth of the engines' throughput, and a single search as a statement takes about 3 ms on a small
+  collection against 1 to 3 ms. `tserve` is the answer for that traffic; plain SQL stays the
+  answer for searches joined with other data.
+- **PubMed with one client**: OpenSearch 1.07 ms against 1.19 ms, with a lower 99th percentile.
+- **Filtering or counting matches by an attribute** during the search: 1 to 3 ms against 17 to
+  18 ms ([Search next to other data](#search-next-to-other-data)).
+- **Phrases of very frequent words and single fuzzy words**: Lucene's phrase matching and its
+  Levenshtein automaton are faster for these.
 - **Building large collections**: OpenSearch builds fastest everywhere, Elasticsearch beats vtext
   on MS MARCO, because vtext's merge into one segment uses one thread.
+
+## Install it in your Vertica
+
+On a Vertica node (tested on 26.3), as dbadmin, with the vsql connection variables set:
+
+    git clone <the repository> && cd vertica-text-udx
+    ./install.sh       # checks, builds (static: nothing to install on the nodes), tests, deploys to every node, verifies
+
+Then `CALL vtext.create_index('docs', 'app.docs', 'lang=en');` and search. The README's Install
+section covers fenced mode, Eon subclusters, grants for the users who search, the broker for many
+clients, upgrades and removal.
+
+## What is in the repository
+
+| Path | What it is for |
+|---|---|
+| `src/engine/` | the search engine in plain C++17: analysis, index format, top-k search, merge, cache |
+| `src/udx/` | the Vertica functions: thin adapters to the engine |
+| `sql/` | install (tables, functions) and the procedures that manage indexes |
+| `tools/` | `vtext_broker` (HTTP front end for many clients), `httpload` (the benchmark's load generator), `vtext_cli` (the engine without Vertica) |
+| `tests/` | engine unit tests against brute-force models; SQL tests against plain SQL |
+| `bench/` | the benchmark: data download, loaders, runners, join test, report; `results/` every number in this article |
+| `scripts/` | `demo.sh` (every function, one command), `examples.sh` (the README's examples), `deploy.sh` |
+| `docs/` | design, index format, measured Vertica behavior |
 
 ## Run it yourself
 
@@ -335,12 +453,11 @@ Everything above comes from one script, and the README explains every step. On a
 Vertica (one node is enough), 32 GB of RAM and about 40 GB of free disk:
 
     git clone <the repository> && cd vertica-text-udx
-    make deps && make && make test
     export VSQL_HOST=localhost VSQL_PORT=5433 VSQL_USER=dbadmin VSQL_PASSWORD=... VSQL_DATABASE=...
-    make deploy
+    ./install.sh
     bench/run_all.sh data                                       # downloads and prepares the five collections
     bench/run_all.sh engines                                    # installs Elasticsearch and OpenSearch
-    bench/run_all.sh env vtext fenced es os refresh report      # about 2 hours
+    bench/run_all.sh env vtext fenced es os refresh throughput report      # about 3 hours
     bench/pool_test.sh msmarco enron                            # optional
 
 The raw results are in `bench/results/*.jsonl`, with the hits and the time of every query in
@@ -352,11 +469,10 @@ the repository.
 ## Conclusion
 
 vtext puts a real search engine where the data already is. It returns the answers Elasticsearch
-and OpenSearch return, with the same scores, from SQL, on rows committed a moment ago. On a large
-collection it is as fast as they are for a single user, and it leads on proximity searches, tail
-latency, batches and index size. Where every query is tiny and the traffic is high, a dedicated
-search engine is faster, because a database statement costs more than an HTTP request to a search
-engine.
+and OpenSearch return, with the same scores, from SQL, on rows committed a moment ago. Through
+`tserve`, many clients get more searches per second from it than from either engine on every
+collection measured here, as the user they logged in as. Sent one SQL statement at a time, small
+searches cost what a database statement costs, and a dedicated search engine is faster.
 
 If your text lives in Vertica and you search it with SQL next to your other data - e-discovery
 over email, literature in a research warehouse, logs and tickets, Arabic and Hebrew documents - you

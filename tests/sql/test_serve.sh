@@ -40,6 +40,12 @@ B=$(q "SELECT qid || ' ' || doc_id || ' ' || ROUND(score, 4) FROM (SELECT vtext.
 O=$(i=0; for qq in 'alpha' 'bravo OR echo' '"bravo charlie"' 'echo w/2 alpha'; do i=$((i + 1)); ts "$qq" | sed "s/^/$i /"; done)
 expect "batch equals single queries" "$B" "$O"
 
+# tmatch: every match, the same documents as tsearch with a large k
+for qq in 'alpha' 'bravo OR echo' '"bravo charlie"' 'echo w/2 alpha' 'doc1*'; do
+    expect "tmatch: $qq" "$(q "SELECT doc_id FROM (SELECT vtext.tmatch(* USING PARAMETERS index='vt_sv', query='$qq') OVER() FROM vt_sv.vt_sv_live) r ORDER BY 1")" \
+        "$(q "SELECT doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='vt_sv', query='$qq', k=1000000) OVER() FROM vt_sv.vt_sv_live) r ORDER BY 1")"
+done
+
 expect_error "endpoint must be a broker socket" "SELECT vtext.tserve(* USING PARAMETERS index='vt_sv', endpoint='/tmp/other.sock', token='0123456789abcdef0123') OVER() FROM vt_sv.vt_sv_snap" "endpoint must be the socket of vtext_broker"
 expect_error "token required" "SELECT vtext.tserve(* USING PARAMETERS index='vt_sv', endpoint='/tmp/vtext_broker.x.sock', token='short') OVER() FROM vt_sv.vt_sv_snap" "token"
 

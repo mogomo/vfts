@@ -491,7 +491,7 @@ $$;
 -- segment from the node cache (tmerge), store it, mark the inputs merged, load every node, activate.
 CREATE OR REPLACE PROCEDURE vtext.merge_step(nm VARCHAR, seg_list VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
-    iid INT; g INT; g_new INT; cdir VARCHAR(1024); new_id INT; params VARCHAR(65000); n INT;
+    iid INT; g INT; g_new INT; cdir VARCHAR(1024); new_id INT; params VARCHAR(65000); n INT; n_dead INT;
 BEGIN
     SELECT index_id, gen, cache_dir INTO iid, g, cdir FROM vtext.indexes WHERE index_name = nm;
     g_new := g + 1;
@@ -505,6 +505,13 @@ BEGIN
                  || ' AND gen_removed IS NULL AND segment_id IN (' || seg_list || ')';
     PERFORM CALL vtext.load_build(nm, cdir);
     PERFORM CALL vtext.activate(nm, g_new);
+    -- statistics of the new generation (as refresh_index writes them)
+    n_dead := (SELECT COUNT(*) FROM vtext.tombstones t WHERE t.index_id = iid
+               AND t.segment_id IN (SELECT segment_id FROM vtext.segments WHERE index_id = iid AND gen_removed IS NULL));
+    PERFORM INSERT INTO vtext.index_stats
+            SELECT iid, g_new, COALESCE(SUM(n_docs), 0) - n_dead, COALESCE(SUM(sum_len), 0), NULL, COUNT(*),
+                   COALESCE(SUM(n_terms), 0), COALESCE(SUM(bytes), 0), CLOCK_TIMESTAMP()
+            FROM vtext.segments WHERE index_id = iid AND gen_removed IS NULL;
     PERFORM UPDATE vtext.indexes SET gen = g_new WHERE index_name = nm;
     PERFORM COMMIT;
     PERFORM CALL vtext.make_views(nm);

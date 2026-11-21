@@ -13,11 +13,12 @@ A milestone is done when all its tests pass, it is committed, and this file and
 | M6 | `tsnippet`, `hybrid` with vvector | RRF output tested on a small fixture | done 2026-11-21 |
 | M7 | Multi-node Enterprise and Eon with a secondary subcluster; per-node cache | the same results on every system | done 2026-11-21 (Enterprise: 1 node only) |
 | M8 | Benchmark, README, `blog/` article with charts | every number comes from a recorded run | done 2026-11-21 |
+| M9 | Many clients: tserve + vtext_broker, parallel batches, faster phrases and patterns, tmatch, join test | 32-client throughput and join results recorded with one native client for all engines | done 2026-11-21 |
 
 ## Test systems
 
 - Enterprise: one node, Vertica 26.3.0-2 (SDK 26.2.0), Ubuntu 26.04, g++ 15.2, 22 cores, 61 GB.
-- Eon: five nodes (primary subcluster of 3, secondary subcluster of 2), Vertica 26.2.0,
+- Eon: five nodes (primary subcluster of 3, secondary subcluster of 2), Vertica 26.3.0-2 (SDK 26.2.0),
   RHEL 8.10, g++ 8.5, 2 cores and 15 GB per node.
 - Multi-node Enterprise is not available; N-node results come from the Eon cluster.
 
@@ -38,7 +39,7 @@ ICU 79.1, libstemmer_c 3.2.0 (Snowball), CRoaring 5.5.5. See `third_party/fetch.
 - [x] `vtext.tokenize()` UDx for inspection
 
 Result: tests/engine/test_analyzer.cpp and tests/sql/test_tokenize.sh pass on Enterprise 26.3
-(unfenced, g++ 15.2) and on the 5-node Eon cluster 26.2 (fenced, g++ 8.5). Arabic: Lucene's light
+(unfenced, g++ 15.2) and on the 5-node Eon cluster 26.3 (fenced, g++ 8.5). Arabic: Lucene's light
 prefixes are removed before Snowball (found in M4: after the normalization ة -> ه, Snowball alone
 stems "المدرسه" and "مدرسه" differently).
 
@@ -93,3 +94,22 @@ for 97% of MS MARCO and 133 of 140 syntax queries; MRR@10 0.1815 / 0.1815 / 0.18
 MARCO between OpenSearch and Elasticsearch (snap view), p99 half of theirs; slower on small
 collections and on single-query throughput (Vertica's statement cost, about 2 ms); faster on
 proximity, on Enron batches, on refresh; index half to two thirds of the engines' size.
+
+### M9 many clients, joins
+- [x] measurements of the statement cost (bench/plan_c: C0-C7, C12, C13, shapes s1): any UDx statement peaks at about
+      2,000 per second on the test machine (SELECT 1: 6,000), so one statement per query cannot reach the engines
+- [x] native load generator (tools/httpload) for all engines; the Python client had limited Elasticsearch and OpenSearch
+- [x] tsearch batches in parallel (search_many: every (query, slice) piece on the pool, cost-based slices)
+- [x] vtext.tserve (one statement per session, searches over a Unix socket, one-time token) and tools/vtext_broker
+      (HTTP, each user's own sessions, modes serve and sql); tests/sql/test_serve.sh
+- [x] engine: phrase and w/N bounds before positions are read, merged-impact window bounds for phrases, bit sets for
+      large constant-score patterns, stem groups through their own list; every hit and score unchanged (A/B against
+      the M8 engine on all benchmark queries, k = 10 and 100)
+- [x] tmatch (every match, no scores) for joins; bench/join_test.py (attribute changes, filtered search, counts per group)
+- [x] final 32-client and 1-client comparison (bench/run_all.sh throughput), README and blog rewritten
+- [x] Eon (RHEL 8, g++ 8.5, fenced): engine tests and every SQL test, serve included
+
+Result: bench/results/throughput.md, join.jsonl. With 32 clients through tserve, 1.1 to 2.0 times the
+queries per second of the faster engine on all five collections; one statement per query a third to an
+eighth of theirs. Attribute changes about 190 to 8,000 times faster than in the engines; filtering and counting
+by an attribute 6 to 15 times slower.

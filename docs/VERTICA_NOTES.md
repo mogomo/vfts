@@ -94,7 +94,7 @@ milestone). Check again on other versions.
 
 - Vertica 26.3.0-2 reports `sdk_version()` = 26.2.0 (Ubuntu test host, 2026-11-20). The 26.3
   release changed nothing in the core database; libraries are built against the 26.2 SDK headers.
-- (M1, 26.3.0-2 single node, unfenced; 26.2.0 5-node Eon, fenced) A library that links ICU 79.1
+- (M1, 26.3.0-2 single node, unfenced; 26.3.0-2 5-node Eon, fenced) A library that links ICU 79.1
   statically (with `-Wl,--exclude-libs,ALL -Wl,-Bsymbolic`) loads into the Vertica server process
   and works next to Vertica's own ICU; the library is 43 MB, mostly ICU data.
 - (M1) ICU must be built with its tools: `--disable-tools` leaves `libicudata.a` as a 1 KB stub, and
@@ -116,7 +116,7 @@ milestone). Check again on other versions.
 - (M2) PL/vSQL: `x := (SELECT NEXTVAL('s')) * 1000` fails with "ERROR 9016: Sequence manipulation functions not allowed in subqueries"; `x := (SELECT NEXTVAL('s'))` alone works, and `x := EXECUTE 'SELECT NEXTVAL(''s'') * 1000';` works.
 - (M2) `match` is a reserved word in `USING PARAMETERS` ("ERROR 4856: Syntax error at or near \"match\""); a quoted `"match"='exact'` works. vtext calls the parameter `mode` and accepts `"match"` too.
 
-## Verified in milestone M7 (26.2.0 5-node Eon: primary subcluster of 3, secondary of 2; 26.3.0-2 single node)
+## Verified in milestone M7 (26.3.0-2 5-node Eon: primary subcluster of 3, secondary of 2; 26.3.0-2 single node)
 - Loading node caches from replicated (UNSEGMENTED ALL NODES) index tables: `rows CROSS JOIN
   (SELECT vtext.tnode(k) OVER(PARTITION NODES) FROM vtext.probe) p` with `/*+SYNTACTIC_JOIN*/` after
   the SELECT and `/*+DISTRIB(L,L)*/` after CROSS JOIN: EXPLAIN shows the index rows as the outer side
@@ -133,7 +133,7 @@ milestone). Check again on other versions.
   after a refresh on the primary with "cache of index ... is stale on this node (generation 1, the view
   needs 2)". After load_all the results equal those of the primary.
 - The same 3,072-document corpus gives identical results (doc ids, ranks, scores to 6 digits, five
-  query types) on the single node (26.3.0-2, g++ 15.2) and on the 3-node Eon primary (26.2.0, g++
+  query types) on the single node (26.3.0-2, g++ 15.2) and on the 3-node Eon primary (26.3.0-2, g++
   8.5) and its secondary subcluster: `tests/sql/digest.sql`.
 - All SQL tests pass on Eon fenced and unfenced.
 - A node's local vsql needs the database password in the environment where it is not set by the

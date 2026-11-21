@@ -1,5 +1,6 @@
 // vtext.tsearch(* USING PARAMETERS index, query, k, ...) OVER() FROM <schema>.<index>_live
 // vtext.tcount (* USING PARAMETERS index, query, ...)    OVER() FROM <schema>.<index>_live
+// vtext.tmatch (* USING PARAMETERS index, query, ...)    OVER() FROM <schema>.<index>_live
 //
 // Input: the columns of the views made by vtext.create_index (qid, query, doc_id, body, lang, op,
 // gen). The role of a row is given by its columns:
@@ -8,7 +9,8 @@
 //                              the segments and is analyzed and searched now
 //   doc_id set, op 'D'         a doc_id changed or deleted since the segments (journal): masked
 //   only gen set               the sentinel: the generation the view belongs to (stale check)
-// Output: tsearch (qid, doc_id, score, rank), best first; tcount (qid, count).
+// Output: tsearch (qid, doc_id, score, rank), best first; tcount (qid, count); tmatch (qid, doc_id),
+// every match, no scores, in no order (for joins and GROUP BY over all matches).
 #include "udx_common.h"
 #include "search_options.h"
 #include "../engine/builder.h"
@@ -31,17 +33,17 @@ struct TailDoc {
 };
 
 class TSearch : public TransformFunction {
-    bool counting_;
+    bool counting_, matching_;
 
 public:
-    explicit TSearch(bool counting) : counting_(counting) {}
+    TSearch(bool counting, bool matching) : counting_(counting), matching_(matching) {}
 
     void processPartition(ServerInterface &srv, PartitionReader &in, PartitionWriter &out) override
     {
         try {
             run(srv, in, out);
         } catch (const std::exception &e) {
-            vt_report_error(0, "%s: %s", counting_ ? "tcount" : "tsearch", e.what());
+            vt_report_error(0, "%s: %s", matching_ ? "tmatch" : counting_ ? "tcount" : "tsearch", e.what());
         }
     }
 
@@ -111,6 +113,18 @@ private:
 
         vtext::SearchOptions o = parse_search_options(s);
 
+        if (matching_) {
+            // every match, no scores: (qid, doc_id)
+            for (auto &q : queries) {
+                if (isCanceled()) return;
+                for (std::int64_t id : searcher.matches(q.second, o)) {
+                    out.setInt(0, q.first);
+                    out.setInt(1, id);
+                    out.next();
+                }
+            }
+            return;
+        }
         // A batch runs its queries in parallel (one thread each, results kept in query order), in
         // chunks so that a cancel is seen between them.
         const std::size_t chunk = std::max<std::size_t>(64, static_cast<std::size_t>(o.threads) * 4);
@@ -145,10 +159,10 @@ private:
 };
 
 class TSearchFactory : public TransformFunctionFactory {
-    bool counting_;
+    bool counting_, matching_;
 
 public:
-    explicit TSearchFactory(bool counting) : counting_(counting) {}
+    TSearchFactory(bool counting, bool matching = false) : counting_(counting || matching), matching_(matching) {}
     void getPrototype(ServerInterface &, ColumnTypes &a, ColumnTypes &r) override
     {
         a.addInt();             // qid
@@ -165,6 +179,7 @@ public:
     void getReturnType(ServerInterface &, const SizedColumnTypes &, SizedColumnTypes &out) override
     {
         out.addInt("qid");
+        if (matching_) { out.addInt("doc_id"); return; }
         if (counting_) { out.addInt("count"); return; }
         out.addInt("doc_id");
         out.addFloat("score");
@@ -179,14 +194,16 @@ public:
     }
     TransformFunction *createTransformFunction(ServerInterface &srv) override
     {
-        return counting_ ? vt_createFuncObject<TSearch>(srv.allocator, true) : vt_createFuncObject<TSearch>(srv.allocator, false);
+        return vt_createFuncObject<TSearch>(srv.allocator, counting_ && !matching_, matching_);
     }
 };
 
 class TSearchFactoryS : public TSearchFactory { public: TSearchFactoryS() : TSearchFactory(false) {} };
 class TCountFactory : public TSearchFactory { public: TCountFactory() : TSearchFactory(true) {} };
+class TMatchFactory : public TSearchFactory { public: TMatchFactory() : TSearchFactory(false, true) {} };
 
 } // namespace
 
 RegisterFactory(TSearchFactoryS);
 RegisterFactory(TCountFactory);
+RegisterFactory(TMatchFactory);

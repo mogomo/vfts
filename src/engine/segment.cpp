@@ -127,16 +127,40 @@ void pack_bits(std::string &out, const std::uint32_t *v, std::uint32_t n, std::u
     if (have) p[o++] = static_cast<std::uint8_t>(acc);
 }
 
-void unpack_bits(const std::uint8_t *p, std::uint32_t n, std::uint32_t bits, std::uint32_t *out)
+namespace {
+
+// One width known at compile time: 8 values (8 * B bits = B bytes) per step, so every shift is a
+// constant and the loop unrolls. Reads 8 bytes at a time like the generic loop (the format pads).
+template <unsigned B> void unpack_fixed(const std::uint8_t *p, std::uint32_t n, std::uint32_t *out)
 {
-    if (bits == 0) { std::fill(out, out + n, 0u); return; }
-    const std::uint64_t mask = bits == 32 ? 0xFFFFFFFFull : ((1ull << bits) - 1);
-    std::uint64_t bitpos = 0;
-    for (std::uint32_t i = 0; i < n; ++i, bitpos += bits) {
+    constexpr std::uint64_t mask = B == 32 ? 0xFFFFFFFFull : ((1ull << B) - 1);
+    std::uint32_t i = 0;
+    for (; i + 8 <= n; i += 8, p += B) {
+        for (unsigned k = 0; k < 8; ++k) {
+            std::uint64_t w;
+            std::memcpy(&w, p + (k * B) / 8, 8);
+            out[i + k] = static_cast<std::uint32_t>((w >> ((k * B) % 8)) & mask);
+        }
+    }
+    for (std::uint64_t bitpos = 0; i < n; ++i, bitpos += B) {
         std::uint64_t w;
         std::memcpy(&w, p + (bitpos >> 3), 8);
         out[i] = static_cast<std::uint32_t>((w >> (bitpos & 7)) & mask);
     }
+}
+
+template <unsigned... Bs> struct UnpackTable {
+    static constexpr void (*fns[sizeof...(Bs)])(const std::uint8_t *, std::uint32_t, std::uint32_t *) = {&unpack_fixed<Bs>...};
+};
+template <unsigned... Bs> constexpr void (*UnpackTable<Bs...>::fns[sizeof...(Bs)])(const std::uint8_t *, std::uint32_t, std::uint32_t *);
+using Unpackers = UnpackTable<1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32>;
+
+} // namespace
+
+void unpack_bits(const std::uint8_t *p, std::uint32_t n, std::uint32_t bits, std::uint32_t *out)
+{
+    if (bits == 0) { std::fill(out, out + n, 0u); return; }
+    Unpackers::fns[bits - 1](p, n, out);
 }
 
 Segment::Segment(const void *data, std::size_t size) : base_(static_cast<const std::uint8_t *>(data)), size_(size)
