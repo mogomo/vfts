@@ -1,0 +1,1000 @@
+1	fraud
+2	"special purpose entities"
+3	raptor AND hedge
+4	(fraud OR scandal) AND audit*
+5	ken w/3 lay
+6	jeff pre/2 skilling
+7	california w/5 (energy OR power OR electricity)
+8	"mark to market"
+9	enron w/10 bankruptcy
+10	(shred* OR destroy*) w/5 document*
+11	arthur pre/2 andersen
+12	"price manipulation"
+13	contract w/5 indemnity
+14	confidential AND NOT newsletter
+15	gas pre/3 pipeline
+16	derivative* AND (risk OR exposure)
+17	"conference call" AND tomorrow
+18	lawsuit OR litigation OR subpoena
+19	sec w/10 investigation
+20	merger w/5 dynegy
+21	(stock OR shares) w/3 (sell OR sold OR selling)
+22	"off balance sheet"
+23	(board w/5 directors) AND meeting
+24	trading AND loss* AND california
+25	"western power" w/10 price*
+26	fastow
+27	ljm
+28	chewco OR jedi
+29	energy w/3 crisis
+30	rolling w/2 blackouts
+31	deregulation AND california AND legislation
+32	pipeline pre/5 capacity
+33	audit* w/5 committee
+34	broadband AND (strategy OR plan)
+35	attorney w/10 privileged
+36	"do not forward"
+37	schedul* w/3 meeting
+38	wire w/3 transfer
+39	invoice* AND payment AND overdue
+40	skiling~1 OR fastw~1
+1001	fraud
+1002	"special purpose entities"
+1003	raptor AND hedge
+1004	(fraud OR scandal) AND audit*
+1005	ken w/3 lay
+1006	jeff pre/2 skilling
+1007	california w/5 (energy OR power OR electricity)
+1008	"mark to market"
+1009	enron w/10 bankruptcy
+1010	(shred* OR destroy*) w/5 document*
+1011	arthur pre/2 andersen
+1012	"price manipulation"
+1013	contract w/5 indemnity
+1014	confidential AND NOT newsletter
+1015	gas pre/3 pipeline
+1016	derivative* AND (risk OR exposure)
+1017	"conference call" AND tomorrow
+1018	lawsuit OR litigation OR subpoena
+1019	sec w/10 investigation
+1020	merger w/5 dynegy
+1021	(stock OR shares) w/3 (sell OR sold OR selling)
+1022	"off balance sheet"
+1023	(board w/5 directors) AND meeting
+1024	trading AND loss* AND california
+1025	"western power" w/10 price*
+1026	fastow
+1027	ljm
+1028	chewco OR jedi
+1029	energy w/3 crisis
+1030	rolling w/2 blackouts
+1031	deregulation AND california AND legislation
+1032	pipeline pre/5 capacity
+1033	audit* w/5 committee
+1034	broadband AND (strategy OR plan)
+1035	attorney w/10 privileged
+1036	"do not forward"
+1037	schedul* w/3 meeting
+1038	wire w/3 transfer
+1039	invoice* AND payment AND overdue
+1040	skiling~1 OR fastw~1
+2001	fraud
+2002	"special purpose entities"
+2003	raptor AND hedge
+2004	(fraud OR scandal) AND audit*
+2005	ken w/3 lay
+2006	jeff pre/2 skilling
+2007	california w/5 (energy OR power OR electricity)
+2008	"mark to market"
+2009	enron w/10 bankruptcy
+2010	(shred* OR destroy*) w/5 document*
+2011	arthur pre/2 andersen
+2012	"price manipulation"
+2013	contract w/5 indemnity
+2014	confidential AND NOT newsletter
+2015	gas pre/3 pipeline
+2016	derivative* AND (risk OR exposure)
+2017	"conference call" AND tomorrow
+2018	lawsuit OR litigation OR subpoena
+2019	sec w/10 investigation
+2020	merger w/5 dynegy
+2021	(stock OR shares) w/3 (sell OR sold OR selling)
+2022	"off balance sheet"
+2023	(board w/5 directors) AND meeting
+2024	trading AND loss* AND california
+2025	"western power" w/10 price*
+2026	fastow
+2027	ljm
+2028	chewco OR jedi
+2029	energy w/3 crisis
+2030	rolling w/2 blackouts
+2031	deregulation AND california AND legislation
+2032	pipeline pre/5 capacity
+2033	audit* w/5 committee
+2034	broadband AND (strategy OR plan)
+2035	attorney w/10 privileged
+2036	"do not forward"
+2037	schedul* w/3 meeting
+2038	wire w/3 transfer
+2039	invoice* AND payment AND overdue
+2040	skiling~1 OR fastw~1
+3001	fraud
+3002	"special purpose entities"
+3003	raptor AND hedge
+3004	(fraud OR scandal) AND audit*
+3005	ken w/3 lay
+3006	jeff pre/2 skilling
+3007	california w/5 (energy OR power OR electricity)
+3008	"mark to market"
+3009	enron w/10 bankruptcy
+3010	(shred* OR destroy*) w/5 document*
+3011	arthur pre/2 andersen
+3012	"price manipulation"
+3013	contract w/5 indemnity
+3014	confidential AND NOT newsletter
+3015	gas pre/3 pipeline
+3016	derivative* AND (risk OR exposure)
+3017	"conference call" AND tomorrow
+3018	lawsuit OR litigation OR subpoena
+3019	sec w/10 investigation
+3020	merger w/5 dynegy
+3021	(stock OR shares) w/3 (sell OR sold OR selling)
+3022	"off balance sheet"
+3023	(board w/5 directors) AND meeting
+3024	trading AND loss* AND california
+3025	"western power" w/10 price*
+3026	fastow
+3027	ljm
+3028	chewco OR jedi
+3029	energy w/3 crisis
+3030	rolling w/2 blackouts
+3031	deregulation AND california AND legislation
+3032	pipeline pre/5 capacity
+3033	audit* w/5 committee
+3034	broadband AND (strategy OR plan)
+3035	attorney w/10 privileged
+3036	"do not forward"
+3037	schedul* w/3 meeting
+3038	wire w/3 transfer
+3039	invoice* AND payment AND overdue
+3040	skiling~1 OR fastw~1
+4001	fraud
+4002	"special purpose entities"
+4003	raptor AND hedge
+4004	(fraud OR scandal) AND audit*
+4005	ken w/3 lay
+4006	jeff pre/2 skilling
+4007	california w/5 (energy OR power OR electricity)
+4008	"mark to market"
+4009	enron w/10 bankruptcy
+4010	(shred* OR destroy*) w/5 document*
+4011	arthur pre/2 andersen
+4012	"price manipulation"
+4013	contract w/5 indemnity
+4014	confidential AND NOT newsletter
+4015	gas pre/3 pipeline
+4016	derivative* AND (risk OR exposure)
+4017	"conference call" AND tomorrow
+4018	lawsuit OR litigation OR subpoena
+4019	sec w/10 investigation
+4020	merger w/5 dynegy
+4021	(stock OR shares) w/3 (sell OR sold OR selling)
+4022	"off balance sheet"
+4023	(board w/5 directors) AND meeting
+4024	trading AND loss* AND california
+4025	"western power" w/10 price*
+4026	fastow
+4027	ljm
+4028	chewco OR jedi
+4029	energy w/3 crisis
+4030	rolling w/2 blackouts
+4031	deregulation AND california AND legislation
+4032	pipeline pre/5 capacity
+4033	audit* w/5 committee
+4034	broadband AND (strategy OR plan)
+4035	attorney w/10 privileged
+4036	"do not forward"
+4037	schedul* w/3 meeting
+4038	wire w/3 transfer
+4039	invoice* AND payment AND overdue
+4040	skiling~1 OR fastw~1
+5001	fraud
+5002	"special purpose entities"
+5003	raptor AND hedge
+5004	(fraud OR scandal) AND audit*
+5005	ken w/3 lay
+5006	jeff pre/2 skilling
+5007	california w/5 (energy OR power OR electricity)
+5008	"mark to market"
+5009	enron w/10 bankruptcy
+5010	(shred* OR destroy*) w/5 document*
+5011	arthur pre/2 andersen
+5012	"price manipulation"
+5013	contract w/5 indemnity
+5014	confidential AND NOT newsletter
+5015	gas pre/3 pipeline
+5016	derivative* AND (risk OR exposure)
+5017	"conference call" AND tomorrow
+5018	lawsuit OR litigation OR subpoena
+5019	sec w/10 investigation
+5020	merger w/5 dynegy
+5021	(stock OR shares) w/3 (sell OR sold OR selling)
+5022	"off balance sheet"
+5023	(board w/5 directors) AND meeting
+5024	trading AND loss* AND california
+5025	"western power" w/10 price*
+5026	fastow
+5027	ljm
+5028	chewco OR jedi
+5029	energy w/3 crisis
+5030	rolling w/2 blackouts
+5031	deregulation AND california AND legislation
+5032	pipeline pre/5 capacity
+5033	audit* w/5 committee
+5034	broadband AND (strategy OR plan)
+5035	attorney w/10 privileged
+5036	"do not forward"
+5037	schedul* w/3 meeting
+5038	wire w/3 transfer
+5039	invoice* AND payment AND overdue
+5040	skiling~1 OR fastw~1
+6001	fraud
+6002	"special purpose entities"
+6003	raptor AND hedge
+6004	(fraud OR scandal) AND audit*
+6005	ken w/3 lay
+6006	jeff pre/2 skilling
+6007	california w/5 (energy OR power OR electricity)
+6008	"mark to market"
+6009	enron w/10 bankruptcy
+6010	(shred* OR destroy*) w/5 document*
+6011	arthur pre/2 andersen
+6012	"price manipulation"
+6013	contract w/5 indemnity
+6014	confidential AND NOT newsletter
+6015	gas pre/3 pipeline
+6016	derivative* AND (risk OR exposure)
+6017	"conference call" AND tomorrow
+6018	lawsuit OR litigation OR subpoena
+6019	sec w/10 investigation
+6020	merger w/5 dynegy
+6021	(stock OR shares) w/3 (sell OR sold OR selling)
+6022	"off balance sheet"
+6023	(board w/5 directors) AND meeting
+6024	trading AND loss* AND california
+6025	"western power" w/10 price*
+6026	fastow
+6027	ljm
+6028	chewco OR jedi
+6029	energy w/3 crisis
+6030	rolling w/2 blackouts
+6031	deregulation AND california AND legislation
+6032	pipeline pre/5 capacity
+6033	audit* w/5 committee
+6034	broadband AND (strategy OR plan)
+6035	attorney w/10 privileged
+6036	"do not forward"
+6037	schedul* w/3 meeting
+6038	wire w/3 transfer
+6039	invoice* AND payment AND overdue
+6040	skiling~1 OR fastw~1
+7001	fraud
+7002	"special purpose entities"
+7003	raptor AND hedge
+7004	(fraud OR scandal) AND audit*
+7005	ken w/3 lay
+7006	jeff pre/2 skilling
+7007	california w/5 (energy OR power OR electricity)
+7008	"mark to market"
+7009	enron w/10 bankruptcy
+7010	(shred* OR destroy*) w/5 document*
+7011	arthur pre/2 andersen
+7012	"price manipulation"
+7013	contract w/5 indemnity
+7014	confidential AND NOT newsletter
+7015	gas pre/3 pipeline
+7016	derivative* AND (risk OR exposure)
+7017	"conference call" AND tomorrow
+7018	lawsuit OR litigation OR subpoena
+7019	sec w/10 investigation
+7020	merger w/5 dynegy
+7021	(stock OR shares) w/3 (sell OR sold OR selling)
+7022	"off balance sheet"
+7023	(board w/5 directors) AND meeting
+7024	trading AND loss* AND california
+7025	"western power" w/10 price*
+7026	fastow
+7027	ljm
+7028	chewco OR jedi
+7029	energy w/3 crisis
+7030	rolling w/2 blackouts
+7031	deregulation AND california AND legislation
+7032	pipeline pre/5 capacity
+7033	audit* w/5 committee
+7034	broadband AND (strategy OR plan)
+7035	attorney w/10 privileged
+7036	"do not forward"
+7037	schedul* w/3 meeting
+7038	wire w/3 transfer
+7039	invoice* AND payment AND overdue
+7040	skiling~1 OR fastw~1
+8001	fraud
+8002	"special purpose entities"
+8003	raptor AND hedge
+8004	(fraud OR scandal) AND audit*
+8005	ken w/3 lay
+8006	jeff pre/2 skilling
+8007	california w/5 (energy OR power OR electricity)
+8008	"mark to market"
+8009	enron w/10 bankruptcy
+8010	(shred* OR destroy*) w/5 document*
+8011	arthur pre/2 andersen
+8012	"price manipulation"
+8013	contract w/5 indemnity
+8014	confidential AND NOT newsletter
+8015	gas pre/3 pipeline
+8016	derivative* AND (risk OR exposure)
+8017	"conference call" AND tomorrow
+8018	lawsuit OR litigation OR subpoena
+8019	sec w/10 investigation
+8020	merger w/5 dynegy
+8021	(stock OR shares) w/3 (sell OR sold OR selling)
+8022	"off balance sheet"
+8023	(board w/5 directors) AND meeting
+8024	trading AND loss* AND california
+8025	"western power" w/10 price*
+8026	fastow
+8027	ljm
+8028	chewco OR jedi
+8029	energy w/3 crisis
+8030	rolling w/2 blackouts
+8031	deregulation AND california AND legislation
+8032	pipeline pre/5 capacity
+8033	audit* w/5 committee
+8034	broadband AND (strategy OR plan)
+8035	attorney w/10 privileged
+8036	"do not forward"
+8037	schedul* w/3 meeting
+8038	wire w/3 transfer
+8039	invoice* AND payment AND overdue
+8040	skiling~1 OR fastw~1
+9001	fraud
+9002	"special purpose entities"
+9003	raptor AND hedge
+9004	(fraud OR scandal) AND audit*
+9005	ken w/3 lay
+9006	jeff pre/2 skilling
+9007	california w/5 (energy OR power OR electricity)
+9008	"mark to market"
+9009	enron w/10 bankruptcy
+9010	(shred* OR destroy*) w/5 document*
+9011	arthur pre/2 andersen
+9012	"price manipulation"
+9013	contract w/5 indemnity
+9014	confidential AND NOT newsletter
+9015	gas pre/3 pipeline
+9016	derivative* AND (risk OR exposure)
+9017	"conference call" AND tomorrow
+9018	lawsuit OR litigation OR subpoena
+9019	sec w/10 investigation
+9020	merger w/5 dynegy
+9021	(stock OR shares) w/3 (sell OR sold OR selling)
+9022	"off balance sheet"
+9023	(board w/5 directors) AND meeting
+9024	trading AND loss* AND california
+9025	"western power" w/10 price*
+9026	fastow
+9027	ljm
+9028	chewco OR jedi
+9029	energy w/3 crisis
+9030	rolling w/2 blackouts
+9031	deregulation AND california AND legislation
+9032	pipeline pre/5 capacity
+9033	audit* w/5 committee
+9034	broadband AND (strategy OR plan)
+9035	attorney w/10 privileged
+9036	"do not forward"
+9037	schedul* w/3 meeting
+9038	wire w/3 transfer
+9039	invoice* AND payment AND overdue
+9040	skiling~1 OR fastw~1
+10001	fraud
+10002	"special purpose entities"
+10003	raptor AND hedge
+10004	(fraud OR scandal) AND audit*
+10005	ken w/3 lay
+10006	jeff pre/2 skilling
+10007	california w/5 (energy OR power OR electricity)
+10008	"mark to market"
+10009	enron w/10 bankruptcy
+10010	(shred* OR destroy*) w/5 document*
+10011	arthur pre/2 andersen
+10012	"price manipulation"
+10013	contract w/5 indemnity
+10014	confidential AND NOT newsletter
+10015	gas pre/3 pipeline
+10016	derivative* AND (risk OR exposure)
+10017	"conference call" AND tomorrow
+10018	lawsuit OR litigation OR subpoena
+10019	sec w/10 investigation
+10020	merger w/5 dynegy
+10021	(stock OR shares) w/3 (sell OR sold OR selling)
+10022	"off balance sheet"
+10023	(board w/5 directors) AND meeting
+10024	trading AND loss* AND california
+10025	"western power" w/10 price*
+10026	fastow
+10027	ljm
+10028	chewco OR jedi
+10029	energy w/3 crisis
+10030	rolling w/2 blackouts
+10031	deregulation AND california AND legislation
+10032	pipeline pre/5 capacity
+10033	audit* w/5 committee
+10034	broadband AND (strategy OR plan)
+10035	attorney w/10 privileged
+10036	"do not forward"
+10037	schedul* w/3 meeting
+10038	wire w/3 transfer
+10039	invoice* AND payment AND overdue
+10040	skiling~1 OR fastw~1
+11001	fraud
+11002	"special purpose entities"
+11003	raptor AND hedge
+11004	(fraud OR scandal) AND audit*
+11005	ken w/3 lay
+11006	jeff pre/2 skilling
+11007	california w/5 (energy OR power OR electricity)
+11008	"mark to market"
+11009	enron w/10 bankruptcy
+11010	(shred* OR destroy*) w/5 document*
+11011	arthur pre/2 andersen
+11012	"price manipulation"
+11013	contract w/5 indemnity
+11014	confidential AND NOT newsletter
+11015	gas pre/3 pipeline
+11016	derivative* AND (risk OR exposure)
+11017	"conference call" AND tomorrow
+11018	lawsuit OR litigation OR subpoena
+11019	sec w/10 investigation
+11020	merger w/5 dynegy
+11021	(stock OR shares) w/3 (sell OR sold OR selling)
+11022	"off balance sheet"
+11023	(board w/5 directors) AND meeting
+11024	trading AND loss* AND california
+11025	"western power" w/10 price*
+11026	fastow
+11027	ljm
+11028	chewco OR jedi
+11029	energy w/3 crisis
+11030	rolling w/2 blackouts
+11031	deregulation AND california AND legislation
+11032	pipeline pre/5 capacity
+11033	audit* w/5 committee
+11034	broadband AND (strategy OR plan)
+11035	attorney w/10 privileged
+11036	"do not forward"
+11037	schedul* w/3 meeting
+11038	wire w/3 transfer
+11039	invoice* AND payment AND overdue
+11040	skiling~1 OR fastw~1
+12001	fraud
+12002	"special purpose entities"
+12003	raptor AND hedge
+12004	(fraud OR scandal) AND audit*
+12005	ken w/3 lay
+12006	jeff pre/2 skilling
+12007	california w/5 (energy OR power OR electricity)
+12008	"mark to market"
+12009	enron w/10 bankruptcy
+12010	(shred* OR destroy*) w/5 document*
+12011	arthur pre/2 andersen
+12012	"price manipulation"
+12013	contract w/5 indemnity
+12014	confidential AND NOT newsletter
+12015	gas pre/3 pipeline
+12016	derivative* AND (risk OR exposure)
+12017	"conference call" AND tomorrow
+12018	lawsuit OR litigation OR subpoena
+12019	sec w/10 investigation
+12020	merger w/5 dynegy
+12021	(stock OR shares) w/3 (sell OR sold OR selling)
+12022	"off balance sheet"
+12023	(board w/5 directors) AND meeting
+12024	trading AND loss* AND california
+12025	"western power" w/10 price*
+12026	fastow
+12027	ljm
+12028	chewco OR jedi
+12029	energy w/3 crisis
+12030	rolling w/2 blackouts
+12031	deregulation AND california AND legislation
+12032	pipeline pre/5 capacity
+12033	audit* w/5 committee
+12034	broadband AND (strategy OR plan)
+12035	attorney w/10 privileged
+12036	"do not forward"
+12037	schedul* w/3 meeting
+12038	wire w/3 transfer
+12039	invoice* AND payment AND overdue
+12040	skiling~1 OR fastw~1
+13001	fraud
+13002	"special purpose entities"
+13003	raptor AND hedge
+13004	(fraud OR scandal) AND audit*
+13005	ken w/3 lay
+13006	jeff pre/2 skilling
+13007	california w/5 (energy OR power OR electricity)
+13008	"mark to market"
+13009	enron w/10 bankruptcy
+13010	(shred* OR destroy*) w/5 document*
+13011	arthur pre/2 andersen
+13012	"price manipulation"
+13013	contract w/5 indemnity
+13014	confidential AND NOT newsletter
+13015	gas pre/3 pipeline
+13016	derivative* AND (risk OR exposure)
+13017	"conference call" AND tomorrow
+13018	lawsuit OR litigation OR subpoena
+13019	sec w/10 investigation
+13020	merger w/5 dynegy
+13021	(stock OR shares) w/3 (sell OR sold OR selling)
+13022	"off balance sheet"
+13023	(board w/5 directors) AND meeting
+13024	trading AND loss* AND california
+13025	"western power" w/10 price*
+13026	fastow
+13027	ljm
+13028	chewco OR jedi
+13029	energy w/3 crisis
+13030	rolling w/2 blackouts
+13031	deregulation AND california AND legislation
+13032	pipeline pre/5 capacity
+13033	audit* w/5 committee
+13034	broadband AND (strategy OR plan)
+13035	attorney w/10 privileged
+13036	"do not forward"
+13037	schedul* w/3 meeting
+13038	wire w/3 transfer
+13039	invoice* AND payment AND overdue
+13040	skiling~1 OR fastw~1
+14001	fraud
+14002	"special purpose entities"
+14003	raptor AND hedge
+14004	(fraud OR scandal) AND audit*
+14005	ken w/3 lay
+14006	jeff pre/2 skilling
+14007	california w/5 (energy OR power OR electricity)
+14008	"mark to market"
+14009	enron w/10 bankruptcy
+14010	(shred* OR destroy*) w/5 document*
+14011	arthur pre/2 andersen
+14012	"price manipulation"
+14013	contract w/5 indemnity
+14014	confidential AND NOT newsletter
+14015	gas pre/3 pipeline
+14016	derivative* AND (risk OR exposure)
+14017	"conference call" AND tomorrow
+14018	lawsuit OR litigation OR subpoena
+14019	sec w/10 investigation
+14020	merger w/5 dynegy
+14021	(stock OR shares) w/3 (sell OR sold OR selling)
+14022	"off balance sheet"
+14023	(board w/5 directors) AND meeting
+14024	trading AND loss* AND california
+14025	"western power" w/10 price*
+14026	fastow
+14027	ljm
+14028	chewco OR jedi
+14029	energy w/3 crisis
+14030	rolling w/2 blackouts
+14031	deregulation AND california AND legislation
+14032	pipeline pre/5 capacity
+14033	audit* w/5 committee
+14034	broadband AND (strategy OR plan)
+14035	attorney w/10 privileged
+14036	"do not forward"
+14037	schedul* w/3 meeting
+14038	wire w/3 transfer
+14039	invoice* AND payment AND overdue
+14040	skiling~1 OR fastw~1
+15001	fraud
+15002	"special purpose entities"
+15003	raptor AND hedge
+15004	(fraud OR scandal) AND audit*
+15005	ken w/3 lay
+15006	jeff pre/2 skilling
+15007	california w/5 (energy OR power OR electricity)
+15008	"mark to market"
+15009	enron w/10 bankruptcy
+15010	(shred* OR destroy*) w/5 document*
+15011	arthur pre/2 andersen
+15012	"price manipulation"
+15013	contract w/5 indemnity
+15014	confidential AND NOT newsletter
+15015	gas pre/3 pipeline
+15016	derivative* AND (risk OR exposure)
+15017	"conference call" AND tomorrow
+15018	lawsuit OR litigation OR subpoena
+15019	sec w/10 investigation
+15020	merger w/5 dynegy
+15021	(stock OR shares) w/3 (sell OR sold OR selling)
+15022	"off balance sheet"
+15023	(board w/5 directors) AND meeting
+15024	trading AND loss* AND california
+15025	"western power" w/10 price*
+15026	fastow
+15027	ljm
+15028	chewco OR jedi
+15029	energy w/3 crisis
+15030	rolling w/2 blackouts
+15031	deregulation AND california AND legislation
+15032	pipeline pre/5 capacity
+15033	audit* w/5 committee
+15034	broadband AND (strategy OR plan)
+15035	attorney w/10 privileged
+15036	"do not forward"
+15037	schedul* w/3 meeting
+15038	wire w/3 transfer
+15039	invoice* AND payment AND overdue
+15040	skiling~1 OR fastw~1
+16001	fraud
+16002	"special purpose entities"
+16003	raptor AND hedge
+16004	(fraud OR scandal) AND audit*
+16005	ken w/3 lay
+16006	jeff pre/2 skilling
+16007	california w/5 (energy OR power OR electricity)
+16008	"mark to market"
+16009	enron w/10 bankruptcy
+16010	(shred* OR destroy*) w/5 document*
+16011	arthur pre/2 andersen
+16012	"price manipulation"
+16013	contract w/5 indemnity
+16014	confidential AND NOT newsletter
+16015	gas pre/3 pipeline
+16016	derivative* AND (risk OR exposure)
+16017	"conference call" AND tomorrow
+16018	lawsuit OR litigation OR subpoena
+16019	sec w/10 investigation
+16020	merger w/5 dynegy
+16021	(stock OR shares) w/3 (sell OR sold OR selling)
+16022	"off balance sheet"
+16023	(board w/5 directors) AND meeting
+16024	trading AND loss* AND california
+16025	"western power" w/10 price*
+16026	fastow
+16027	ljm
+16028	chewco OR jedi
+16029	energy w/3 crisis
+16030	rolling w/2 blackouts
+16031	deregulation AND california AND legislation
+16032	pipeline pre/5 capacity
+16033	audit* w/5 committee
+16034	broadband AND (strategy OR plan)
+16035	attorney w/10 privileged
+16036	"do not forward"
+16037	schedul* w/3 meeting
+16038	wire w/3 transfer
+16039	invoice* AND payment AND overdue
+16040	skiling~1 OR fastw~1
+17001	fraud
+17002	"special purpose entities"
+17003	raptor AND hedge
+17004	(fraud OR scandal) AND audit*
+17005	ken w/3 lay
+17006	jeff pre/2 skilling
+17007	california w/5 (energy OR power OR electricity)
+17008	"mark to market"
+17009	enron w/10 bankruptcy
+17010	(shred* OR destroy*) w/5 document*
+17011	arthur pre/2 andersen
+17012	"price manipulation"
+17013	contract w/5 indemnity
+17014	confidential AND NOT newsletter
+17015	gas pre/3 pipeline
+17016	derivative* AND (risk OR exposure)
+17017	"conference call" AND tomorrow
+17018	lawsuit OR litigation OR subpoena
+17019	sec w/10 investigation
+17020	merger w/5 dynegy
+17021	(stock OR shares) w/3 (sell OR sold OR selling)
+17022	"off balance sheet"
+17023	(board w/5 directors) AND meeting
+17024	trading AND loss* AND california
+17025	"western power" w/10 price*
+17026	fastow
+17027	ljm
+17028	chewco OR jedi
+17029	energy w/3 crisis
+17030	rolling w/2 blackouts
+17031	deregulation AND california AND legislation
+17032	pipeline pre/5 capacity
+17033	audit* w/5 committee
+17034	broadband AND (strategy OR plan)
+17035	attorney w/10 privileged
+17036	"do not forward"
+17037	schedul* w/3 meeting
+17038	wire w/3 transfer
+17039	invoice* AND payment AND overdue
+17040	skiling~1 OR fastw~1
+18001	fraud
+18002	"special purpose entities"
+18003	raptor AND hedge
+18004	(fraud OR scandal) AND audit*
+18005	ken w/3 lay
+18006	jeff pre/2 skilling
+18007	california w/5 (energy OR power OR electricity)
+18008	"mark to market"
+18009	enron w/10 bankruptcy
+18010	(shred* OR destroy*) w/5 document*
+18011	arthur pre/2 andersen
+18012	"price manipulation"
+18013	contract w/5 indemnity
+18014	confidential AND NOT newsletter
+18015	gas pre/3 pipeline
+18016	derivative* AND (risk OR exposure)
+18017	"conference call" AND tomorrow
+18018	lawsuit OR litigation OR subpoena
+18019	sec w/10 investigation
+18020	merger w/5 dynegy
+18021	(stock OR shares) w/3 (sell OR sold OR selling)
+18022	"off balance sheet"
+18023	(board w/5 directors) AND meeting
+18024	trading AND loss* AND california
+18025	"western power" w/10 price*
+18026	fastow
+18027	ljm
+18028	chewco OR jedi
+18029	energy w/3 crisis
+18030	rolling w/2 blackouts
+18031	deregulation AND california AND legislation
+18032	pipeline pre/5 capacity
+18033	audit* w/5 committee
+18034	broadband AND (strategy OR plan)
+18035	attorney w/10 privileged
+18036	"do not forward"
+18037	schedul* w/3 meeting
+18038	wire w/3 transfer
+18039	invoice* AND payment AND overdue
+18040	skiling~1 OR fastw~1
+19001	fraud
+19002	"special purpose entities"
+19003	raptor AND hedge
+19004	(fraud OR scandal) AND audit*
+19005	ken w/3 lay
+19006	jeff pre/2 skilling
+19007	california w/5 (energy OR power OR electricity)
+19008	"mark to market"
+19009	enron w/10 bankruptcy
+19010	(shred* OR destroy*) w/5 document*
+19011	arthur pre/2 andersen
+19012	"price manipulation"
+19013	contract w/5 indemnity
+19014	confidential AND NOT newsletter
+19015	gas pre/3 pipeline
+19016	derivative* AND (risk OR exposure)
+19017	"conference call" AND tomorrow
+19018	lawsuit OR litigation OR subpoena
+19019	sec w/10 investigation
+19020	merger w/5 dynegy
+19021	(stock OR shares) w/3 (sell OR sold OR selling)
+19022	"off balance sheet"
+19023	(board w/5 directors) AND meeting
+19024	trading AND loss* AND california
+19025	"western power" w/10 price*
+19026	fastow
+19027	ljm
+19028	chewco OR jedi
+19029	energy w/3 crisis
+19030	rolling w/2 blackouts
+19031	deregulation AND california AND legislation
+19032	pipeline pre/5 capacity
+19033	audit* w/5 committee
+19034	broadband AND (strategy OR plan)
+19035	attorney w/10 privileged
+19036	"do not forward"
+19037	schedul* w/3 meeting
+19038	wire w/3 transfer
+19039	invoice* AND payment AND overdue
+19040	skiling~1 OR fastw~1
+20001	fraud
+20002	"special purpose entities"
+20003	raptor AND hedge
+20004	(fraud OR scandal) AND audit*
+20005	ken w/3 lay
+20006	jeff pre/2 skilling
+20007	california w/5 (energy OR power OR electricity)
+20008	"mark to market"
+20009	enron w/10 bankruptcy
+20010	(shred* OR destroy*) w/5 document*
+20011	arthur pre/2 andersen
+20012	"price manipulation"
+20013	contract w/5 indemnity
+20014	confidential AND NOT newsletter
+20015	gas pre/3 pipeline
+20016	derivative* AND (risk OR exposure)
+20017	"conference call" AND tomorrow
+20018	lawsuit OR litigation OR subpoena
+20019	sec w/10 investigation
+20020	merger w/5 dynegy
+20021	(stock OR shares) w/3 (sell OR sold OR selling)
+20022	"off balance sheet"
+20023	(board w/5 directors) AND meeting
+20024	trading AND loss* AND california
+20025	"western power" w/10 price*
+20026	fastow
+20027	ljm
+20028	chewco OR jedi
+20029	energy w/3 crisis
+20030	rolling w/2 blackouts
+20031	deregulation AND california AND legislation
+20032	pipeline pre/5 capacity
+20033	audit* w/5 committee
+20034	broadband AND (strategy OR plan)
+20035	attorney w/10 privileged
+20036	"do not forward"
+20037	schedul* w/3 meeting
+20038	wire w/3 transfer
+20039	invoice* AND payment AND overdue
+20040	skiling~1 OR fastw~1
+21001	fraud
+21002	"special purpose entities"
+21003	raptor AND hedge
+21004	(fraud OR scandal) AND audit*
+21005	ken w/3 lay
+21006	jeff pre/2 skilling
+21007	california w/5 (energy OR power OR electricity)
+21008	"mark to market"
+21009	enron w/10 bankruptcy
+21010	(shred* OR destroy*) w/5 document*
+21011	arthur pre/2 andersen
+21012	"price manipulation"
+21013	contract w/5 indemnity
+21014	confidential AND NOT newsletter
+21015	gas pre/3 pipeline
+21016	derivative* AND (risk OR exposure)
+21017	"conference call" AND tomorrow
+21018	lawsuit OR litigation OR subpoena
+21019	sec w/10 investigation
+21020	merger w/5 dynegy
+21021	(stock OR shares) w/3 (sell OR sold OR selling)
+21022	"off balance sheet"
+21023	(board w/5 directors) AND meeting
+21024	trading AND loss* AND california
+21025	"western power" w/10 price*
+21026	fastow
+21027	ljm
+21028	chewco OR jedi
+21029	energy w/3 crisis
+21030	rolling w/2 blackouts
+21031	deregulation AND california AND legislation
+21032	pipeline pre/5 capacity
+21033	audit* w/5 committee
+21034	broadband AND (strategy OR plan)
+21035	attorney w/10 privileged
+21036	"do not forward"
+21037	schedul* w/3 meeting
+21038	wire w/3 transfer
+21039	invoice* AND payment AND overdue
+21040	skiling~1 OR fastw~1
+22001	fraud
+22002	"special purpose entities"
+22003	raptor AND hedge
+22004	(fraud OR scandal) AND audit*
+22005	ken w/3 lay
+22006	jeff pre/2 skilling
+22007	california w/5 (energy OR power OR electricity)
+22008	"mark to market"
+22009	enron w/10 bankruptcy
+22010	(shred* OR destroy*) w/5 document*
+22011	arthur pre/2 andersen
+22012	"price manipulation"
+22013	contract w/5 indemnity
+22014	confidential AND NOT newsletter
+22015	gas pre/3 pipeline
+22016	derivative* AND (risk OR exposure)
+22017	"conference call" AND tomorrow
+22018	lawsuit OR litigation OR subpoena
+22019	sec w/10 investigation
+22020	merger w/5 dynegy
+22021	(stock OR shares) w/3 (sell OR sold OR selling)
+22022	"off balance sheet"
+22023	(board w/5 directors) AND meeting
+22024	trading AND loss* AND california
+22025	"western power" w/10 price*
+22026	fastow
+22027	ljm
+22028	chewco OR jedi
+22029	energy w/3 crisis
+22030	rolling w/2 blackouts
+22031	deregulation AND california AND legislation
+22032	pipeline pre/5 capacity
+22033	audit* w/5 committee
+22034	broadband AND (strategy OR plan)
+22035	attorney w/10 privileged
+22036	"do not forward"
+22037	schedul* w/3 meeting
+22038	wire w/3 transfer
+22039	invoice* AND payment AND overdue
+22040	skiling~1 OR fastw~1
+23001	fraud
+23002	"special purpose entities"
+23003	raptor AND hedge
+23004	(fraud OR scandal) AND audit*
+23005	ken w/3 lay
+23006	jeff pre/2 skilling
+23007	california w/5 (energy OR power OR electricity)
+23008	"mark to market"
+23009	enron w/10 bankruptcy
+23010	(shred* OR destroy*) w/5 document*
+23011	arthur pre/2 andersen
+23012	"price manipulation"
+23013	contract w/5 indemnity
+23014	confidential AND NOT newsletter
+23015	gas pre/3 pipeline
+23016	derivative* AND (risk OR exposure)
+23017	"conference call" AND tomorrow
+23018	lawsuit OR litigation OR subpoena
+23019	sec w/10 investigation
+23020	merger w/5 dynegy
+23021	(stock OR shares) w/3 (sell OR sold OR selling)
+23022	"off balance sheet"
+23023	(board w/5 directors) AND meeting
+23024	trading AND loss* AND california
+23025	"western power" w/10 price*
+23026	fastow
+23027	ljm
+23028	chewco OR jedi
+23029	energy w/3 crisis
+23030	rolling w/2 blackouts
+23031	deregulation AND california AND legislation
+23032	pipeline pre/5 capacity
+23033	audit* w/5 committee
+23034	broadband AND (strategy OR plan)
+23035	attorney w/10 privileged
+23036	"do not forward"
+23037	schedul* w/3 meeting
+23038	wire w/3 transfer
+23039	invoice* AND payment AND overdue
+23040	skiling~1 OR fastw~1
+24001	fraud
+24002	"special purpose entities"
+24003	raptor AND hedge
+24004	(fraud OR scandal) AND audit*
+24005	ken w/3 lay
+24006	jeff pre/2 skilling
+24007	california w/5 (energy OR power OR electricity)
+24008	"mark to market"
+24009	enron w/10 bankruptcy
+24010	(shred* OR destroy*) w/5 document*
+24011	arthur pre/2 andersen
+24012	"price manipulation"
+24013	contract w/5 indemnity
+24014	confidential AND NOT newsletter
+24015	gas pre/3 pipeline
+24016	derivative* AND (risk OR exposure)
+24017	"conference call" AND tomorrow
+24018	lawsuit OR litigation OR subpoena
+24019	sec w/10 investigation
+24020	merger w/5 dynegy
+24021	(stock OR shares) w/3 (sell OR sold OR selling)
+24022	"off balance sheet"
+24023	(board w/5 directors) AND meeting
+24024	trading AND loss* AND california
+24025	"western power" w/10 price*
+24026	fastow
+24027	ljm
+24028	chewco OR jedi
+24029	energy w/3 crisis
+24030	rolling w/2 blackouts
+24031	deregulation AND california AND legislation
+24032	pipeline pre/5 capacity
+24033	audit* w/5 committee
+24034	broadband AND (strategy OR plan)
+24035	attorney w/10 privileged
+24036	"do not forward"
+24037	schedul* w/3 meeting
+24038	wire w/3 transfer
+24039	invoice* AND payment AND overdue
+24040	skiling~1 OR fastw~1

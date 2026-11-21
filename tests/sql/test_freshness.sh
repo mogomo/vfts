@@ -92,10 +92,11 @@ expect "tiered merge keeps the segment count below merge_factor" \
 q "CALL vtext.drop_index('vt_fr_ref'); DROP TABLE vt_fr.ref; CREATE TABLE vt_fr.ref AS SELECT doc_id, body, lang FROM vt_fr.docs; COMMIT;" > /dev/null
 q "CALL vtext.create_index('vt_fr_ref', 'vt_fr.ref')" > /dev/null
 compare_all "after tiered merges"
+g_before=$(q "SELECT gen FROM vtext.indexes WHERE index_name = 'vt_fr'")
 q "CALL vtext.rebuild('vt_fr')" > /dev/null
 compare_all "after rebuild"
-expect "rebuild leaves one generation of segments" \
-       "$(q "SELECT COUNT(DISTINCT gen_added) FROM vtext.segments s JOIN vtext.indexes i USING (index_id) WHERE i.index_name = 'vt_fr' AND s.gen_removed IS NULL")" "1"
+expect "rebuild leaves no segment from before it" \
+       "$(q "SELECT COUNT(*) FROM vtext.segments s JOIN vtext.indexes i USING (index_id) WHERE i.index_name = 'vt_fr' AND s.gen_removed IS NULL AND s.gen_added <= $g_before")" "0"
 q "CALL vtext.refresh_index('vt_fr')" > /dev/null
 expect "a refresh without changes keeps the generation" \
        "$(q "SELECT refresh_note FROM vtext.indexes WHERE index_name = 'vt_fr'")" "no changes"

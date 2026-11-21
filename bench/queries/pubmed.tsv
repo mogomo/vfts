@@ -1,0 +1,40 @@
+1	"adverse events"
+2	"randomized controlled trial"
+3	(aspirin OR ibuprofen) AND pain
+4	cancer w/3 therapy
+5	"breast cancer" AND tamoxifen
+6	metformin AND diabetes
+7	insulin pre/3 resistance
+8	"blood pressure" w/5 reduction
+9	hepat* AND virus
+10	antibiot* AND resistance
+11	"monoclonal antibody"
+12	vaccin* w/5 efficacy
+13	(myocardial OR cardiac) w/3 infarction
+14	statin* AND cholesterol
+15	"side effects"
+16	dose w/3 dependent
+17	pharmacokinetic*
+18	placebo AND double AND blind
+19	"case report"
+20	toxicity w/5 liver
+21	receptor pre/3 antagonist
+22	gene w/5 expression
+23	"clinical trial" AND phase
+24	hiv AND antiretroviral
+25	"drug interaction"
+26	chemotherap* w/5 response
+27	inflammat* AND cytokine*
+28	"quality of life"
+29	mortality w/5 risk
+30	"systematic review"
+31	alzheimer* AND (amyloid OR tau)
+32	depression AND (ssri OR antidepressant*)
+33	asthma w/3 children
+34	morphine AND analges*
+35	penicilin~1
+36	"renal failure"
+37	obesity AND diet*
+38	tuberculosis w/5 treatment
+39	malaria AND chloroquine
+40	smoking pre/3 cessation

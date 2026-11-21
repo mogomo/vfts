@@ -5,8 +5,9 @@
 // deleted and masked documents. A document's score therefore depends only on the document and on
 // the live collection, never on how documents are split into segments or nodes.
 //
-// BM25 is Lucene's BM25Similarity (k1 = 1.2, b = 0.75), in the same float arithmetic, with the
-// one-byte length norms of Lucene (segment.h). Docs/design.md, "Scoring".
+// BM25 (k1 = 1.2, b = 0.75) as Elasticsearch and OpenSearch compute it: Lucene's BM25Similarity
+// with the weight multiplied by (1 + k1) (their LegacyBM25Similarity, the classic BM25 formula), in
+// the same float arithmetic, with Lucene's one-byte length norms (segment.h). docs/design.md "Scoring".
 #ifndef VTEXT_ENGINE_SEARCH_H
 #define VTEXT_ENGINE_SEARCH_H
 

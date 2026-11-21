@@ -79,8 +79,9 @@ CREATE TABLE IF NOT EXISTS vtext.positions (
     segment_id  INT NOT NULL,
     term_id     INT NOT NULL,
     chunk_id    INT NOT NULL,
-    payload     LONG VARBINARY(32000000) NOT NULL -- per document: varint tf, then varint position deltas
-) ORDER BY index_id, segment_id, term_id, chunk_id UNSEGMENTED ALL NODES PARTITION BY index_id;
+    part        INT NOT NULL,                     -- a payload above 65,000 bytes continues in the next part
+    payload     LONG VARBINARY(65000) NOT NULL    -- per document: varint tf, then varint position deltas
+) ORDER BY index_id, segment_id, term_id, chunk_id, part UNSEGMENTED ALL NODES PARTITION BY index_id;
 
 CREATE TABLE IF NOT EXISTS vtext.doc_stats (
     index_id    INT NOT NULL,
@@ -140,6 +141,7 @@ CREATE OR REPLACE TRANSFORM FUNCTION vtext.tmerge   AS LANGUAGE 'C++' NAME 'TMer
 CREATE OR REPLACE TRANSFORM FUNCTION vtext.tload    AS LANGUAGE 'C++' NAME 'TLoadFactory'    LIBRARY vtext.vtext :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vtext.tnode    AS LANGUAGE 'C++' NAME 'TNodeFactory'    LIBRARY vtext.vtext :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vtext.tinfo    AS LANGUAGE 'C++' NAME 'TInfoFactory'    LIBRARY vtext.vtext :fenced;
+CREATE OR REPLACE TRANSFORM FUNCTION vtext.thave    AS LANGUAGE 'C++' NAME 'THaveFactory'    LIBRARY vtext.vtext :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vtext.tdrop    AS LANGUAGE 'C++' NAME 'TDropFactory'    LIBRARY vtext.vtext :fenced;
 
 GRANT USAGE ON SCHEMA vtext TO PUBLIC;

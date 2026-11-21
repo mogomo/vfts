@@ -1,0 +1,1000 @@
+1	"adverse events"
+2	"randomized controlled trial"
+3	(aspirin OR ibuprofen) AND pain
+4	cancer w/3 therapy
+5	"breast cancer" AND tamoxifen
+6	metformin AND diabetes
+7	insulin pre/3 resistance
+8	"blood pressure" w/5 reduction
+9	hepat* AND virus
+10	antibiot* AND resistance
+11	"monoclonal antibody"
+12	vaccin* w/5 efficacy
+13	(myocardial OR cardiac) w/3 infarction
+14	statin* AND cholesterol
+15	"side effects"
+16	dose w/3 dependent
+17	pharmacokinetic*
+18	placebo AND double AND blind
+19	"case report"
+20	toxicity w/5 liver
+21	receptor pre/3 antagonist
+22	gene w/5 expression
+23	"clinical trial" AND phase
+24	hiv AND antiretroviral
+25	"drug interaction"
+26	chemotherap* w/5 response
+27	inflammat* AND cytokine*
+28	"quality of life"
+29	mortality w/5 risk
+30	"systematic review"
+31	alzheimer* AND (amyloid OR tau)
+32	depression AND (ssri OR antidepressant*)
+33	asthma w/3 children
+34	morphine AND analges*
+35	penicilin~1
+36	"renal failure"
+37	obesity AND diet*
+38	tuberculosis w/5 treatment
+39	malaria AND chloroquine
+40	smoking pre/3 cessation
+1001	"adverse events"
+1002	"randomized controlled trial"
+1003	(aspirin OR ibuprofen) AND pain
+1004	cancer w/3 therapy
+1005	"breast cancer" AND tamoxifen
+1006	metformin AND diabetes
+1007	insulin pre/3 resistance
+1008	"blood pressure" w/5 reduction
+1009	hepat* AND virus
+1010	antibiot* AND resistance
+1011	"monoclonal antibody"
+1012	vaccin* w/5 efficacy
+1013	(myocardial OR cardiac) w/3 infarction
+1014	statin* AND cholesterol
+1015	"side effects"
+1016	dose w/3 dependent
+1017	pharmacokinetic*
+1018	placebo AND double AND blind
+1019	"case report"
+1020	toxicity w/5 liver
+1021	receptor pre/3 antagonist
+1022	gene w/5 expression
+1023	"clinical trial" AND phase
+1024	hiv AND antiretroviral
+1025	"drug interaction"
+1026	chemotherap* w/5 response
+1027	inflammat* AND cytokine*
+1028	"quality of life"
+1029	mortality w/5 risk
+1030	"systematic review"
+1031	alzheimer* AND (amyloid OR tau)
+1032	depression AND (ssri OR antidepressant*)
+1033	asthma w/3 children
+1034	morphine AND analges*
+1035	penicilin~1
+1036	"renal failure"
+1037	obesity AND diet*
+1038	tuberculosis w/5 treatment
+1039	malaria AND chloroquine
+1040	smoking pre/3 cessation
+2001	"adverse events"
+2002	"randomized controlled trial"
+2003	(aspirin OR ibuprofen) AND pain
+2004	cancer w/3 therapy
+2005	"breast cancer" AND tamoxifen
+2006	metformin AND diabetes
+2007	insulin pre/3 resistance
+2008	"blood pressure" w/5 reduction
+2009	hepat* AND virus
+2010	antibiot* AND resistance
+2011	"monoclonal antibody"
+2012	vaccin* w/5 efficacy
+2013	(myocardial OR cardiac) w/3 infarction
+2014	statin* AND cholesterol
+2015	"side effects"
+2016	dose w/3 dependent
+2017	pharmacokinetic*
+2018	placebo AND double AND blind
+2019	"case report"
+2020	toxicity w/5 liver
+2021	receptor pre/3 antagonist
+2022	gene w/5 expression
+2023	"clinical trial" AND phase
+2024	hiv AND antiretroviral
+2025	"drug interaction"
+2026	chemotherap* w/5 response
+2027	inflammat* AND cytokine*
+2028	"quality of life"
+2029	mortality w/5 risk
+2030	"systematic review"
+2031	alzheimer* AND (amyloid OR tau)
+2032	depression AND (ssri OR antidepressant*)
+2033	asthma w/3 children
+2034	morphine AND analges*
+2035	penicilin~1
+2036	"renal failure"
+2037	obesity AND diet*
+2038	tuberculosis w/5 treatment
+2039	malaria AND chloroquine
+2040	smoking pre/3 cessation
+3001	"adverse events"
+3002	"randomized controlled trial"
+3003	(aspirin OR ibuprofen) AND pain
+3004	cancer w/3 therapy
+3005	"breast cancer" AND tamoxifen
+3006	metformin AND diabetes
+3007	insulin pre/3 resistance
+3008	"blood pressure" w/5 reduction
+3009	hepat* AND virus
+3010	antibiot* AND resistance
+3011	"monoclonal antibody"
+3012	vaccin* w/5 efficacy
+3013	(myocardial OR cardiac) w/3 infarction
+3014	statin* AND cholesterol
+3015	"side effects"
+3016	dose w/3 dependent
+3017	pharmacokinetic*
+3018	placebo AND double AND blind
+3019	"case report"
+3020	toxicity w/5 liver
+3021	receptor pre/3 antagonist
+3022	gene w/5 expression
+3023	"clinical trial" AND phase
+3024	hiv AND antiretroviral
+3025	"drug interaction"
+3026	chemotherap* w/5 response
+3027	inflammat* AND cytokine*
+3028	"quality of life"
+3029	mortality w/5 risk
+3030	"systematic review"
+3031	alzheimer* AND (amyloid OR tau)
+3032	depression AND (ssri OR antidepressant*)
+3033	asthma w/3 children
+3034	morphine AND analges*
+3035	penicilin~1
+3036	"renal failure"
+3037	obesity AND diet*
+3038	tuberculosis w/5 treatment
+3039	malaria AND chloroquine
+3040	smoking pre/3 cessation
+4001	"adverse events"
+4002	"randomized controlled trial"
+4003	(aspirin OR ibuprofen) AND pain
+4004	cancer w/3 therapy
+4005	"breast cancer" AND tamoxifen
+4006	metformin AND diabetes
+4007	insulin pre/3 resistance
+4008	"blood pressure" w/5 reduction
+4009	hepat* AND virus
+4010	antibiot* AND resistance
+4011	"monoclonal antibody"
+4012	vaccin* w/5 efficacy
+4013	(myocardial OR cardiac) w/3 infarction
+4014	statin* AND cholesterol
+4015	"side effects"
+4016	dose w/3 dependent
+4017	pharmacokinetic*
+4018	placebo AND double AND blind
+4019	"case report"
+4020	toxicity w/5 liver
+4021	receptor pre/3 antagonist
+4022	gene w/5 expression
+4023	"clinical trial" AND phase
+4024	hiv AND antiretroviral
+4025	"drug interaction"
+4026	chemotherap* w/5 response
+4027	inflammat* AND cytokine*
+4028	"quality of life"
+4029	mortality w/5 risk
+4030	"systematic review"
+4031	alzheimer* AND (amyloid OR tau)
+4032	depression AND (ssri OR antidepressant*)
+4033	asthma w/3 children
+4034	morphine AND analges*
+4035	penicilin~1
+4036	"renal failure"
+4037	obesity AND diet*
+4038	tuberculosis w/5 treatment
+4039	malaria AND chloroquine
+4040	smoking pre/3 cessation
+5001	"adverse events"
+5002	"randomized controlled trial"
+5003	(aspirin OR ibuprofen) AND pain
+5004	cancer w/3 therapy
+5005	"breast cancer" AND tamoxifen
+5006	metformin AND diabetes
+5007	insulin pre/3 resistance
+5008	"blood pressure" w/5 reduction
+5009	hepat* AND virus
+5010	antibiot* AND resistance
+5011	"monoclonal antibody"
+5012	vaccin* w/5 efficacy
+5013	(myocardial OR cardiac) w/3 infarction
+5014	statin* AND cholesterol
+5015	"side effects"
+5016	dose w/3 dependent
+5017	pharmacokinetic*
+5018	placebo AND double AND blind
+5019	"case report"
+5020	toxicity w/5 liver
+5021	receptor pre/3 antagonist
+5022	gene w/5 expression
+5023	"clinical trial" AND phase
+5024	hiv AND antiretroviral
+5025	"drug interaction"
+5026	chemotherap* w/5 response
+5027	inflammat* AND cytokine*
+5028	"quality of life"
+5029	mortality w/5 risk
+5030	"systematic review"
+5031	alzheimer* AND (amyloid OR tau)
+5032	depression AND (ssri OR antidepressant*)
+5033	asthma w/3 children
+5034	morphine AND analges*
+5035	penicilin~1
+5036	"renal failure"
+5037	obesity AND diet*
+5038	tuberculosis w/5 treatment
+5039	malaria AND chloroquine
+5040	smoking pre/3 cessation
+6001	"adverse events"
+6002	"randomized controlled trial"
+6003	(aspirin OR ibuprofen) AND pain
+6004	cancer w/3 therapy
+6005	"breast cancer" AND tamoxifen
+6006	metformin AND diabetes
+6007	insulin pre/3 resistance
+6008	"blood pressure" w/5 reduction
+6009	hepat* AND virus
+6010	antibiot* AND resistance
+6011	"monoclonal antibody"
+6012	vaccin* w/5 efficacy
+6013	(myocardial OR cardiac) w/3 infarction
+6014	statin* AND cholesterol
+6015	"side effects"
+6016	dose w/3 dependent
+6017	pharmacokinetic*
+6018	placebo AND double AND blind
+6019	"case report"
+6020	toxicity w/5 liver
+6021	receptor pre/3 antagonist
+6022	gene w/5 expression
+6023	"clinical trial" AND phase
+6024	hiv AND antiretroviral
+6025	"drug interaction"
+6026	chemotherap* w/5 response
+6027	inflammat* AND cytokine*
+6028	"quality of life"
+6029	mortality w/5 risk
+6030	"systematic review"
+6031	alzheimer* AND (amyloid OR tau)
+6032	depression AND (ssri OR antidepressant*)
+6033	asthma w/3 children
+6034	morphine AND analges*
+6035	penicilin~1
+6036	"renal failure"
+6037	obesity AND diet*
+6038	tuberculosis w/5 treatment
+6039	malaria AND chloroquine
+6040	smoking pre/3 cessation
+7001	"adverse events"
+7002	"randomized controlled trial"
+7003	(aspirin OR ibuprofen) AND pain
+7004	cancer w/3 therapy
+7005	"breast cancer" AND tamoxifen
+7006	metformin AND diabetes
+7007	insulin pre/3 resistance
+7008	"blood pressure" w/5 reduction
+7009	hepat* AND virus
+7010	antibiot* AND resistance
+7011	"monoclonal antibody"
+7012	vaccin* w/5 efficacy
+7013	(myocardial OR cardiac) w/3 infarction
+7014	statin* AND cholesterol
+7015	"side effects"
+7016	dose w/3 dependent
+7017	pharmacokinetic*
+7018	placebo AND double AND blind
+7019	"case report"
+7020	toxicity w/5 liver
+7021	receptor pre/3 antagonist
+7022	gene w/5 expression
+7023	"clinical trial" AND phase
+7024	hiv AND antiretroviral
+7025	"drug interaction"
+7026	chemotherap* w/5 response
+7027	inflammat* AND cytokine*
+7028	"quality of life"
+7029	mortality w/5 risk
+7030	"systematic review"
+7031	alzheimer* AND (amyloid OR tau)
+7032	depression AND (ssri OR antidepressant*)
+7033	asthma w/3 children
+7034	morphine AND analges*
+7035	penicilin~1
+7036	"renal failure"
+7037	obesity AND diet*
+7038	tuberculosis w/5 treatment
+7039	malaria AND chloroquine
+7040	smoking pre/3 cessation
+8001	"adverse events"
+8002	"randomized controlled trial"
+8003	(aspirin OR ibuprofen) AND pain
+8004	cancer w/3 therapy
+8005	"breast cancer" AND tamoxifen
+8006	metformin AND diabetes
+8007	insulin pre/3 resistance
+8008	"blood pressure" w/5 reduction
+8009	hepat* AND virus
+8010	antibiot* AND resistance
+8011	"monoclonal antibody"
+8012	vaccin* w/5 efficacy
+8013	(myocardial OR cardiac) w/3 infarction
+8014	statin* AND cholesterol
+8015	"side effects"
+8016	dose w/3 dependent
+8017	pharmacokinetic*
+8018	placebo AND double AND blind
+8019	"case report"
+8020	toxicity w/5 liver
+8021	receptor pre/3 antagonist
+8022	gene w/5 expression
+8023	"clinical trial" AND phase
+8024	hiv AND antiretroviral
+8025	"drug interaction"
+8026	chemotherap* w/5 response
+8027	inflammat* AND cytokine*
+8028	"quality of life"
+8029	mortality w/5 risk
+8030	"systematic review"
+8031	alzheimer* AND (amyloid OR tau)
+8032	depression AND (ssri OR antidepressant*)
+8033	asthma w/3 children
+8034	morphine AND analges*
+8035	penicilin~1
+8036	"renal failure"
+8037	obesity AND diet*
+8038	tuberculosis w/5 treatment
+8039	malaria AND chloroquine
+8040	smoking pre/3 cessation
+9001	"adverse events"
+9002	"randomized controlled trial"
+9003	(aspirin OR ibuprofen) AND pain
+9004	cancer w/3 therapy
+9005	"breast cancer" AND tamoxifen
+9006	metformin AND diabetes
+9007	insulin pre/3 resistance
+9008	"blood pressure" w/5 reduction
+9009	hepat* AND virus
+9010	antibiot* AND resistance
+9011	"monoclonal antibody"
+9012	vaccin* w/5 efficacy
+9013	(myocardial OR cardiac) w/3 infarction
+9014	statin* AND cholesterol
+9015	"side effects"
+9016	dose w/3 dependent
+9017	pharmacokinetic*
+9018	placebo AND double AND blind
+9019	"case report"
+9020	toxicity w/5 liver
+9021	receptor pre/3 antagonist
+9022	gene w/5 expression
+9023	"clinical trial" AND phase
+9024	hiv AND antiretroviral
+9025	"drug interaction"
+9026	chemotherap* w/5 response
+9027	inflammat* AND cytokine*
+9028	"quality of life"
+9029	mortality w/5 risk
+9030	"systematic review"
+9031	alzheimer* AND (amyloid OR tau)
+9032	depression AND (ssri OR antidepressant*)
+9033	asthma w/3 children
+9034	morphine AND analges*
+9035	penicilin~1
+9036	"renal failure"
+9037	obesity AND diet*
+9038	tuberculosis w/5 treatment
+9039	malaria AND chloroquine
+9040	smoking pre/3 cessation
+10001	"adverse events"
+10002	"randomized controlled trial"
+10003	(aspirin OR ibuprofen) AND pain
+10004	cancer w/3 therapy
+10005	"breast cancer" AND tamoxifen
+10006	metformin AND diabetes
+10007	insulin pre/3 resistance
+10008	"blood pressure" w/5 reduction
+10009	hepat* AND virus
+10010	antibiot* AND resistance
+10011	"monoclonal antibody"
+10012	vaccin* w/5 efficacy
+10013	(myocardial OR cardiac) w/3 infarction
+10014	statin* AND cholesterol
+10015	"side effects"
+10016	dose w/3 dependent
+10017	pharmacokinetic*
+10018	placebo AND double AND blind
+10019	"case report"
+10020	toxicity w/5 liver
+10021	receptor pre/3 antagonist
+10022	gene w/5 expression
+10023	"clinical trial" AND phase
+10024	hiv AND antiretroviral
+10025	"drug interaction"
+10026	chemotherap* w/5 response
+10027	inflammat* AND cytokine*
+10028	"quality of life"
+10029	mortality w/5 risk
+10030	"systematic review"
+10031	alzheimer* AND (amyloid OR tau)
+10032	depression AND (ssri OR antidepressant*)
+10033	asthma w/3 children
+10034	morphine AND analges*
+10035	penicilin~1
+10036	"renal failure"
+10037	obesity AND diet*
+10038	tuberculosis w/5 treatment
+10039	malaria AND chloroquine
+10040	smoking pre/3 cessation
+11001	"adverse events"
+11002	"randomized controlled trial"
+11003	(aspirin OR ibuprofen) AND pain
+11004	cancer w/3 therapy
+11005	"breast cancer" AND tamoxifen
+11006	metformin AND diabetes
+11007	insulin pre/3 resistance
+11008	"blood pressure" w/5 reduction
+11009	hepat* AND virus
+11010	antibiot* AND resistance
+11011	"monoclonal antibody"
+11012	vaccin* w/5 efficacy
+11013	(myocardial OR cardiac) w/3 infarction
+11014	statin* AND cholesterol
+11015	"side effects"
+11016	dose w/3 dependent
+11017	pharmacokinetic*
+11018	placebo AND double AND blind
+11019	"case report"
+11020	toxicity w/5 liver
+11021	receptor pre/3 antagonist
+11022	gene w/5 expression
+11023	"clinical trial" AND phase
+11024	hiv AND antiretroviral
+11025	"drug interaction"
+11026	chemotherap* w/5 response
+11027	inflammat* AND cytokine*
+11028	"quality of life"
+11029	mortality w/5 risk
+11030	"systematic review"
+11031	alzheimer* AND (amyloid OR tau)
+11032	depression AND (ssri OR antidepressant*)
+11033	asthma w/3 children
+11034	morphine AND analges*
+11035	penicilin~1
+11036	"renal failure"
+11037	obesity AND diet*
+11038	tuberculosis w/5 treatment
+11039	malaria AND chloroquine
+11040	smoking pre/3 cessation
+12001	"adverse events"
+12002	"randomized controlled trial"
+12003	(aspirin OR ibuprofen) AND pain
+12004	cancer w/3 therapy
+12005	"breast cancer" AND tamoxifen
+12006	metformin AND diabetes
+12007	insulin pre/3 resistance
+12008	"blood pressure" w/5 reduction
+12009	hepat* AND virus
+12010	antibiot* AND resistance
+12011	"monoclonal antibody"
+12012	vaccin* w/5 efficacy
+12013	(myocardial OR cardiac) w/3 infarction
+12014	statin* AND cholesterol
+12015	"side effects"
+12016	dose w/3 dependent
+12017	pharmacokinetic*
+12018	placebo AND double AND blind
+12019	"case report"
+12020	toxicity w/5 liver
+12021	receptor pre/3 antagonist
+12022	gene w/5 expression
+12023	"clinical trial" AND phase
+12024	hiv AND antiretroviral
+12025	"drug interaction"
+12026	chemotherap* w/5 response
+12027	inflammat* AND cytokine*
+12028	"quality of life"
+12029	mortality w/5 risk
+12030	"systematic review"
+12031	alzheimer* AND (amyloid OR tau)
+12032	depression AND (ssri OR antidepressant*)
+12033	asthma w/3 children
+12034	morphine AND analges*
+12035	penicilin~1
+12036	"renal failure"
+12037	obesity AND diet*
+12038	tuberculosis w/5 treatment
+12039	malaria AND chloroquine
+12040	smoking pre/3 cessation
+13001	"adverse events"
+13002	"randomized controlled trial"
+13003	(aspirin OR ibuprofen) AND pain
+13004	cancer w/3 therapy
+13005	"breast cancer" AND tamoxifen
+13006	metformin AND diabetes
+13007	insulin pre/3 resistance
+13008	"blood pressure" w/5 reduction
+13009	hepat* AND virus
+13010	antibiot* AND resistance
+13011	"monoclonal antibody"
+13012	vaccin* w/5 efficacy
+13013	(myocardial OR cardiac) w/3 infarction
+13014	statin* AND cholesterol
+13015	"side effects"
+13016	dose w/3 dependent
+13017	pharmacokinetic*
+13018	placebo AND double AND blind
+13019	"case report"
+13020	toxicity w/5 liver
+13021	receptor pre/3 antagonist
+13022	gene w/5 expression
+13023	"clinical trial" AND phase
+13024	hiv AND antiretroviral
+13025	"drug interaction"
+13026	chemotherap* w/5 response
+13027	inflammat* AND cytokine*
+13028	"quality of life"
+13029	mortality w/5 risk
+13030	"systematic review"
+13031	alzheimer* AND (amyloid OR tau)
+13032	depression AND (ssri OR antidepressant*)
+13033	asthma w/3 children
+13034	morphine AND analges*
+13035	penicilin~1
+13036	"renal failure"
+13037	obesity AND diet*
+13038	tuberculosis w/5 treatment
+13039	malaria AND chloroquine
+13040	smoking pre/3 cessation
+14001	"adverse events"
+14002	"randomized controlled trial"
+14003	(aspirin OR ibuprofen) AND pain
+14004	cancer w/3 therapy
+14005	"breast cancer" AND tamoxifen
+14006	metformin AND diabetes
+14007	insulin pre/3 resistance
+14008	"blood pressure" w/5 reduction
+14009	hepat* AND virus
+14010	antibiot* AND resistance
+14011	"monoclonal antibody"
+14012	vaccin* w/5 efficacy
+14013	(myocardial OR cardiac) w/3 infarction
+14014	statin* AND cholesterol
+14015	"side effects"
+14016	dose w/3 dependent
+14017	pharmacokinetic*
+14018	placebo AND double AND blind
+14019	"case report"
+14020	toxicity w/5 liver
+14021	receptor pre/3 antagonist
+14022	gene w/5 expression
+14023	"clinical trial" AND phase
+14024	hiv AND antiretroviral
+14025	"drug interaction"
+14026	chemotherap* w/5 response
+14027	inflammat* AND cytokine*
+14028	"quality of life"
+14029	mortality w/5 risk
+14030	"systematic review"
+14031	alzheimer* AND (amyloid OR tau)
+14032	depression AND (ssri OR antidepressant*)
+14033	asthma w/3 children
+14034	morphine AND analges*
+14035	penicilin~1
+14036	"renal failure"
+14037	obesity AND diet*
+14038	tuberculosis w/5 treatment
+14039	malaria AND chloroquine
+14040	smoking pre/3 cessation
+15001	"adverse events"
+15002	"randomized controlled trial"
+15003	(aspirin OR ibuprofen) AND pain
+15004	cancer w/3 therapy
+15005	"breast cancer" AND tamoxifen
+15006	metformin AND diabetes
+15007	insulin pre/3 resistance
+15008	"blood pressure" w/5 reduction
+15009	hepat* AND virus
+15010	antibiot* AND resistance
+15011	"monoclonal antibody"
+15012	vaccin* w/5 efficacy
+15013	(myocardial OR cardiac) w/3 infarction
+15014	statin* AND cholesterol
+15015	"side effects"
+15016	dose w/3 dependent
+15017	pharmacokinetic*
+15018	placebo AND double AND blind
+15019	"case report"
+15020	toxicity w/5 liver
+15021	receptor pre/3 antagonist
+15022	gene w/5 expression
+15023	"clinical trial" AND phase
+15024	hiv AND antiretroviral
+15025	"drug interaction"
+15026	chemotherap* w/5 response
+15027	inflammat* AND cytokine*
+15028	"quality of life"
+15029	mortality w/5 risk
+15030	"systematic review"
+15031	alzheimer* AND (amyloid OR tau)
+15032	depression AND (ssri OR antidepressant*)
+15033	asthma w/3 children
+15034	morphine AND analges*
+15035	penicilin~1
+15036	"renal failure"
+15037	obesity AND diet*
+15038	tuberculosis w/5 treatment
+15039	malaria AND chloroquine
+15040	smoking pre/3 cessation
+16001	"adverse events"
+16002	"randomized controlled trial"
+16003	(aspirin OR ibuprofen) AND pain
+16004	cancer w/3 therapy
+16005	"breast cancer" AND tamoxifen
+16006	metformin AND diabetes
+16007	insulin pre/3 resistance
+16008	"blood pressure" w/5 reduction
+16009	hepat* AND virus
+16010	antibiot* AND resistance
+16011	"monoclonal antibody"
+16012	vaccin* w/5 efficacy
+16013	(myocardial OR cardiac) w/3 infarction
+16014	statin* AND cholesterol
+16015	"side effects"
+16016	dose w/3 dependent
+16017	pharmacokinetic*
+16018	placebo AND double AND blind
+16019	"case report"
+16020	toxicity w/5 liver
+16021	receptor pre/3 antagonist
+16022	gene w/5 expression
+16023	"clinical trial" AND phase
+16024	hiv AND antiretroviral
+16025	"drug interaction"
+16026	chemotherap* w/5 response
+16027	inflammat* AND cytokine*
+16028	"quality of life"
+16029	mortality w/5 risk
+16030	"systematic review"
+16031	alzheimer* AND (amyloid OR tau)
+16032	depression AND (ssri OR antidepressant*)
+16033	asthma w/3 children
+16034	morphine AND analges*
+16035	penicilin~1
+16036	"renal failure"
+16037	obesity AND diet*
+16038	tuberculosis w/5 treatment
+16039	malaria AND chloroquine
+16040	smoking pre/3 cessation
+17001	"adverse events"
+17002	"randomized controlled trial"
+17003	(aspirin OR ibuprofen) AND pain
+17004	cancer w/3 therapy
+17005	"breast cancer" AND tamoxifen
+17006	metformin AND diabetes
+17007	insulin pre/3 resistance
+17008	"blood pressure" w/5 reduction
+17009	hepat* AND virus
+17010	antibiot* AND resistance
+17011	"monoclonal antibody"
+17012	vaccin* w/5 efficacy
+17013	(myocardial OR cardiac) w/3 infarction
+17014	statin* AND cholesterol
+17015	"side effects"
+17016	dose w/3 dependent
+17017	pharmacokinetic*
+17018	placebo AND double AND blind
+17019	"case report"
+17020	toxicity w/5 liver
+17021	receptor pre/3 antagonist
+17022	gene w/5 expression
+17023	"clinical trial" AND phase
+17024	hiv AND antiretroviral
+17025	"drug interaction"
+17026	chemotherap* w/5 response
+17027	inflammat* AND cytokine*
+17028	"quality of life"
+17029	mortality w/5 risk
+17030	"systematic review"
+17031	alzheimer* AND (amyloid OR tau)
+17032	depression AND (ssri OR antidepressant*)
+17033	asthma w/3 children
+17034	morphine AND analges*
+17035	penicilin~1
+17036	"renal failure"
+17037	obesity AND diet*
+17038	tuberculosis w/5 treatment
+17039	malaria AND chloroquine
+17040	smoking pre/3 cessation
+18001	"adverse events"
+18002	"randomized controlled trial"
+18003	(aspirin OR ibuprofen) AND pain
+18004	cancer w/3 therapy
+18005	"breast cancer" AND tamoxifen
+18006	metformin AND diabetes
+18007	insulin pre/3 resistance
+18008	"blood pressure" w/5 reduction
+18009	hepat* AND virus
+18010	antibiot* AND resistance
+18011	"monoclonal antibody"
+18012	vaccin* w/5 efficacy
+18013	(myocardial OR cardiac) w/3 infarction
+18014	statin* AND cholesterol
+18015	"side effects"
+18016	dose w/3 dependent
+18017	pharmacokinetic*
+18018	placebo AND double AND blind
+18019	"case report"
+18020	toxicity w/5 liver
+18021	receptor pre/3 antagonist
+18022	gene w/5 expression
+18023	"clinical trial" AND phase
+18024	hiv AND antiretroviral
+18025	"drug interaction"
+18026	chemotherap* w/5 response
+18027	inflammat* AND cytokine*
+18028	"quality of life"
+18029	mortality w/5 risk
+18030	"systematic review"
+18031	alzheimer* AND (amyloid OR tau)
+18032	depression AND (ssri OR antidepressant*)
+18033	asthma w/3 children
+18034	morphine AND analges*
+18035	penicilin~1
+18036	"renal failure"
+18037	obesity AND diet*
+18038	tuberculosis w/5 treatment
+18039	malaria AND chloroquine
+18040	smoking pre/3 cessation
+19001	"adverse events"
+19002	"randomized controlled trial"
+19003	(aspirin OR ibuprofen) AND pain
+19004	cancer w/3 therapy
+19005	"breast cancer" AND tamoxifen
+19006	metformin AND diabetes
+19007	insulin pre/3 resistance
+19008	"blood pressure" w/5 reduction
+19009	hepat* AND virus
+19010	antibiot* AND resistance
+19011	"monoclonal antibody"
+19012	vaccin* w/5 efficacy
+19013	(myocardial OR cardiac) w/3 infarction
+19014	statin* AND cholesterol
+19015	"side effects"
+19016	dose w/3 dependent
+19017	pharmacokinetic*
+19018	placebo AND double AND blind
+19019	"case report"
+19020	toxicity w/5 liver
+19021	receptor pre/3 antagonist
+19022	gene w/5 expression
+19023	"clinical trial" AND phase
+19024	hiv AND antiretroviral
+19025	"drug interaction"
+19026	chemotherap* w/5 response
+19027	inflammat* AND cytokine*
+19028	"quality of life"
+19029	mortality w/5 risk
+19030	"systematic review"
+19031	alzheimer* AND (amyloid OR tau)
+19032	depression AND (ssri OR antidepressant*)
+19033	asthma w/3 children
+19034	morphine AND analges*
+19035	penicilin~1
+19036	"renal failure"
+19037	obesity AND diet*
+19038	tuberculosis w/5 treatment
+19039	malaria AND chloroquine
+19040	smoking pre/3 cessation
+20001	"adverse events"
+20002	"randomized controlled trial"
+20003	(aspirin OR ibuprofen) AND pain
+20004	cancer w/3 therapy
+20005	"breast cancer" AND tamoxifen
+20006	metformin AND diabetes
+20007	insulin pre/3 resistance
+20008	"blood pressure" w/5 reduction
+20009	hepat* AND virus
+20010	antibiot* AND resistance
+20011	"monoclonal antibody"
+20012	vaccin* w/5 efficacy
+20013	(myocardial OR cardiac) w/3 infarction
+20014	statin* AND cholesterol
+20015	"side effects"
+20016	dose w/3 dependent
+20017	pharmacokinetic*
+20018	placebo AND double AND blind
+20019	"case report"
+20020	toxicity w/5 liver
+20021	receptor pre/3 antagonist
+20022	gene w/5 expression
+20023	"clinical trial" AND phase
+20024	hiv AND antiretroviral
+20025	"drug interaction"
+20026	chemotherap* w/5 response
+20027	inflammat* AND cytokine*
+20028	"quality of life"
+20029	mortality w/5 risk
+20030	"systematic review"
+20031	alzheimer* AND (amyloid OR tau)
+20032	depression AND (ssri OR antidepressant*)
+20033	asthma w/3 children
+20034	morphine AND analges*
+20035	penicilin~1
+20036	"renal failure"
+20037	obesity AND diet*
+20038	tuberculosis w/5 treatment
+20039	malaria AND chloroquine
+20040	smoking pre/3 cessation
+21001	"adverse events"
+21002	"randomized controlled trial"
+21003	(aspirin OR ibuprofen) AND pain
+21004	cancer w/3 therapy
+21005	"breast cancer" AND tamoxifen
+21006	metformin AND diabetes
+21007	insulin pre/3 resistance
+21008	"blood pressure" w/5 reduction
+21009	hepat* AND virus
+21010	antibiot* AND resistance
+21011	"monoclonal antibody"
+21012	vaccin* w/5 efficacy
+21013	(myocardial OR cardiac) w/3 infarction
+21014	statin* AND cholesterol
+21015	"side effects"
+21016	dose w/3 dependent
+21017	pharmacokinetic*
+21018	placebo AND double AND blind
+21019	"case report"
+21020	toxicity w/5 liver
+21021	receptor pre/3 antagonist
+21022	gene w/5 expression
+21023	"clinical trial" AND phase
+21024	hiv AND antiretroviral
+21025	"drug interaction"
+21026	chemotherap* w/5 response
+21027	inflammat* AND cytokine*
+21028	"quality of life"
+21029	mortality w/5 risk
+21030	"systematic review"
+21031	alzheimer* AND (amyloid OR tau)
+21032	depression AND (ssri OR antidepressant*)
+21033	asthma w/3 children
+21034	morphine AND analges*
+21035	penicilin~1
+21036	"renal failure"
+21037	obesity AND diet*
+21038	tuberculosis w/5 treatment
+21039	malaria AND chloroquine
+21040	smoking pre/3 cessation
+22001	"adverse events"
+22002	"randomized controlled trial"
+22003	(aspirin OR ibuprofen) AND pain
+22004	cancer w/3 therapy
+22005	"breast cancer" AND tamoxifen
+22006	metformin AND diabetes
+22007	insulin pre/3 resistance
+22008	"blood pressure" w/5 reduction
+22009	hepat* AND virus
+22010	antibiot* AND resistance
+22011	"monoclonal antibody"
+22012	vaccin* w/5 efficacy
+22013	(myocardial OR cardiac) w/3 infarction
+22014	statin* AND cholesterol
+22015	"side effects"
+22016	dose w/3 dependent
+22017	pharmacokinetic*
+22018	placebo AND double AND blind
+22019	"case report"
+22020	toxicity w/5 liver
+22021	receptor pre/3 antagonist
+22022	gene w/5 expression
+22023	"clinical trial" AND phase
+22024	hiv AND antiretroviral
+22025	"drug interaction"
+22026	chemotherap* w/5 response
+22027	inflammat* AND cytokine*
+22028	"quality of life"
+22029	mortality w/5 risk
+22030	"systematic review"
+22031	alzheimer* AND (amyloid OR tau)
+22032	depression AND (ssri OR antidepressant*)
+22033	asthma w/3 children
+22034	morphine AND analges*
+22035	penicilin~1
+22036	"renal failure"
+22037	obesity AND diet*
+22038	tuberculosis w/5 treatment
+22039	malaria AND chloroquine
+22040	smoking pre/3 cessation
+23001	"adverse events"
+23002	"randomized controlled trial"
+23003	(aspirin OR ibuprofen) AND pain
+23004	cancer w/3 therapy
+23005	"breast cancer" AND tamoxifen
+23006	metformin AND diabetes
+23007	insulin pre/3 resistance
+23008	"blood pressure" w/5 reduction
+23009	hepat* AND virus
+23010	antibiot* AND resistance
+23011	"monoclonal antibody"
+23012	vaccin* w/5 efficacy
+23013	(myocardial OR cardiac) w/3 infarction
+23014	statin* AND cholesterol
+23015	"side effects"
+23016	dose w/3 dependent
+23017	pharmacokinetic*
+23018	placebo AND double AND blind
+23019	"case report"
+23020	toxicity w/5 liver
+23021	receptor pre/3 antagonist
+23022	gene w/5 expression
+23023	"clinical trial" AND phase
+23024	hiv AND antiretroviral
+23025	"drug interaction"
+23026	chemotherap* w/5 response
+23027	inflammat* AND cytokine*
+23028	"quality of life"
+23029	mortality w/5 risk
+23030	"systematic review"
+23031	alzheimer* AND (amyloid OR tau)
+23032	depression AND (ssri OR antidepressant*)
+23033	asthma w/3 children
+23034	morphine AND analges*
+23035	penicilin~1
+23036	"renal failure"
+23037	obesity AND diet*
+23038	tuberculosis w/5 treatment
+23039	malaria AND chloroquine
+23040	smoking pre/3 cessation
+24001	"adverse events"
+24002	"randomized controlled trial"
+24003	(aspirin OR ibuprofen) AND pain
+24004	cancer w/3 therapy
+24005	"breast cancer" AND tamoxifen
+24006	metformin AND diabetes
+24007	insulin pre/3 resistance
+24008	"blood pressure" w/5 reduction
+24009	hepat* AND virus
+24010	antibiot* AND resistance
+24011	"monoclonal antibody"
+24012	vaccin* w/5 efficacy
+24013	(myocardial OR cardiac) w/3 infarction
+24014	statin* AND cholesterol
+24015	"side effects"
+24016	dose w/3 dependent
+24017	pharmacokinetic*
+24018	placebo AND double AND blind
+24019	"case report"
+24020	toxicity w/5 liver
+24021	receptor pre/3 antagonist
+24022	gene w/5 expression
+24023	"clinical trial" AND phase
+24024	hiv AND antiretroviral
+24025	"drug interaction"
+24026	chemotherap* w/5 response
+24027	inflammat* AND cytokine*
+24028	"quality of life"
+24029	mortality w/5 risk
+24030	"systematic review"
+24031	alzheimer* AND (amyloid OR tau)
+24032	depression AND (ssri OR antidepressant*)
+24033	asthma w/3 children
+24034	morphine AND analges*
+24035	penicilin~1
+24036	"renal failure"
+24037	obesity AND diet*
+24038	tuberculosis w/5 treatment
+24039	malaria AND chloroquine
+24040	smoking pre/3 cessation

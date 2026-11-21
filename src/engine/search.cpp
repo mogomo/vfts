@@ -468,6 +468,7 @@ struct Searcher::Impl {
     std::vector<const std::vector<std::uint32_t> *> masked;
     std::vector<Leaf> leaves;
     float cache[256];
+    float boost;                // 1 + k1: the BM25 of Elasticsearch / OpenSearch (LegacyBM25Similarity)
     Stemmer stemmer;
 
     Impl(Searcher &searcher, const SearchOptions &opts) : s(searcher), o(opts)
@@ -482,6 +483,7 @@ struct Searcher::Impl {
         }
         for (auto &t : s.tail_segs_) { segs.push_back(t.get()); dead.push_back(nullptr); dcs.push_back(nullptr); masked.push_back(&none); }
         (void)n;
+        boost = 1.0f + o.k1;
         const float avgdl = s.stats_.avgdl();
         for (int i = 0; i < 256; ++i)
             cache[i] = 1.0f / (o.k1 * ((1.0f - o.b) + o.b * static_cast<float>(norm_to_length(static_cast<std::uint8_t>(i))) / avgdl));
@@ -667,7 +669,7 @@ struct Searcher::Impl {
         case QKind::None: break;
         case QKind::Term:
             p.leaves.push_back(add_word_leaf(q.words[0], q.langs[0]));
-            p.weight = leaves[p.leaves[0]].idf;
+            p.weight = boost * leaves[p.leaves[0]].idf;
             break;
         case QKind::Phrase: {
             double w = 0;
@@ -677,20 +679,20 @@ struct Searcher::Impl {
                 p.leaves.push_back(l);
                 w += leaves[l].idf;
             }
-            p.weight = static_cast<float>(w);
+            p.weight = boost * static_cast<float>(w);
             p.slop = q.slop;
             break;
         }
         case QKind::Prefix: case QKind::Wildcard: case QKind::Fuzzy:
             p.leaves.push_back(add_pattern_leaf(q));
-            p.weight = leaves[p.leaves[0]].idf;
+            p.weight = boost * leaves[p.leaves[0]].idf;
             break;
         case QKind::Near: {
             p.dist = q.dist;
             p.ordered = q.ordered;
             p.kids.push_back(plan(q.kids[0]));
             p.kids.push_back(plan(q.kids[1]));
-            p.weight = leaf_weight(p.kids[0]) + leaf_weight(p.kids[1]);
+            p.weight = boost * (leaf_weight(p.kids[0]) + leaf_weight(p.kids[1]));
             break;
         }
         case QKind::Bool:

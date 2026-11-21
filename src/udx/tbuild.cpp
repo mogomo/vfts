@@ -1,10 +1,13 @@
 // vtext.tbuild(part, doc_id, body, lang, ver USING PARAMETERS seg_base, lang, accent_fold,
-//              on_unsupported, threads, max_segment_mb) OVER(PARTITION BY part)
+//              on_unsupported, threads, max_segment_mb) OVER(PARTITION BEST)
 //
 // Builds segments from documents and returns them as index rows (udx_common.h), which the
-// refresh procedure stores in the index tables. Every instance (one per partition) runs `threads`
-// worker threads; each owns a segment builder, so an instance writes up to `threads` segments,
-// and more when a builder grows past max_segment_mb. Segment ids: seg_base + part * 4096 + n.
+// refresh procedure stores in the index tables. Vertica runs instances in parallel, each on the
+// rows of its node (PARTITION BEST: no sort, no exchange of the text). Every instance runs
+// `threads` worker threads; each owns a segment builder, so an instance writes up to `threads`
+// segments, and more when a builder grows past max_segment_mb.
+// Segment ids: (seg_base << 31) | 31 random bits. seg_base comes from a sequence (one per build);
+// the procedure checks that the ids of a build are distinct and new.
 //
 // The calling thread reads the rows and writes the result; worker threads never call the SDK.
 #include "udx_common.h"
@@ -13,6 +16,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <random>
 #include <thread>
 
 using namespace Vertica;
@@ -32,6 +36,7 @@ class TBuild : public TransformFunction {
     std::int64_t seg_base_ = 0;
     int threads_ = 4;
     std::size_t max_bytes_ = 0;
+    std::string index_, cache_dir_;     // with index: segments are also written into this node's cache
 
 public:
     void setup(ServerInterface &srv, const SizedColumnTypes &) override
@@ -46,6 +51,7 @@ public:
             const std::int64_t mb = s.integer("max_segment_mb", 2048);
             if (mb < 1) fail("max_segment_mb must be at least 1");
             max_bytes_ = static_cast<std::size_t>(mb) << 20;
+            if (s.has("index")) { index_ = read_index_name(s); cache_dir_ = resolve_cache_dir(s); }
         } catch (const std::exception &e) {
             vt_report_error(0, "tbuild: %s", e.what());
         }
@@ -61,6 +67,14 @@ public:
     }
 
 private:
+    // The node that builds a segment has it at once: the refresh then loads it on the other nodes only.
+    void to_cache(const std::string &seg)
+    {
+        if (index_.empty()) return;
+        vtext::CacheWriter w(cache_dir_, index_);
+        w.write_segment(seg);
+    }
+
     void run(ServerInterface &srv, PartitionReader &in, PartitionWriter &out)
     {
         std::mutex mu;
@@ -69,15 +83,14 @@ private:
         bool done = false;
         std::exception_ptr error;
         std::vector<std::string> segments;
-        std::int64_t part = -1;
-        std::uint32_t next_local = 0;
+        bool started = false;
 
+        std::random_device rd;
+        std::mt19937_64 rng((static_cast<std::uint64_t>(rd()) << 32) ^ rd());
         auto next_id = [&]() {
             std::lock_guard<std::mutex> l(mu);
-            if (next_local >= 4096) throw std::runtime_error("more than 4096 segments in one partition: raise max_segment_mb");
-            return seg_base_ + part * 4096 + next_local++;
+            return (seg_base_ << 31) | static_cast<std::int64_t>(rng() & 0x7FFFFFFFull);
         };
-
         auto worker = [&]() {
             try {
                 vtext::SegmentBuilder b(aopts_);
@@ -100,6 +113,7 @@ private:
                         }
                         if (b.memory() > max_bytes_) {
                             std::string seg = b.finish(next_id());
+                            to_cache(seg);
                             std::lock_guard<std::mutex> l(mu);
                             segments.push_back(std::move(seg));
                         }
@@ -107,6 +121,7 @@ private:
                 }
                 if (b.docs() > 0) {
                     std::string seg = b.finish(next_id());
+                    to_cache(seg);
                     std::lock_guard<std::mutex> l(mu);
                     segments.push_back(std::move(seg));
                 }
@@ -135,9 +150,8 @@ private:
         try {
             do {
                 if (in.isNull(1)) continue;
-                if (part < 0) {
-                    part = in.isNull(0) ? 0 : in.getIntRef(0);
-                    if (part < 0 || part > 100000) fail("part must be 0 to 100000");
+                if (!started) {
+                    started = true;
                     for (int t = 0; t < threads_; ++t) pool.emplace_back(worker);
                 }
                 DocIn d;
@@ -189,13 +203,20 @@ public:
         argTypes.addInt();              // ver, microseconds
         add_index_row_types(returnType);
     }
-    void getReturnType(ServerInterface &, const SizedColumnTypes &, SizedColumnTypes &out) override { add_index_row_columns(out); }
+    void getReturnType(ServerInterface &srv, const SizedColumnTypes &, SizedColumnTypes &out) override
+    {
+        Settings s(srv);
+        add_index_row_columns(out, s.integer("row_bytes", 65000));
+    }
     void getParameterType(ServerInterface &, SizedColumnTypes &p) override
     {
         add_analyzer_parameters(p);
         p.addInt("seg_base");
         p.addInt("threads");
         p.addInt("max_segment_mb");
+        p.addVarchar(128, "index");
+        p.addVarchar(1024, "cache_dir");
+        p.addInt("row_bytes");
     }
     TransformFunction *createTransformFunction(ServerInterface &srv) override { return vt_createFuncObject<TBuild>(srv.allocator); }
 };

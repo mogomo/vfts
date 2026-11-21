@@ -3,8 +3,9 @@
 //   term_dict  (term_id, term, stem, lang, doc_freq)  one row per term and stemming language
 //   postings   (term_id, chunk_id, docs)               CRoaring bitmap (portable) of the docnos
 //                                                      of one 65,536-docno chunk, low 16 bits
-//   positions  (term_id, chunk_id, payload)            per document of the chunk, in docno order:
-//                                                      varint tf, then tf varint position deltas
+//   positions  (term_id, chunk_id, part, payload)      per document of the chunk, in docno order:
+//                                                      varint tf, then tf varint position deltas;
+//                                                      cut into parts of at most PART_BYTES bytes
 //   doc_stats  (docno, doc_id, length)
 //
 // segment_to_rows(seg) followed by SegmentAssembler on those rows gives the same bytes again
@@ -23,6 +24,7 @@
 namespace vtext {
 
 constexpr std::uint32_t CHUNK_BITS = 16;            // 65,536 docnos per postings row
+constexpr std::size_t PART_BYTES = 65000;           // a positions payload is split into rows of at most this
 
 struct TermDictRow { std::uint32_t term_id; std::string term, stem, lang; std::uint32_t doc_freq; };
 struct PostingRow { std::uint32_t term_id, chunk_id; std::string docs, payload; };
@@ -41,6 +43,8 @@ class SegmentAssembler {
 public:
     void add(const TermDictRow &r);
     void add(PostingRow &&r);
+    // One part of a positions payload (parts may arrive in any order; they are joined by number).
+    void add_part(std::uint32_t term_id, std::uint32_t chunk_id, std::uint32_t part, std::string &&bytes);
     void add(const DocRow &r);
     std::string finish(std::int64_t segment_id, std::int64_t max_ver);
     std::size_t memory() const { return memory_; }
@@ -49,6 +53,7 @@ private:
     struct Term { std::string term; std::vector<std::pair<std::string, std::string>> stems; std::uint32_t df = 0; };
     std::map<std::uint32_t, Term> terms_;
     std::map<std::pair<std::uint32_t, std::uint32_t>, PostingRow> postings_;
+    std::map<std::pair<std::uint32_t, std::uint32_t>, std::map<std::uint32_t, std::string>> parts_;
     std::vector<DocRow> docs_;
     std::size_t memory_ = 0;
 };

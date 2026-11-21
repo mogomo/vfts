@@ -1,0 +1,40 @@
+1	fraud
+2	"special purpose entities"
+3	raptor AND hedge
+4	(fraud OR scandal) AND audit*
+5	ken w/3 lay
+6	jeff pre/2 skilling
+7	california w/5 (energy OR power OR electricity)
+8	"mark to market"
+9	enron w/10 bankruptcy
+10	(shred* OR destroy*) w/5 document*
+11	arthur pre/2 andersen
+12	"price manipulation"
+13	contract w/5 indemnity
+14	confidential AND NOT newsletter
+15	gas pre/3 pipeline
+16	derivative* AND (risk OR exposure)
+17	"conference call" AND tomorrow
+18	lawsuit OR litigation OR subpoena
+19	sec w/10 investigation
+20	merger w/5 dynegy
+21	(stock OR shares) w/3 (sell OR sold OR selling)
+22	"off balance sheet"
+23	(board w/5 directors) AND meeting
+24	trading AND loss* AND california
+25	"western power" w/10 price*
+26	fastow
+27	ljm
+28	chewco OR jedi
+29	energy w/3 crisis
+30	rolling w/2 blackouts
+31	deregulation AND california AND legislation
+32	pipeline pre/5 capacity
+33	audit* w/5 committee
+34	broadband AND (strategy OR plan)
+35	attorney w/10 privileged
+36	"do not forward"
+37	schedul* w/3 meeting
+38	wire w/3 transfer
+39	invoice* AND payment AND overdue
+40	skiling~1 OR fastw~1

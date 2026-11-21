@@ -98,6 +98,14 @@ void SegmentAssembler::add(PostingRow &&r)
     memory_ += it->second.docs.size() + it->second.payload.size();
 }
 
+void SegmentAssembler::add_part(std::uint32_t term_id, std::uint32_t chunk_id, std::uint32_t part, std::string &&bytes)
+{
+    memory_ += bytes.size() + 64;
+    auto &m = parts_[std::make_pair(term_id, chunk_id)];
+    if (!m.emplace(part, std::move(bytes)).second)
+        throw std::runtime_error("positions: two rows for one part of term id " + std::to_string(term_id));
+}
+
 void SegmentAssembler::add(const DocRow &r) { docs_.push_back(r); memory_ += sizeof(DocRow); }
 
 std::string SegmentAssembler::finish(std::int64_t segment_id, std::int64_t max_ver)
@@ -115,6 +123,21 @@ std::string SegmentAssembler::finish(std::int64_t segment_id, std::int64_t max_v
     SegmentWriter w(segment_id, max_ver);
     w.set_docs(std::move(ids), std::move(lens));
 
+    // join the payload parts
+    for (auto &kv : parts_) {
+        std::string joined;
+        std::uint32_t want = 0;
+        for (auto &pp : kv.second) {
+            if (pp.first != want++) throw std::runtime_error("positions: a part is missing for term id " + std::to_string(kv.first.first));
+            joined += pp.second;
+        }
+        PostingRow r;
+        r.term_id = kv.first.first;
+        r.chunk_id = kv.first.second;
+        r.payload = std::move(joined);
+        add(std::move(r));
+    }
+    parts_.clear();
     std::uint32_t expect = 0;
     std::vector<std::uint32_t> pos;
     auto p = postings_.begin();

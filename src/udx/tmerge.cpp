@@ -31,7 +31,9 @@ public:
             std::vector<vtext::SegmentRef> inputs;
             for (const vtext::SegmentRef &r : li->refs) if (want.count(r.seg->id())) inputs.push_back(r);
             if (inputs.size() != want.size()) fail("some of the segments " + s.text("segments", "") + " are not in the active generation");
-            write_segment_rows(out, vtext::merge_segments(inputs, s.integer("new_id", 0)));
+            const std::string merged = vtext::merge_segments(inputs, s.integer("new_id", 0));
+            vtext::CacheWriter(resolve_cache_dir(s), index).write_segment(merged);     // this node has it now
+            write_segment_rows(out, merged);
         } catch (const std::exception &e) {
             vt_report_error(0, "tmerge: %s", e.what());
         }

@@ -11,7 +11,10 @@
 #include "udx_common.h"
 #include "../engine/table_codec.h"
 
+#include <atomic>
 #include <map>
+#include <mutex>
+#include <thread>
 
 using namespace Vertica;
 using namespace vtext_udx;
@@ -68,13 +71,17 @@ private:
                 r.lang = in.isNull(IC_LANG) ? std::string() : in.getStringRef(IC_LANG).str();
                 r.doc_freq = static_cast<std::uint32_t>(in.getIntRef(IC_N));
                 asm_[sid].add(r);
-            } else if (kind == "P" || kind == "Q") {
+            } else if (kind == "P") {
                 vtext::PostingRow r;
                 r.term_id = static_cast<std::uint32_t>(in.getIntRef(IC_TERM_ID));
                 r.chunk_id = static_cast<std::uint32_t>(in.getIntRef(IC_CHUNK));
                 const VString &b = in.getStringRef(IC_BIN);
-                (kind == "P" ? r.docs : r.payload).assign(b.data(), b.length());
+                r.docs.assign(b.data(), b.length());
                 asm_[sid].add(std::move(r));
+            } else if (kind == "Q") {
+                const VString &b = in.getStringRef(IC_BIN);
+                asm_[sid].add_part(static_cast<std::uint32_t>(in.getIntRef(IC_TERM_ID)), static_cast<std::uint32_t>(in.getIntRef(IC_CHUNK)),
+                                   in.isNull(IC_DOCNO) ? 0u : static_cast<std::uint32_t>(in.getIntRef(IC_DOCNO)), std::string(b.data(), b.length()));
             } else {
                 fail("unknown row kind '" + kind + "'");
             }
@@ -93,21 +100,42 @@ private:
                 if (!kv.second.empty()) fail("tombstones for segment " + std::to_string(kv.first) + ", which is not in the generation");
             w.activate(g);
         } else {
+            // assemble, verify and write the segments in parallel (engine work only, no SDK calls)
+            std::vector<std::pair<std::int64_t, vtext::SegmentAssembler *>> todo;
             for (auto &kv : asm_) {
                 auto e = expect.find(kv.first);
                 if (e == expect.end()) fail("no summary row for segment " + std::to_string(kv.first));
-                if (w.has_segment(kv.first, e->second)) continue;
-                const std::string seg = kv.second.finish(kv.first, 0);
-                vtext::Segment view(seg.data(), seg.size());
-                if (view.header().checksum != e->second)
-                    fail("segment " + std::to_string(kv.first) + " assembled from the tables has checksum " +
-                         std::to_string(static_cast<std::int64_t>(view.header().checksum)) + ", the summary says " +
-                         std::to_string(static_cast<std::int64_t>(e->second)));
-                w.write_segment(seg);
-                ++written;
-                bytes += seg.size();
-                if (isCanceled()) fail("canceled");
+                if (!w.has_segment(kv.first, e->second)) todo.emplace_back(kv.first, &kv.second);
             }
+            std::atomic<std::size_t> next{0};
+            std::mutex mu;
+            std::string error;
+            auto work = [&]() {
+                for (;;) {
+                    const std::size_t i = next.fetch_add(1);
+                    if (i >= todo.size()) return;
+                    try {
+                        const std::int64_t sid = todo[i].first;
+                        const std::string seg = todo[i].second->finish(sid, 0);
+                        vtext::Segment view(seg.data(), seg.size());
+                        if (view.header().checksum != expect[sid])
+                            throw std::runtime_error("segment " + std::to_string(sid) + " assembled from the tables has another checksum than its summary row");
+                        w.write_segment(seg);
+                        std::lock_guard<std::mutex> l(mu);
+                        ++written;
+                        bytes += seg.size();
+                    } catch (const std::exception &ex) {
+                        std::lock_guard<std::mutex> l(mu);
+                        if (error.empty()) error = ex.what();
+                        next = todo.size();
+                    }
+                }
+            };
+            const std::size_t nt = std::max<std::size_t>(1, std::min<std::size_t>(todo.size(), std::thread::hardware_concurrency()));
+            std::vector<std::thread> pool;
+            for (std::size_t t = 0; t < nt; ++t) pool.emplace_back(work);
+            for (auto &t : pool) t.join();
+            if (!error.empty()) fail(error);
         }
         out.getStringRef(0).copy(srv.getCurrentNodeName());
         out.getStringRef(1).copy(activate ? "activated" : "loaded");

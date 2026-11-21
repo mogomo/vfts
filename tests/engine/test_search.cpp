@@ -62,8 +62,9 @@ struct Ref {
         }
         return static_cast<float>(std::log(1.0 + (N - df + 0.5) / (df + 0.5)));
     }
-    float bm25(float w, float freq, std::size_t len)
+    float bm25(float idf, float freq, std::size_t len)
     {
+        const float w = 2.2f * idf;     // (1 + k1) * idf, as Elasticsearch / OpenSearch
         return w - w / (1.0f + freq * cache[length_to_norm(static_cast<std::uint32_t>(len))]);
     }
     static std::vector<std::uint32_t> positions(const Doc &d, const std::set<std::string> &ts)

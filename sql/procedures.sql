@@ -207,8 +207,8 @@ BEGIN
     act := '(SELECT segment_id FROM vtext.segments WHERE index_id = ' || iid || ' AND gen_added <= ' || g
         || ' AND (gen_removed IS NULL OR gen_removed > ' || g || '))';
     rows_sql := 'SELECT ''G''::VARCHAR(1) AS kind, segment_id, NULL::INT AS term_id, NULL::INT AS chunk_id, NULL::INT AS docno, '
-        || 'checksum AS doc_id, NULL::INT AS n, NULL::VARCHAR(1024) AS term, NULL::VARCHAR(1024) AS stem, NULL::VARCHAR(8) AS lang, '
-        || 'NULL::LONG VARBINARY(32000000) AS bin FROM vtext.segments WHERE index_id = ' || iid || ' AND segment_id IN ' || act
+        || 'checksum AS doc_id, NULL::INT AS n, NULL::VARCHAR(256) AS term, NULL::VARCHAR(256) AS stem, NULL::VARCHAR(8) AS lang, '
+        || 'NULL::LONG VARBINARY(65000) AS bin FROM vtext.segments WHERE index_id = ' || iid || ' AND segment_id IN ' || act
         || ' UNION ALL SELECT ''X'', segment_id, NULL, NULL, docno, doc_id, NULL, NULL, NULL, NULL, NULL FROM vtext.tombstones '
         || 'WHERE index_id = ' || iid || ' AND gen <= ' || g || ' AND segment_id IN ' || act;
     want := (SELECT COUNT(*) FROM (SELECT vtext.tnode(k) OVER(PARTITION NODES) FROM vtext.probe) n);
@@ -243,13 +243,13 @@ BEGIN
         seg := (SELECT MAX(segment_id) FROM (SELECT segment_id, ROW_NUMBER() OVER(ORDER BY segment_id) AS rn
                 FROM vtext.segments WHERE index_id = iid AND gen_removed IS NULL) s WHERE rn = i + 1);
         rows_sql := 'SELECT ''D''::VARCHAR(1) AS kind, segment_id, NULL::INT AS term_id, NULL::INT AS chunk_id, docno, doc_id, length AS n, '
-            || 'NULL::VARCHAR(1024) AS term, NULL::VARCHAR(1024) AS stem, NULL::VARCHAR(8) AS lang, NULL::LONG VARBINARY(32000000) AS bin '
+            || 'NULL::VARCHAR(256) AS term, NULL::VARCHAR(256) AS stem, NULL::VARCHAR(8) AS lang, NULL::LONG VARBINARY(65000) AS bin '
             || 'FROM vtext.doc_stats WHERE index_id = ' || iid || ' AND segment_id = ' || seg
-            || ' UNION ALL SELECT ''T'', segment_id, term_id, NULL, NULL, NULL, doc_freq, term, stem, lang, NULL FROM vtext.term_dict WHERE index_id = '
+            || ' UNION ALL SELECT ''T'', segment_id, term_id, NULL, NULL, NULL, doc_freq, term::VARCHAR(256), stem::VARCHAR(256), lang, NULL FROM vtext.term_dict WHERE index_id = '
             || iid || ' AND segment_id = ' || seg
-            || ' UNION ALL SELECT ''P'', segment_id, term_id, chunk_id, NULL, NULL, NULL, NULL, NULL, NULL, docs::LONG VARBINARY(32000000) FROM vtext.postings WHERE index_id = '
+            || ' UNION ALL SELECT ''P'', segment_id, term_id, chunk_id, NULL, NULL, NULL, NULL, NULL, NULL, docs::LONG VARBINARY(65000) FROM vtext.postings WHERE index_id = '
             || iid || ' AND segment_id = ' || seg
-            || ' UNION ALL SELECT ''Q'', segment_id, term_id, chunk_id, NULL, NULL, NULL, NULL, NULL, NULL, payload FROM vtext.positions WHERE index_id = '
+            || ' UNION ALL SELECT ''Q'', segment_id, term_id, chunk_id, part, NULL, NULL, NULL, NULL, NULL, payload FROM vtext.positions WHERE index_id = '
             || iid || ' AND segment_id = ' || seg
             || ' UNION ALL SELECT ''S'', segment_id, n_terms, bytes, sum_len, checksum, n_docs, NULL, NULL, NULL, NULL FROM vtext.segments WHERE index_id = '
             || iid || ' AND segment_id = ' || seg;
@@ -268,7 +268,7 @@ CREATE OR REPLACE PROCEDURE vtext.store_build(iid INT, g_new INT) LANGUAGE PLvSQ
 BEGIN
     PERFORM INSERT /*+DIRECT*/ INTO vtext.term_dict SELECT iid, segment_id, term_id, term, stem, COALESCE(lang, ''), n FROM vtext_build WHERE kind = 'T';
     PERFORM INSERT /*+DIRECT*/ INTO vtext.postings SELECT iid, segment_id, term_id, chunk_id, bin::VARBINARY(65000) FROM vtext_build WHERE kind = 'P';
-    PERFORM INSERT /*+DIRECT*/ INTO vtext.positions SELECT iid, segment_id, term_id, chunk_id, bin FROM vtext_build WHERE kind = 'Q';
+    PERFORM INSERT /*+DIRECT*/ INTO vtext.positions SELECT iid, segment_id, term_id, chunk_id, docno, bin FROM vtext_build WHERE kind = 'Q';
     PERFORM INSERT /*+DIRECT*/ INTO vtext.doc_stats SELECT iid, segment_id, docno, doc_id, n FROM vtext_build WHERE kind = 'D';
     PERFORM INSERT INTO vtext.segments (index_id, segment_id, state, gen_added, n_docs, n_terms, sum_len, bytes, checksum, created)
             SELECT iid, segment_id, 'active', g_new, n, term_id, docno, chunk_id, doc_id, CLOCK_TIMESTAMP() FROM vtext_build WHERE kind = 'S';
@@ -279,8 +279,29 @@ $$;
 CREATE OR REPLACE PROCEDURE vtext.build_table() LANGUAGE PLvSQL AS $$
 BEGIN
     EXECUTE 'CREATE LOCAL TEMPORARY TABLE IF NOT EXISTS vtext_build (kind VARCHAR(1), segment_id INT, term_id INT, chunk_id INT, docno INT, '
-         || 'doc_id INT, n INT, term VARCHAR(1024), stem VARCHAR(1024), lang VARCHAR(8), bin LONG VARBINARY(32000000)) '
+         || 'doc_id INT, n INT, term VARCHAR(256), stem VARCHAR(256), lang VARCHAR(8), bin LONG VARBINARY(65000)) '
          || 'ON COMMIT DELETE ROWS UNSEGMENTED ALL NODES';
+END;
+$$;
+
+-- Loads the segments of the session temp table vtext_build on the nodes that do not have them yet
+-- (the node that built a segment wrote it into its cache already).
+CREATE OR REPLACE PROCEDURE vtext.load_build(nm VARCHAR, cdir VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    nodes INT; lst VARCHAR(30000); missing VARCHAR(30000); params VARCHAR(32000);
+BEGIN
+    nodes := (SELECT COUNT(*) FROM (SELECT vtext.tnode(k) OVER(PARTITION NODES) FROM vtext.probe) n);
+    lst := (SELECT LISTAGG(segment_id || ':' || doc_id USING PARAMETERS max_length = 30000) FROM vtext_build WHERE kind = 'S');
+    IF lst IS NULL OR lst = '' THEN
+        RETURN;
+    END IF;
+    params := 'index=' || QUOTE_LITERAL(nm) || ', segments=' || QUOTE_LITERAL(lst) || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
+    missing := EXECUTE 'SELECT LISTAGG(s.segment_id::VARCHAR USING PARAMETERS max_length = 30000) FROM (SELECT segment_id FROM vtext_build WHERE kind = ''S'') s '
+            || 'LEFT JOIN (SELECT segment_id, COUNT(DISTINCT node_name) AS n FROM (SELECT vtext.thave(USING PARAMETERS ' || params
+            || ') OVER(PARTITION NODES) FROM vtext.probe) h GROUP BY 1) h USING (segment_id) WHERE COALESCE(h.n, 0) < ' || nodes;
+    IF missing IS NOT NULL AND missing <> '' THEN
+        PERFORM CALL vtext.load_rows(nm, cdir, 'SELECT * FROM vtext_build WHERE segment_id IN (' || missing || ')');
+    END IF;
 END;
 $$;
 
@@ -369,20 +390,21 @@ BEGIN
     -- 3. Build: segments as index rows into a session temp table (emptied by the commit).
     nodes := (SELECT COUNT(*) FROM (SELECT vtext.tnode(k) OVER(PARTITION NODES) FROM vtext.probe) n);
     cores := (SELECT COALESCE(MIN(processor_core_count), 1) FROM v_monitor.host_resources);
-    th := CASE WHEN threads_ > 0 THEN threads_ ELSE GREATEST(1, cores) END;
-    IF n_rows < 50000 THEN
-        parts := 1;
-        th := 1;
-    ELSE
-        parts := nodes;
-    END IF;
+    -- Vertica runs several instances per node (PARTITION BEST); each gets a few threads.
+    th := CASE WHEN threads_ > 0 THEN threads_ ELSE 1 END;     -- PARTITION BEST runs an instance per core already
+    -- fewer than 200,000 rows: one instance (OVER()), so a small refresh makes one segment
     PERFORM CALL vtext.build_table();
-    seg_base := EXECUTE 'SELECT NEXTVAL(''vtext.segment_seq'') * 1000000';
+    seg_base := EXECUTE 'SELECT NEXTVAL(''vtext.segment_seq'')';
     IF n_rows > 0 THEN
-        EXECUTE 'INSERT /*+DIRECT, LABEL(vtext_build)*/ INTO vtext_build SELECT vtext.tbuild(part, doc_id, body, lang, NULL::INT USING PARAMETERS seg_base='
+        EXECUTE 'INSERT /*+DIRECT, LABEL(vtext_build)*/ INTO vtext_build SELECT vtext.tbuild(0, doc_id, body, lang, NULL::INT USING PARAMETERS seg_base='
              || seg_base || ', lang=' || QUOTE_LITERAL(lang_) || ', accent_fold=' || QUOTE_LITERAL(fold) || ', on_unsupported=' || QUOTE_LITERAL(unsup)
-             || ', threads=' || th || ', max_segment_mb=' || maxmb || ') OVER(PARTITION BY part) FROM (SELECT MOD(HASH(doc_id), ' || parts
-             || ') AS part, doc_id, body, lang FROM (' || sel || ') x) y';
+             || ', threads=' || th || ', max_segment_mb=' || maxmb || ', index=' || QUOTE_LITERAL(nm)
+             || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END || ') OVER('
+             || CASE WHEN n_rows < 200000 THEN '' ELSE 'PARTITION BEST' END || ') FROM (' || sel || ') x';
+        IF (SELECT COUNT(*) - COUNT(DISTINCT segment_id) FROM vtext_build WHERE kind = 'S') > 0
+           OR (SELECT COUNT(*) FROM vtext.segments WHERE segment_id IN (SELECT segment_id FROM vtext_build WHERE kind = 'S')) > 0 THEN
+            RAISE EXCEPTION 'vtext.refresh_index: two segments got the same random id (about one chance in a billion): run the refresh again';
+        END IF;
     END IF;
 
     -- 4. Store the new segments in the index tables.
@@ -409,7 +431,7 @@ BEGIN
 
     -- 6. Every node: the new segment files, then the new generation.
     IF n_segs > 0 THEN
-        PERFORM CALL vtext.load_rows(nm, cdir, 'SELECT * FROM vtext_build');
+        PERFORM CALL vtext.load_build(nm, cdir);
     END IF;
     PERFORM CALL vtext.activate(nm, g_new);
 
@@ -446,7 +468,7 @@ DECLARE
 BEGIN
     SELECT index_id, gen, cache_dir INTO iid, g, cdir FROM vtext.indexes WHERE index_name = nm;
     g_new := g + 1;
-    new_id := EXECUTE 'SELECT NEXTVAL(''vtext.segment_seq'') * 1000000';
+    new_id := EXECUTE 'SELECT NEXTVAL(''vtext.segment_seq'') * 2147483648';
     PERFORM CALL vtext.build_table();
     params := 'index=' || QUOTE_LITERAL(nm) || ', gen=' || g || ', segments=' || QUOTE_LITERAL(seg_list) || ', new_id=' || new_id
            || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
@@ -454,7 +476,7 @@ BEGIN
     PERFORM CALL vtext.store_build(iid, g_new);
     n := EXECUTE 'UPDATE vtext.segments SET state = ''merged'', gen_removed = ' || g_new || ' WHERE index_id = ' || iid
                  || ' AND gen_removed IS NULL AND segment_id IN (' || seg_list || ')';
-    PERFORM CALL vtext.load_rows(nm, cdir, 'SELECT * FROM vtext_build');
+    PERFORM CALL vtext.load_build(nm, cdir);
     PERFORM CALL vtext.activate(nm, g_new);
     PERFORM UPDATE vtext.indexes SET gen = g_new WHERE index_name = nm;
     PERFORM COMMIT;

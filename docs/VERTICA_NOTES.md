@@ -138,3 +138,4 @@ milestone). Check again on other versions.
 - All SQL tests pass on Eon fenced and unfenced.
 - A node's local vsql needs the database password in the environment where it is not set by the
   shell profile (VSQL_PASSWORD); the scripts never store it.
+- (M8) `QUOTE_LITERAL(x)` of a VARCHAR(65000) variable fails: "ERROR 9688: Function quote_literal may give a 130003-octet result; the limit is 65000 octets". Declare the variable at most 32,000 long.

@@ -149,8 +149,8 @@ inline std::string read_index_name(Settings &s)
 }
 
 // "Index rows": the one row shape that tbuild writes and tload reads (docs/format.md):
-//   kind  D doc_stats, T term_dict, P postings, Q positions, S segment summary,
-//         G active segment of a generation, X tombstone
+//   kind  D doc_stats, T term_dict, P postings, Q positions (docno = part number), S segment
+//         summary, G active segment of a generation, X tombstone
 enum IndexCol { IC_KIND = 0, IC_SEGMENT, IC_TERM_ID, IC_CHUNK, IC_DOCNO, IC_DOC_ID, IC_N, IC_TERM, IC_STEM, IC_LANG, IC_BIN, IC_COUNT };
 
 inline void add_index_row_types(Vertica::ColumnTypes &t)
@@ -159,7 +159,10 @@ inline void add_index_row_types(Vertica::ColumnTypes &t)
     t.addVarchar(); t.addVarchar(); t.addVarchar(); t.addLongVarbinary();
 }
 
-inline void add_index_row_columns(Vertica::SizedColumnTypes &t)
+// Declared widths matter: Vertica sizes buffers by them (a LONG VARBINARY(32000000) column made the
+// build 20 times slower than LONG VARBINARY(65000), docs/VERTICA_NOTES.md). Terms are at most 255
+// bytes; payloads are cut into parts of vtext::PART_BYTES.
+inline void add_index_row_columns(Vertica::SizedColumnTypes &t, std::int64_t bin_bytes = 65000)
 {
     t.addVarchar(1, "kind");
     t.addInt("segment_id");
@@ -168,10 +171,10 @@ inline void add_index_row_columns(Vertica::SizedColumnTypes &t)
     t.addInt("docno");
     t.addInt("doc_id");
     t.addInt("n");
-    t.addVarchar(1024, "term");
-    t.addVarchar(1024, "stem");
+    t.addVarchar(256, "term");
+    t.addVarchar(256, "stem");
     t.addVarchar(8, "lang");
-    t.addLongVarbinary(32000000, "bin");
+    t.addLongVarbinary(static_cast<int>(bin_bytes), "bin");
 }
 
 // Starts an index row: kind and segment set, every other column NULL.
@@ -206,17 +209,20 @@ inline void write_segment_rows(Vertica::PartitionWriter &out, const std::string 
         out.next();
     };
     sink.posting = [&](const vtext::PostingRow &r) {
-        if (r.payload.size() > 32000000) fail("positions of one term and chunk exceed 32 MB");
         begin_index_row(out, "P", sid);
         out.setInt(IC_TERM_ID, r.term_id);
         out.setInt(IC_CHUNK, r.chunk_id);
         out.getStringRef(IC_BIN).copy(r.docs.data(), r.docs.size());
         out.next();
-        begin_index_row(out, "Q", sid);
-        out.setInt(IC_TERM_ID, r.term_id);
-        out.setInt(IC_CHUNK, r.chunk_id);
-        out.getStringRef(IC_BIN).copy(r.payload.data(), r.payload.size());
-        out.next();
+        for (std::size_t at = 0, part = 0; at < r.payload.size() || part == 0; at += vtext::PART_BYTES, ++part) {
+            const std::size_t n = std::min(vtext::PART_BYTES, r.payload.size() - at);
+            begin_index_row(out, "Q", sid);
+            out.setInt(IC_TERM_ID, r.term_id);
+            out.setInt(IC_CHUNK, r.chunk_id);
+            out.setInt(IC_DOCNO, static_cast<vint>(part));
+            out.getStringRef(IC_BIN).copy(r.payload.data() + at, n);
+            out.next();
+        }
     };
     vtext::segment_to_rows(seg, sink);
     const vtext::SegmentHeader &h = seg.header();

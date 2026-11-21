@@ -1,0 +1,218 @@
+# vtext design notes
+
+This file explains the decisions and records the measurements behind them. The user's view is in
+the README; the exact bytes are in docs/format.md.
+
+## Pieces
+
+    source table ──tbuild──> index tables ──tload──> node cache files ──mmap──> tsearch / tcount
+    (customer: doc_id,       (vtext.term_dict,       (/tmp/vtext/<index>/)      tsnippet, hybrid
+     body, lang, ver)         postings, positions,
+    journal (doc_id, op, ver) doc_stats, ...)
+
+- `src/engine` is plain C++17 without Vertica includes (analysis, segments, search, merge, cache).
+  `src/udx` holds thin adapters: they read rows and parameters, call the engine and write rows.
+- Only the thread that Vertica calls uses the SDK. Builds, loads and searches use worker threads
+  for engine work only (`tbuild`, `tload`, `tsearch`).
+- The index tables are the data: replicated on every node, backed up with the database. The
+  cache file of a node is a copy; a missing or damaged file is rebuilt from the tables.
+- Static libraries: ICU 79.1, libstemmer_c 3.2.0 (Snowball), CRoaring 5.5.5, linked with
+  `-Wl,--exclude-libs,ALL` so they never clash with the ICU inside the Vertica server process.
+
+## Analysis
+
+One pipeline for documents and queries (`src/engine/analyzer.cpp`):
+
+1. ICU word boundaries (UAX #29) over the UTF-8 text, so offsets are byte offsets. Segments with
+   no word status (spaces, punctuation) are dropped. "Holmes'", "Holmes," and "Holmes-style" give
+   "holmes"; צה"ל and צה״ל stay one word.
+2. NFKC with case folding (ICU `nfkc_cf`); in Turkish documents I -> ı and İ -> i first. An ASCII
+   word takes a fast path (lower-casing is all NFKC_CF does to ASCII).
+3. Per script: Latin accents removed (NFD, non-spacing marks dropped, NFC; option `accent_fold`);
+   Arabic and Persian: Lucene's ArabicNormalizer and PersianNormalizer (tashkeel, tatweel, alef
+   forms, alef maksura, teh marbuta, keheh, Farsi yeh); Hebrew: U+0591..U+05C7 removed, geresh
+   and gershayim unified with ' and ". Curly apostrophes become '.
+4. Words of more than 255 bytes are skipped. Chinese, Japanese, Korean, Thai, Lao, Khmer and
+   Myanmar text is refused, or kept without stemming with `on_unsupported='plain'`.
+
+Stems are not indexed. The stem is a column of the term dictionary: each term is stored once per
+stemming language it was seen in, with its stem. The stemming language of a word is the document's
+language when the word is written in that language's script, otherwise the default of its script
+(an English word in a Hebrew document is stemmed as English). Snowball for every language it has
+(read with `sb_stemmer_list()`), plus:
+
+- Hebrew: no free stemmer exists. Up to two leading letters from ו ה ב כ ל מ ש are removed while
+  at least three letters remain.
+- Arabic: Lucene's light prefixes (ال وال بال كال فال لل و) are removed before Snowball. Found
+  while testing: after the normalization ة -> ه, Snowball alone stems "المدرسه" and "مدرسه"
+  differently.
+
+`mode='stem'` expands a query word to every term of its stem group, `mode='exact'` to the term
+only. A wrong stem changes which terms a query expands to; it never changes the index.
+
+## Scoring
+
+BM25 (k1 = 1.2, b = 0.75) exactly as Elasticsearch and OpenSearch compute it, in the same float
+operations: Lucene's `BM25Similarity` with the weight multiplied by (1 + k1) (their
+`LegacyBM25Similarity`; the classic form `idf * tf * (k1 + 1) / (tf + K)`):
+
+    idf    = (float) ln(1 + (N - df + 0.5) / (df + 0.5))
+    w      = (1 + k1) * idf                                               float
+    norm_i = 1 / (k1 * ((1 - b) + b * length(norm byte i) / avgdl))       per norm byte, float
+    score  = w - w / (1 + tf * norm_i)
+
+Measured on MS MARCO: the first check against Elasticsearch showed every score 2.2 times smaller
+than Elasticsearch's with the same ranking, because Lucene's own `BM25Similarity` leaves out the
+constant (1 + k1); vtext now includes it.
+
+with the one-byte document length of Lucene (exact below 24 tokens, 4 significant bits above).
+A phrase scores with the sum of its words' idf and its frequency (exact: matches; sloppy: the sum of
+`1 / (1 + match length)`, Lucene's SloppyPhraseMatcher); w/N and pre/N the same way with
+`1 / gap` per pair. A stem group is one "word": df = documents that contain any of its terms, tf =
+their summed tf - what a stemmed Lucene field gives. Prefix and wildcard words score a constant 1
+(Lucene's default constant-score rewrite); fuzzy words are scored like a stem group of the terms
+they match. Clauses are summed in double and cast to float, in query order.
+
+**Global statistics.** N (documents with at least one token, as Lucene's docCount), the total of
+lengths and every df are summed over all segments and the live tail, minus tombstones and masked
+documents. Tombstones' effect on df is computed once per generation (`compute_dead_counts`) and
+stored in the generation file; the few documents masked by the live tail are checked per query.
+So a score depends only on the document and on the live collection: the same on one node and on
+five, in one segment or in twenty, before and after a merge (`tests/sql/digest.sql`,
+`tests/engine/test_merge.cpp`, `tests/engine/test_search.cpp`).
+
+Ties are broken by doc_id (ascending), on every node and every segmentation.
+
+## Query evaluation
+
+Document at a time over the segment's posting lists (`src/engine/search.cpp`):
+
+- Leaves: one term, or the union of several (stem group, expansion). Phrases, w/N and pre/N are
+  conjunctions verified on positions. Booleans follow Lucene's BooleanQuery: must, should (at
+  least one if there is no must), must_not.
+- Expansions of prefix, wildcard and fuzzy words are chosen over all segments together (the best
+  `max_expansions`: fewest edits, then most documents, then term order) and then looked up in
+  every segment, so the choice never depends on the segmentation.
+- Segments are searched in parallel (`threads`, default one per core) with a top-k each, merged.
+
+**Top k of OR queries: MaxScore.** The common ranked query is a disjunction of words. vtext uses
+MaxScore with block-max bounds:
+
+- every posting block of 128 documents stores its competitive (tf, norm) pairs ("impacts"), and
+  every 32 blocks have a level-1 entry; a term has impacts over its whole list;
+- the documents are processed in windows of 8,192 docnos. In each window every list gets a bound
+  from its impacts (no decoding); sorted by bound, the lists whose bounds together stay below the
+  current k-th score only probe candidates; candidates come from the other lists; a window whose
+  lists together stay below the threshold is skipped;
+- the k-th score is shared by the segments searched in parallel;
+- pruning is strict (a document whose bound equals the threshold is still scored, it may win the
+  tie by doc_id) and the final score is summed in clause order, so the result is exactly that of
+  scoring every match (checked on 1,000 random queries in the unit tests and on 1,500 MS MARCO
+  queries);
+- a stem group has its own postings in the segment file (summed tf, no positions), so a stemmed
+  word is one list, as in a stemmed Lucene field. The tables keep only the unstemmed terms.
+
+Measured on MS MARCO (8.84 million passages, 1 segment, 1 thread, 1,500 dev queries, top 10;
+the steps in the order they were made):
+
+| Version | Mean latency |
+|---|---:|
+| every match scored | 216 ms |
+| MaxScore, one (max tf, min length) pair per block | 15.1 ms |
+| + block windows cached | 8.75 ms (20 segments) |
+| one segment instead of 20 | 7.48 ms |
+| + stem group postings | 4.36 ms |
+| + level-1 impacts, windows of 8,192 docnos, partition per window | 4.00 ms |
+
+The same queries with `mode='exact'` (no stem groups at all): 3.37 ms before the last step.
+
+## Freshness: exact results between refreshes
+
+The source table has a version column `ver` (TIMESTAMPTZ, `DEFAULT CLOCK_TIMESTAMP()`); changes
+that do not move `ver` (an UPDATE that keeps it, a DELETE) are recorded in a journal table
+(doc_id, op, ver). This follows vvector and vgraph.
+
+- **Boundary.** A refresh indexes the rows with `ver <= boundary`, where
+  `boundary = LEAST(now, earliest lock request of an open writer on the source or the journal) - margin`
+  (`v_monitor.locks`). A row committed after the build started reading was written after now or
+  by a transaction open now, which holds an insert lock since its request; the margin (default
+  60 s) covers clock differences between nodes and versions taken at statement start.
+- **Segments.** Each refresh adds segments; nothing already indexed is rewritten.
+- **Tombstones.** Every doc_id that has a newer row, or a journal row, in the refresh's range gets
+  a tombstone in the older segments (`vtext.tombstones`, a bitmap per segment in the cache).
+- **Live tail.** The view `<schema>.<index>_live` returns the source rows with `ver > boundary`,
+  the doc_ids of journal rows with `ver > boundary` (with the current row's text when it still
+  exists) and one sentinel row with the generation. tsearch masks every doc_id of the tail in the
+  segments and analyzes the tail's rows into an in-memory segment, searched beside the others. So
+  a search sees every committed change, without a refresh. The boundary is a literal in the view,
+  so Vertica can prune storage containers.
+- **Update = delete + insert**: a changed row masks (tail) or tombstones (refresh) its old version.
+- A doc_id in both the tail and a segment is harmless: the tail wins. This makes every step order
+  below safe.
+
+`tests/sql/test_freshness.sh`: inserts, updates (with and without a version change), deletes,
+searched without refresh, after refreshes, after merges and after a rebuild: always the ids,
+ranks and scores of an index built from scratch on the current rows.
+
+## Refresh
+
+`vtext.refresh_index` (the name `refresh` is a Vertica built-in):
+
+1. Mark the index (one refresh at a time; a mark whose session is gone is ignored).
+2. Compute the boundary.
+3. `tbuild` over the new and changed rows (partitioned by node, threads per node) into a session
+   temporary table: segments as rows.
+4. Insert the rows into the index tables; tombstones for the older versions.
+5. `tload` on every node of the session's subcluster: the new segment files.
+6. `tload` with the generation: the generation file (active segments, tombstones, their effect
+   on df), then ACTIVE. Every node must report, or the refresh fails.
+7. Statistics, the manifest (new generation and boundary) - and commit. Steps 3 to 7 are one
+   transaction: a failure leaves the tables as they were.
+8. Replace the views (DDL, after the commit). Until then the old views show a wider tail, which is
+   still exact.
+9. The tiered merge policy.
+
+A failure after step 6 on some node leaves that node's cache ahead of the tables; its segments only
+hold rows that are also in the (old, wider) tail, so results stay exact, and the next refresh or
+`load_all` replaces the files.
+
+## Merge
+
+`vtext.merge(index [, max_segments])` merges segments from the node cache (`tmerge`, no text is
+analyzed again): live documents in doc_id order, postings and positions merged term by term,
+tombstoned documents dropped, stem groups carried over. Then the same steps 4 to 8 as a refresh.
+
+Tiered policy (`max_segments = 0`, also run at the end of every refresh): segments are grouped in
+tiers by size (tier t holds 1 MB * merge_factor^t up to the next), and a tier with merge_factor
+segments (default 10) has its merge_factor smallest merged into one; segments with 30% or more
+deleted documents are merged too. `max_segments = N` merges the smallest segments until N are left.
+Searches keep running on the previous generation while a merge runs.
+
+## Node cache
+
+- Layout and files: docs/format.md. cache_dir: function parameter, then session parameter
+  (`ALTER SESSION SET UDPARAMETER FOR vtext cache_dir = '...'`), then `/tmp/vtext`. The procedures
+  pass an index's `cache_dir` option to the functions they call; a search cannot read the manifest,
+  so searches of such an index set the same directory as a parameter or session parameter.
+- `OVER(PARTITION NODES)` runs on every node only for a segmented input: `vtext.probe` (1,024
+  rows, segmented) and `vtext.tnode(k)`, which returns one row per node. Loads join the replicated
+  index tables with that one row per node: a local join (`DISTRIB(L,L)`), with `SYNTACTIC_JOIN`
+  so that the row per node is the inner side (docs/VERTICA_NOTES.md: the planner reserves the
+  declared width of LONG VARBINARY for every inner row).
+- A process keeps its mappings of segment files and reuses them in later generations, so a
+  refresh maps only its new segments. What ACTIVE says is trusted for 200 ms; a query whose view
+  carries a newer generation reads it at once.
+- A node whose cache is older than the view's generation refuses to answer ("stale: run
+  CALL vtext.load_all"); a node without cache says so too.
+- Eon: a statement reaches the nodes of the session's subcluster only. Every subcluster keeps its
+  own caches; `load_all` from a session on a secondary subcluster loads it (tested on 3 + 2 nodes).
+
+## Snippets and hybrid search
+
+- `tsnippet(body, query)` analyzes the given text with the index's options, marks the words that
+  match the query's words, stems, patterns and fuzzy words (not those under NOT), and returns the
+  best windows (most different query words, then most hits) with marks at the original bytes.
+- `hybrid(source, doc_id, rank, score)` fuses result lists by doc_id: Reciprocal Rank Fusion
+  (`sum w / (60 + rank)`) or a weighted sum of min-max normalized scores (with distances inverted).
+  The lists come from `tsearch` and vvector's `vsearch` in one SQL statement; Vertica procedures
+  cannot return rows, so the fusion is a function over their union.

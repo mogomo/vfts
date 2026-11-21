@@ -70,12 +70,13 @@ check_set "prefix"          "ki*"                         "SELECT DISTINCT doc_i
 check_set "wildcard"        "?ango"                       "SELECT DISTINCT doc_id FROM vt_ref.tok WHERE term LIKE '_ango'"
 check_set "fuzzy"           "tangp~1"                     "$(T tango)"
 
-# BM25: k1 = 1.2, b = 0.75, idf = ln(1 + (N - df + 0.5) / (df + 0.5)); scores equal the formula
+# BM25: k1 = 1.2, b = 0.75, idf = ln(1 + (N - df + 0.5) / (df + 0.5)),
+# score = idf * tf * (k1 + 1) / (tf + k1 * (1 - b + b * len / avgdl)); scores equal the formula
 BM25="WITH st AS (SELECT COUNT(*) AS n, AVG(len) AS avgdl FROM (SELECT doc_id, MAX(pos) + 1 AS len FROM vt_ref.tok GROUP BY doc_id) l),
       dl AS (SELECT doc_id, MAX(pos) + 1 AS len FROM vt_ref.tok GROUP BY doc_id),
       tf AS (SELECT doc_id, term, COUNT(*) AS tf FROM vt_ref.tok GROUP BY doc_id, term),
       df AS (SELECT term, COUNT(*) AS df FROM tf GROUP BY term),
-      sc AS (SELECT tf.doc_id, tf.term, LN(1 + (st.n - df.df + 0.5) / (df.df + 0.5)) * tf.tf / (tf.tf + 1.2 * (1 - 0.75 + 0.75 * dl.len / st.avgdl)) AS s
+      sc AS (SELECT tf.doc_id, tf.term, LN(1 + (st.n - df.df + 0.5) / (df.df + 0.5)) * tf.tf * 2.2 / (tf.tf + 1.2 * (1 - 0.75 + 0.75 * dl.len / st.avgdl)) AS s
              FROM tf JOIN df USING (term) JOIN dl USING (doc_id) CROSS JOIN st)"
 expect "BM25 single term, max |diff| < 1e-4" \
        "$(q "$BM25 SELECT (MAX(ABS(r.score - sc.s)) < 0.0001)::INT || ' ' || COUNT(*) FROM (SELECT vtext.tsearch(* USING PARAMETERS index='vt_ref', query='kilo', k=1000000) OVER() FROM vt_ref.vt_ref_live) r JOIN sc ON sc.doc_id = r.doc_id AND sc.term = 'kilo'")" \
