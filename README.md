@@ -38,7 +38,7 @@ Use cases it was built and measured for: legal e-discovery (Enron email), pharma
 
 | | |
 |---|---|
-| Ranking | BM25 (k1 = 1.2, b = 0.75), the formula and float arithmetic of Lucene, Elasticsearch and OpenSearch: on MS MARCO the scores match theirs to 1e-4 with equivalent analyzers |
+| Ranking | BM25 (k1 = 1.2, b = 0.75) with the formula and float arithmetic of Lucene: the scores of OpenSearch by default, of Elasticsearch with `bm25='classic'`; phrases, `w/N` and `pre/N` scored as Lucene's phrase and span queries. The benchmark compares the top 10 of every query with both engines ([Performance](#performance)) |
 | Queries | words; `"exact phrases"`; `AND`, `OR`, `NOT`, `-word`, `+word`, `( )`; `"phrase"~N`; `a w/N b` (within N words, any order); `a pre/N b` (a before b, at most N words); `indemn*`; `te?t`; `holmse~`, `holmse~1` (Damerau-Levenshtein); or plain text (`syntax='plain'`) |
 | Matching | `mode='stem'` (default: running, runs, run) or `mode='exact'`; one index serves both |
 | Languages | every language written with spaces: ICU word boundaries, NFKC with case folding, accent folding, Snowball stemmers, Arabic/Persian normalization, Hebrew points and prefixes ([Languages](#languages)) |
@@ -53,13 +53,16 @@ Use cases it was built and measured for: legal e-discovery (Enron email), pharma
   Greek/Cyrillic/Armenian, Arabic, Hebrew, Indic, others) including the Sherlock Holmes
   punctuation cases; the segment format against a brute-force model (140,000 documents, several
   65,536-document chunks), with a byte-identical round trip through the table rows; 1,000 random
-  queries (boolean, phrase, w/N, pre/N, exact and stem) against a brute-force search, on one
-  segment and on three segments with tombstones and a live tail; the pruned top 10 against the
-  full result; merges (bit-identical scores before and after); the node cache; snippets.
+  queries (boolean, phrase, w/N, pre/N, exact and stem) against a brute-force search (written
+  after Lucene's span classes for w/N and pre/N), on one segment and on three segments with
+  tombstones and a live tail; the pruned top 10 against the full result; 1,000 fuzzy expansions
+  against the edit distance of every term; merges (bit-identical scores before and after); the
+  node cache; snippets.
 - **SQL tests** (`tests/sql/*.sh`, on Vertica): results of every operator equal plain SQL over a
   table tokenized with the same analyzer; BM25 scores equal the formula computed in SQL (1e-4);
   freshness (inserts, updates with and without a new version, deletes: searched without refresh,
-  after refreshes, merges and a rebuild, always equal to an index built from scratch); every
+  after refreshes, merges and a rebuild, always equal to an index built from scratch; merged
+  segments leave no rows behind); session defaults; every
   language group and the hand-written Arabic and Hebrew cases; snippets; hybrid fusion with known
   answers and with vvector.
 - **Systems**: Vertica 26.3.0-2 Enterprise (single node, Ubuntu 26.04, g++ 15.2, unfenced and
@@ -111,6 +114,10 @@ arabic, armenian, basque, catalan, czech, danish, dutch, english, esperanto, est
 french, german, greek, hindi, hungarian, indonesian, irish, italian, lithuanian, nepali, norwegian,
 persian, polish, portuguese, romanian, russian, serbian, sesotho, spanish, swedish, tamil, turkish,
 ukrainian, yiddish.
+
+A word that runs across scripts without a space (`lewisi.הכנסת`, `لبنان.McCrudden`, common in
+Wikipedia) is cut where the script changes before the words are found, as Lucene's ICU tokenizer
+does: `הכנסת` is found.
 
 A document's language is its `lang` column (ISO 639-1), or the index language. Words in another
 script are stemmed with that script's default: an English word inside a Hebrew document is
@@ -344,10 +351,19 @@ table with `USING (doc_id)`.
 | stopwords | false | drop the query language's stopwords |
 | max_expansions | 50 | prefix, wildcard and fuzzy words expand to at most this many terms (the most frequent first; fuzzy: fewest edits first) |
 | prefix_length | 0 | fuzzy: leading letters that must match exactly |
-| threads | 0 | segments searched in parallel (0: one per core) |
+| queries | | many queries in one statement: one per line, `qid<TAB>query` (or the query alone: qid = line number) |
+| bm25 | lucene | `lucene`: the scores of Lucene and OpenSearch; `classic`: times (1 + k1), the scores of Elasticsearch (its LegacyBM25 scale) |
+| threads | 0 | threads for this query (0: one per core). A large segment is cut into slices of documents, so one query can use every core; while many queries run, each gets its share |
 | cache_dir | /tmp/vtext | node cache directory (or the session parameter) |
 
-Many queries in one statement: add query rows `(qid, query)` to the view's rows:
+Many queries in one statement (a batch saves the per-statement cost of Vertica, about 2 ms): the
+parameter `queries`, one query per line,
+
+    SELECT qid, rank, doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', k=3,
+                                   queries=E'1\tindemnity\n2\tholmes') OVER() FROM demo.cases_live) r
+    ORDER BY qid, rank;
+
+or query rows `(qid, query)` added to the view's rows:
 
     SELECT * FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', k=3) OVER()
                    FROM (SELECT * FROM demo.cases_live
@@ -424,7 +440,7 @@ Output: library version, build flags, ICU version, the Snowball stemmers linked 
 |---|---|---|
 | `word` | one word, analyzed like the documents | `holmes` finds Holmes, Holmes', Holmes-style |
 | `"words"` | phrase: adjacent words in order | `"indemnity clause"` |
-| `"words"~N` | sloppy phrase (Lucene): within N moves, any order | `"supply contract indemnity"~3` |
+| `"words"~N` | sloppy phrase (Lucene): within N moves; reversing two words costs 2 | `"contract supply"~2` finds "supply contract" |
 | `a AND b`, `a && b` | both | `contract AND indemnity` |
 | `a OR b`, `a \|\| b` | either | `fraud OR scandal` |
 | `a NOT b`, `a AND NOT b`, `-b` | without | `contract NOT indemnify`, `contract -indemnify` |
@@ -444,9 +460,14 @@ Output: library version, build flags, ICU version, the Snowball stemmers linked 
 - A word that the analyzer splits (`Holmes-style`, `e-mail`) becomes a phrase.
 - `AND`, `OR`, `NOT` are operators in upper case only. A Hebrew acronym in a query: write it with
   gershayim `צה״ל` or escape the quote `צה\"ל` (a plain `"` starts a phrase).
-- Scores: words and stem groups BM25; phrases, w/N and pre/N BM25 with the sum of their words' idf
-  and their frequency (1 / (1 + distance) per match); prefix and wildcard words a constant 1 (as
-  Elasticsearch); fuzzy words like a stem group of the terms they match.
+- Scores: words and stem groups BM25; phrases as Lucene's phrase queries (the sum of the words'
+  idf; the number of matches, or for a sloppy phrase 1 / (1 + distance) per match); `w/N` and
+  `pre/N` as Lucene's span queries (`span_near` with slop N - 1, in order for `pre/N`): the sum of
+  the idf of their distinct words (every expansion of a prefix, wildcard or fuzzy word included),
+  and 1 / (1 + width) per match (width: the gaps for `pre/N`, the length of the match for `w/N`),
+  matches enumerated as Lucene does; prefix and wildcard words a
+  constant 1 (as Elasticsearch's constant-score rewrite); fuzzy words like a stem group of the
+  terms they match.
 
 ## Search patterns
 
@@ -501,13 +522,20 @@ PERFORMANCE_PLACEHOLDER
 positions, no phrases, no fuzzy words, and its tokenizer keeps punctuation (`Holmes'`, `Holmes,` and
 `Holmes-style` are not `holmes`: an earlier test missed 5 of 37 Sherlock Holmes films that way).
 
-**Are the scores those of Elasticsearch?** Yes, with equivalent analyzers: the same BM25 (k1 1.2,
-b 0.75, Lucene's one-byte document lengths, the factor k1 + 1 that Elasticsearch and OpenSearch
-apply) and the same statistics. The benchmark compares them per document ([Performance](#performance)).
+**Are the scores those of Elasticsearch and OpenSearch?** With equivalent analyzers, yes: the same
+BM25 (k1 1.2, b 0.75, Lucene's one-byte document lengths, float arithmetic) and the same
+statistics. OpenSearch uses Lucene's BM25, vtext's default; Elasticsearch multiplies every BM25
+score by k1 + 1 = 2.2 (its legacy scale), which `bm25='classic'` reproduces. The order of the
+results is the same on both scales. The benchmark compares the top 10 of every query with both
+engines ([Performance](#performance)); the differences that remain come from the analyzers
+(Snowball versions, ICU versions), not from the scoring.
 
 **Do I have to refresh?** No: searches over `<index>_live` see every committed change. A refresh
 folds the changes into segments, so queries do not analyze them again and again. Search over
-`<index>_snap` when the changes since the last refresh do not matter and the last millisecond does.
+`<index>_snap` when the changes since the last refresh do not matter and the last millisecond does:
+the live view costs about 1 ms more per statement (Vertica's `UNION ALL` of the tail and the
+sentinel row, measured in docs/VERTICA_NOTES.md). The snap view gives the guarantee Elasticsearch
+and OpenSearch give: a document is searchable after a refresh.
 
 **What does a refresh cost?** Proportional to the rows written since the last one, plus a load
 of the new segments on every node. The benchmark measures 1% of MS MARCO.
@@ -539,9 +567,15 @@ SQL (UNION ALL, `vtext.hybrid` with weights).
   are not supported ([Languages](#languages)); `on_unsupported=plain` indexes them without stemming.
 - Hebrew uses light prefix stripping, not a morphological analyser. The Arabic stemmer is Snowball
   after Lucene's normalization and light prefixes.
-- Scores of `w/N` and `pre/N` follow vtext's own definition (1 / distance per match) and of fuzzy
-  words (a stem group of the terms matched); Elasticsearch's span and fuzzy scoring differ. Matches
-  are the same.
+- Fuzzy words are scored like a stem group of the terms they match; Elasticsearch and OpenSearch
+  blend the statistics of the expansions (top_terms_blended_freqs), so fuzzy scores differ (the
+  matches are the same).
+- Every statement pays Vertica's statement cost (about 2 ms for a UDx call over a view, measured
+  in docs/VERTICA_NOTES.md); batches (`queries`) spread it over many queries.
+- Phrases of frequent words (`"do not forward"`) are checked in every document that has all the
+  words; Lucene skips blocks of documents that cannot reach the top k (block-max for phrases).
+  vtext does that for words and OR queries only, so on one thread such a phrase is slower; with
+  the slices of a segment it uses all cores.
 - One text column per index. Byte offsets of words are not stored: `tsnippet` needs the text.
 - A sloppy phrase with the same word twice (`"run run"~2`) uses Lucene's rules without its
   special handling of repeated words.

@@ -27,7 +27,10 @@ One pipeline for documents and queries (`src/engine/analyzer.cpp`):
    no word status (spaces, punctuation) are dropped, except emoji, which are words as in Lucene's
    ICUTokenizer (found comparing token counts with Elasticsearch on MS MARCO: 7,600 of 506
    million tokens differed, all emoji). "Holmes'", "Holmes," and "Holmes-style" give
-   "holmes"; צה"ל and צה״ל stay one word.
+   "holmes"; צה"ל and צה״ל stay one word. A word whose letters belong to more than one script
+   (`lewisi.הכנסת`) is cut into runs of one script first (a digit or punctuation mark stays in the
+   run before it; Han, Kana and Hangul count as one), and every run is broken again: Lucene's
+   ICUTokenizer cuts the text into script runs the same way.
 2. NFKC with case folding (ICU `nfkc_cf`); in Turkish documents I -> ı and İ -> i first. An ASCII
    word takes a fast path (lower-casing is all NFKC_CF does to ASCII).
 3. Per script: Latin accents removed (NFD, non-spacing marks dropped, NFC; option `accent_fold`);
@@ -69,8 +72,15 @@ design asks for) and offers Elasticsearch's.
 
 with the one-byte document length of Lucene (exact below 24 tokens, 4 significant bits above).
 A phrase scores with the sum of its words' idf and its frequency (exact: matches; sloppy: the sum of
-`1 / (1 + match length)`, Lucene's SloppyPhraseMatcher); w/N and pre/N the same way with
-`1 / gap` per pair. A stem group is one "word": df = documents that contain any of its terms, tf =
+`1 / (1 + match length)`, Lucene's SloppyPhraseMatcher). w/N and pre/N are Lucene's span queries
+(`SpanNearQuery` with slop N - 1, in order for pre/N): the clauses give their spans per document
+(a word its positions, an OR group the merged spans of its members as `SpanOrQuery`, a phrase an
+ordered span query of its words, a w/N its matches); the matches are enumerated as
+`NearSpansOrdered` (each later clause moves forward to the first span after the previous one) and
+`NearSpansUnordered` (a window of one span per clause, the smallest moves on); the frequency is
+the sum of `1 / (1 + width)` over the matches (ordered: the gaps between the clauses; unordered:
+end - start of the match, as Lucene computes them), and the weight the sum of the idf of the distinct
+terms below (every expansion of a pattern counts, as with Lucene's span_multi). A stem group is one "word": df = documents that contain any of its terms, tf =
 their summed tf - what a stemmed Lucene field gives. Prefix and wildcard words score a constant 1
 (Lucene's default constant-score rewrite); fuzzy words are scored like a stem group of the terms
 they match. Clauses are summed in double and cast to float, in query order.
@@ -95,7 +105,14 @@ Document at a time over the segment's posting lists (`src/engine/search.cpp`):
 - Expansions of prefix, wildcard and fuzzy words are chosen over all segments together (the best
   `max_expansions`: fewest edits, then most documents, then term order) and then looked up in
   every segment, so the choice never depends on the segmentation.
-- Segments are searched in parallel (`threads`, default one per core) with a top-k each, merged.
+- Fuzzy candidates come from a walk over the sorted term dictionary as a trie: the rows of the
+  edit-distance table are kept per code point and reused for the prefix a term shares with the
+  previous one; a prefix that can no longer come within the edits is skipped with all its terms,
+  and a prefix at the limit jumps to its next child that matches the word (the letters a
+  Levenshtein automaton would allow), with a galloping search.
+- Segments, and slices of documents of large segments, are searched in parallel (`threads`,
+  default one per core; while several queries run, each gets its share of the pool) with a top-k
+  each, merged.
 
 **Top k of OR queries: MaxScore.** The common ranked query is a disjunction of words. vtext uses
 MaxScore with block-max bounds:

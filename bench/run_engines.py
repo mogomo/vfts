@@ -13,6 +13,8 @@
     --repeat R         measured runs; per query the best time is kept (default 3)
     --run FILE         write the hits of the first measured run: qid, doc_id, rank, score
     --times FILE       write the time of every query: qid, server ms, client ms (best of the runs)
+    --batch B          B queries per request (_msearch); times per query are the request's time
+                       divided by B (the counterpart of run_vertica.py --batch)
     --cli PATH         vtext_cli (default build/tools/vtext_cli): parses the query syntax, so that
                        the engines get exactly the query vtext runs (see translate())
 
@@ -40,10 +42,13 @@ class Conn:
         self.c = http.client.HTTPConnection("127.0.0.1", port, timeout=600)
 
     def post(self, path, body):
-        data = json.dumps(body).encode()
+        if isinstance(body, str):       # ndjson (_msearch)
+            data, ctype = body.encode(), "application/x-ndjson"
+        else:
+            data, ctype = json.dumps(body).encode(), "application/json"
         for attempt in range(2):
             try:
-                self.c.request("POST", path, body=data, headers={"Content-Type": "application/json"})
+                self.c.request("POST", path, body=data, headers={"Content-Type": ctype})
                 r = self.c.getresponse()
                 return r.status, json.loads(r.read())
             except (http.client.HTTPException, ConnectionError, OSError):
@@ -144,6 +149,7 @@ def main():
     repeat = int(arg("--repeat", 3))
     run_path = arg("--run")
     times_path = arg("--times")
+    batch = int(arg("--batch", 1))
     cli = arg("--cli", "build/tools/vtext_cli")
     port = PORTS[engine]
     queries = []
@@ -171,6 +177,10 @@ def main():
         reqs = [(f"/{index}/_search", {"query": b, "size": k, "_source": False, "track_total_hits": False}) for b in bodies]
 
     n = len(reqs)
+    if batch > 1:
+        # one _msearch request per batch of consecutive queries; its time is shared by them
+        groups = [list(range(i, min(i + batch, n))) for i in range(0, n, batch)]
+        mreqs = [(f"/{index}/_msearch", "".join(json.dumps({}) + "\n" + json.dumps(reqs[i][1]) + "\n" for i in g)) for g in groups]
     took = [1e18] * n
     client = [1e18] * n
     errors = [0]
@@ -188,6 +198,23 @@ def main():
                 with lock:
                     i = nxt[0]
                     nxt[0] += 1
+                if batch > 1:
+                    if i >= len(mreqs):
+                        return
+                    t0 = time.perf_counter()
+                    st, out = c.post(*mreqs[i])
+                    dt = (time.perf_counter() - t0) * 1000
+                    if st >= 300 or any("error" in r for r in out.get("responses", [])):
+                        errors[0] += 1
+                        continue
+                    g = groups[i]
+                    for j, r in zip(g, out["responses"]):
+                        if record:
+                            took[j] = min(took[j], out.get("took", dt) / len(g))
+                            client[j] = min(client[j], dt / len(g))
+                            if record == 2:
+                                hits[j] = r
+                    continue
                 if i >= n:
                     return
                 t0 = time.perf_counter()
@@ -231,7 +258,7 @@ def main():
                     f.write(f"{qid}\t{took[i]:.3f}\t{client[i]:.3f}\n")
     t = sorted(x for x in took if x < 1e17)
     c = sorted(x for x in client if x < 1e17)
-    print(json.dumps({"engine": engine, "index": index, "queries": n, "clients": clients, "mode": mode, "plain": plain,
+    print(json.dumps({"engine": engine, "index": index, "queries": n, "clients": clients, "batch": batch, "mode": mode, "plain": plain,
                       "count": counting, "k": k, "errors": errors[0],
                       "server_ms": {"mean": round(sum(t) / max(len(t), 1), 3), "p50": pct(t, .5), "p90": pct(t, .9), "p99": pct(t, .99), "max": pct(t, 1)},
                       "client_ms": {"mean": round(sum(c) / max(len(c), 1), 3), "p50": pct(c, .5), "p90": pct(c, .9), "p99": pct(c, .99), "max": pct(c, 1)},

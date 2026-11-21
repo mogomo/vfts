@@ -134,8 +134,8 @@ struct Ref {
                 if (b.end() > maxc->end()) maxc = &b;
                 Spans *top = ordered_pos(b, a) ? &b : &a;
                 for (;;) {
-                    const int width = maxc->end() - top->start() - total;
-                    if (width <= slop) out.push_back({top->start(), maxc->end(), width});
+                    if (maxc->end() - top->start() - total <= slop)            // atMatch()
+                        out.push_back({top->start(), maxc->end(), maxc->end() - top->start()});   // width()
                     const int old = top->end() - top->start();
                     if (top->next_start() == NO_MORE) break;
                     total += (top->end() - top->start()) - old;

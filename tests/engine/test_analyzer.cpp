@@ -58,6 +58,12 @@ static void sherlock_holmes()
     CHECK(has(terms("Holmes;Watson"), "holmes"));
     // A possessive stays one word (UAX #29); its stem equals the stem of "holmes".
     CHECK_EQ(terms("Holmes's"), V({"holmes's"}));
+    // a word across scripts is cut at the script change first (as Lucene's ICUTokenizer does)
+    CHECK_EQ(terms("O. clarki lewisi.\xd7\x94\xd7\x9b\xd7\xa0\xd7\xa1\xd7\xaa \xd7\xaa\xd7\xaa"),
+             V({"o", "clarki", "lewisi", "\xd7\x94\xd7\x9b\xd7\xa0\xd7\xa1\xd7\xaa", "\xd7\xaa\xd7\xaa"}));
+    CHECK_EQ(terms("\xd9\x84\xd8\xa8\xd9\x86\xd8\xa7\xd9\x86.McCrudden", "ar"),
+             V({"\xd9\x84\xd8\xa8\xd9\x86\xd8\xa7\xd9\x86", "mccrudden"}));
+    CHECK_EQ(terms("e-mail COVID-19 3.14 x86_64"), V({"e", "mail", "covid", "19", "3.14", "x86_64"}));
     CHECK_EQ(stem("holmes's", "en"), stem("holmes", "en"));
 }
 

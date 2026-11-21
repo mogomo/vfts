@@ -15,6 +15,8 @@
     --run FILE         write the hits of the first measured run: qid, doc_id, rank, score
     --times FILE       write the time of every query: qid, server ms, client ms (best of the runs)
     --param 'x=y'      more tsearch parameters (for example threads=1, max_expansions=100000)
+    --session SQL      statements run first in every session, not measured (for example
+                       "SET SESSION RESOURCE_POOL = search")
     --batch B          B queries per statement (the parameter queries, one per line); times per
                        query are the statement's time divided by B
 
@@ -59,6 +61,7 @@ def main():
     times_path = arg("--times")
     extra = [sys.argv[i + 1] for i, a in enumerate(sys.argv) if a == "--param"]
     batch = int(arg("--batch", 1))
+    session_sql = arg("--session", "")
     queries = []
     with open(qpath, encoding="utf-8") as f:
         for line in f:
@@ -93,7 +96,7 @@ def main():
             # also when the query has no hits
             # one statement first that is not measured: the session is set up (the engines' clients
             # likewise send one request on each new connection first)
-            script = "\\timing on\nSELECT 1;\n" + "".join(f"\\echo @@{i}\n" + statement(i, label) for i in parts[c])
+            script = "\\timing on\n" + (session_sql.rstrip(";") + ";\n" if session_sql else "") + "SELECT 1;\n" + "".join(f"\\echo @@{i}\n" + statement(i, label) for i in parts[c])
             p = subprocess.run(["vsql", "-X", "-A", "-t", "-F", "\t", "-f", "-"], input=script, capture_output=True, text=True)
             outs[c] = p.stdout
             if p.returncode != 0 or "ERROR" in p.stderr:
@@ -177,7 +180,7 @@ def main():
         return round(v[min(len(v) - 1, int(p * len(v)))], 3) if v else 0
 
     print(json.dumps({"engine": "vtext", "index": index, "view": view, "batch": batch, "queries": n, "measured": len(s), "clients": clients,
-                      "mode": mode, "plain": plain, "count": counting, "k": k, "params": extra, "errors": errors,
+                      "mode": mode, "plain": plain, "count": counting, "k": k, "params": extra, "session": session_sql, "errors": errors,
                       "server_ms": {"mean": round(sum(s) / max(len(s), 1), 3), "p50": pct(s, .5), "p90": pct(s, .9), "p99": pct(s, .99), "max": pct(s, 1)},
                       "client_ms": {"mean": round(sum(c) / max(len(c), 1), 3), "p50": pct(c, .5), "p90": pct(c, .9), "p99": pct(c, .99), "max": pct(c, 1)},
                       "qps_best": round(max(qps), 1) if qps else 0}))

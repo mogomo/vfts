@@ -567,7 +567,7 @@ BEGIN
     END LOOP;
     IF steps > 0 THEN
         RAISE NOTICE 'vtext: index % merged in % steps (% s); % segments now', nm, steps,
-                     (SELECT ROUND(DATEDIFF('millisecond', t0, CLOCK_TIMESTAMP()) / 1000.0, 1)),
+                     (SELECT TO_CHAR(DATEDIFF('millisecond', t0, CLOCK_TIMESTAMP()) / 1000.0, 'FM999999990.0')),
                      (SELECT COUNT(*) FROM vtext.segments WHERE index_id = iid AND gen_removed IS NULL);
     END IF;
 END;
@@ -600,7 +600,7 @@ BEGIN
     nodes := (SELECT COUNT(*) FROM (SELECT vtext.tnode(k) OVER(PARTITION NODES) FROM vtext.probe) n);
     ok := EXECUTE 'SELECT COUNT(*) FROM (SELECT vtext.tinfo(USING PARAMETERS ' || params || ') OVER(PARTITION NODES) FROM vtext.probe) i WHERE gen = ' || g;
     RAISE NOTICE 'index %: source %, generation %, % segments, % documents (% deleted), % MB', nm, src, g, segs, docs - dead, dead,
-                 ROUND(nbytes / 1048576.0, 1);
+                 TO_CHAR(nbytes / 1048576.0, 'FM999999990.0');
     RAISE NOTICE 'boundary %; live tail % rows (%.%_live); last refresh: %', COALESCE(b, '(none)'), tail, vs, nm, COALESCE(note, '(none)');
     RAISE NOTICE 'node caches: % of % nodes of this subcluster have generation % (details: SELECT * FROM (SELECT vtext.tinfo(USING PARAMETERS index=''%'') OVER(PARTITION NODES) FROM vtext.probe) i;)',
                  ok, nodes, g, nm;

@@ -103,7 +103,8 @@ void near_ordered(const std::vector<const std::vector<LSpan> *> &L, int slop, st
 }
 
 // Lucene's NearSpansUnordered for two clauses: a window of one current span per clause; a match
-// when (largest end - smallest start - the lengths of the spans) is at most slop; then the clause
+// when (largest end - smallest start - the lengths of the spans) is at most slop, its width is
+// (largest end - smallest start); then the clause
 // with the smallest span (start, then end; on a tie the current one) moves to its next span. The
 // clause that holds the largest end changes only when another end is larger (as in Lucene).
 void near_unordered(const std::vector<LSpan> &a, const std::vector<LSpan> &b, int slop, std::vector<LSpan> &out)
@@ -116,8 +117,10 @@ void near_unordered(const std::vector<LSpan> &a, const std::vector<LSpan> &b, in
     int maxc = b[0].end > a[0].end ? 1 : 0;
     int top = lspan_less(b[0], a[0]) ? 1 : 0;
     for (;;) {
-        const std::int64_t w = sp(maxc).end - sp(top).start - total;
-        if (w <= slop) out.push_back({sp(top).start, sp(maxc).end, static_cast<std::int32_t>(w)});
+        // the match condition subtracts the lengths of the spans; the width of the match, which
+        // gives its frequency, does not (Lucene's NearSpansUnordered.width(): end - start)
+        if (sp(maxc).end - sp(top).start - total <= slop)
+            out.push_back({sp(top).start, sp(maxc).end, sp(maxc).end - sp(top).start});
         const std::int64_t old_len = sp(top).end - sp(top).start;
         if (++cur[top] >= L[top]->size()) return;
         total += (sp(top).end - sp(top).start) - old_len;

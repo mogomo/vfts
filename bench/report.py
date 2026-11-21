@@ -3,7 +3,7 @@
 
     python3 -I bench/report.py
 
-Reads bench/results/*.jsonl, env.json and the run files in bench/out; writes
+Reads bench/results/*.jsonl, env.json and the run files (bench/out, copied to bench/results/runs); writes
 bench/results/summary.md (all tables) and bench/results/charts/*.svg. Only recorded numbers are
 used. For a value measured more than once, the last record wins. Python standard library only.
 """
@@ -14,9 +14,13 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.path.join(HERE, "results")
-OUT = os.path.join(HERE, "out")
+RAW = os.path.join(HERE, "out")            # written by bench/run_all.sh (not in git)
+OUT = os.path.join(HERE, "results", "runs")  # the hits and times of every query run, kept with the results
 CHARTS = os.path.join(RES, "charts")
 ENGINES = [("vtext", "vtext (Vertica)"), ("es", "Elasticsearch"), ("os", "OpenSearch")]
+# query results: vtext with the live view (every committed row) and the snap view (the rows up to the
+# last refresh: the guarantee of Elasticsearch and OpenSearch)
+Q_ENGINES = [("vtext", "vtext live"), ("vtext_snap", "vtext snap"), ("es", "Elasticsearch"), ("os", "OpenSearch")]
 # categorical slots 1-3 of the validated reference palette (light, dark): fixed per engine
 COLORS = {"vtext": ("#2a78d6", "#3987e5"), "es": ("#eb6834", "#d95926"), "os": ("#1baf7a", "#199e70")}
 SETS = [("msmarco", "MS MARCO"), ("enron", "Enron"), ("pubmed", "PubMed"), ("wiki_he", "Wikipedia he"), ("wiki_ar", "Wikipedia ar")]
@@ -50,10 +54,12 @@ def mb(b):
     return None if b in (None, "") else round(int(b) / 1e6)
 
 
-def svg_bars(path, title, unit, groups, better):
-    """Horizontal grouped bars: groups = [(label, {engine: value})]. Values labelled at the bar tips."""
-    bar, gap, ggap, left, right, top = 14, 3, 18, 120, 90, 56
-    engines = [e for e, _ in ENGINES if any(v.get(e) is not None for _, v in groups)]
+def svg_bars(path, title, unit, groups, better, series=None):
+    """Horizontal grouped bars: groups = [(label, {engine: value})]. Values labelled at the bar tips.
+    vtext snap is the hatched blue of vtext (the same product, the other view)."""
+    series = series or ENGINES
+    bar, gap, ggap, left, right, top = 14, 3, 18, 120, 90, 80
+    engines = [e for e, _ in series if any(v.get(e) is not None for _, v in groups)]
     height = top + sum(len(engines) * (bar + gap) + ggap for _ in groups) + 40
     width = 720
     vmax = max([v for _, g in groups for v in g.values() if v is not None] + [1e-9])
@@ -62,20 +68,23 @@ def svg_bars(path, title, unit, groups, better):
          "<style>",
          ".bg{fill:#fcfcfb}.t1{fill:#0b0b0b}.t2{fill:#52514e}.ax{stroke:#d9d8d4}",
          "".join(f".{e}{{fill:{c[0]}}}" for e, c in COLORS.items()),
+         f".vtext_snap{{fill:url(#hatch);stroke:{COLORS['vtext'][0]};stroke-width:1}}",
          "@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.ax{stroke:#3a3a38}"
-         + "".join(f".{e}{{fill:{c[1]}}}" for e, c in COLORS.items()) + "}",
+         + "".join(f".{e}{{fill:{c[1]}}}" for e, c in COLORS.items())
+         + f".vtext_snap{{fill:url(#hatch);stroke:{COLORS['vtext'][1]}}}" + "}",
          "text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}",
          "</style>",
+         '<defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">'
+         '<rect class="bg" width="6" height="6"/><rect class="vtext" width="3" height="6"/></pattern></defs>',
          f'<rect class="bg" width="{width}" height="{height}" rx="6"/>',
          f'<text class="t1" x="16" y="24" font-size="15" font-weight="600">{title}</text>',
          f'<text class="t2" x="16" y="42" font-size="12">{unit}, {better}</text>']
-    # legend
-    lx = width - right - 10
-    for e, name in reversed([x for x in ENGINES if x[0] in engines]):
-        w = 7.2 * len(name) + 18
-        lx -= w
-        s.append(f'<rect class="{e}" x="{lx}" y="32" width="10" height="10" rx="2"/>')
-        s.append(f'<text class="t2" x="{lx + 14}" y="41" font-size="12">{name}</text>')
+    # legend: its own row under the subtitle, left to right
+    lx = 16
+    for e, name in [x for x in series if x[0] in engines]:
+        s.append(f'<rect class="{e}" x="{lx}" y="52" width="10" height="10" rx="2"/>')
+        s.append(f'<text class="t2" x="{lx + 14}" y="61" font-size="12">{name}</text>')
+        lx += 7.2 * len(name) + 32
     y = top
     for label, vals in groups:
         s.append(f'<text class="t1" x="{left - 10}" y="{y + (len(engines) * (bar + gap)) / 2 + 4}" font-size="12" text-anchor="end">{label}</text>')
@@ -191,19 +200,34 @@ def read_times(path):
     return out
 
 
+def copy_runs():
+    """The run files (hits per query, times per query) of bench/out into bench/results/runs, so
+    that the tables can be computed again from the repository alone."""
+    import shutil
+    os.makedirs(OUT, exist_ok=True)
+    if os.path.isdir(RAW):
+        for f in os.listdir(RAW):
+            if f.endswith((".run", ".times")):
+                shutil.copyfile(os.path.join(RAW, f), os.path.join(OUT, f))
+
+
 def main():
     os.makedirs(CHARTS, exist_ok=True)
+    copy_runs()
     env = json.load(open(os.path.join(RES, "env.json"))) if os.path.exists(os.path.join(RES, "env.json")) else {}
     load = {e: jsonl(f"{e}_load.jsonl") for e, _ in ENGINES}
     query = {e: jsonl(f"{e}_query.jsonl") for e, _ in ENGINES}
+    vt = query["vtext"]
+    query["vtext"] = [x for x in vt if x.get("view", "live") == "live"]
+    query["vtext_snap"] = [x for x in vt if x.get("view") == "snap"]
     md = ["# Benchmark results", "", "Generated by `bench/report.py` from `bench/results/*.jsonl`. Every number is a recorded run.", ""]
     if env:
         md += ["## Machine", "", "| | |", "|---|---|"] + [f"| {k} | {v} |" for k, v in env.items()] + [""]
 
     # loading
     md += ["## Index build", "",
-           "vtext: `index_s` is `CALL vtext.create_index` (analysis, index tables, node cache); the COPY into the source table is listed apart. "
-           "Elasticsearch / OpenSearch: bulk load + refresh + force merge to one segment. Sizes: vtext node cache file and index tables; "
+           "vtext: `CALL vtext.create_index` (analysis, index tables, node cache) + `CALL vtext.merge(name, 1)` (one segment); "
+           "the COPY into the source table is listed apart. Elasticsearch / OpenSearch: bulk load + refresh + force merge to one segment. Sizes: vtext node cache file and index tables; "
            "the engines' store (includes their copy of the text, `_source`).", "",
            "| Dataset | Documents | vtext index (s) | Vertica COPY (s) | Elasticsearch (s) | OpenSearch (s) | vtext cache (MB) | vtext tables (MB) | Elasticsearch (MB) | OpenSearch (MB) |",
            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
@@ -221,7 +245,9 @@ def main():
     md.append("")
     if build_g:
         svg_bars(os.path.join(CHARTS, "build.svg"), "Index build time", "seconds", build_g, "lower is better")
-        svg_bars(os.path.join(CHARTS, "size.svg"), "Index size", "MB", size_g, "lower is better")
+        svg_bars(os.path.join(CHARTS, "size.svg"), "Index size",
+                 "MB; vtext: node cache (the text stays in its table); engines: store with their text copy",
+                 size_g, "lower is better")
 
     # queries
     for clients, title in ((1, "Latency, 1 client"), (32, "Throughput, 32 clients")):
@@ -233,8 +259,9 @@ def main():
         lat_g, qps_g = [], []
         for ds, name in SETS:
             vals_l, vals_q = {}, {}
-            for e, ename in ENGINES:
-                r = last([x for x in query[e] if not x.get("count") and not x.get("fenced") and x.get("clients") == clients], index=ds)
+            for e, ename in Q_ENGINES:
+                r = last([x for x in query[e] if not x.get("count") and not x.get("fenced") and x.get("clients") == clients
+                          and x.get("batch", 1) == 1 and not x.get("session")], index=ds)
                 if not r:
                     continue
                 md.append(f"| {name} | {ename} | {r['queries']} | {fmt(r['server_ms']['mean'], 2)} | {fmt(r['server_ms']['p50'], 2)} | "
@@ -247,9 +274,39 @@ def main():
                 qps_g.append((name, vals_q))
         md.append("")
         if clients == 1 and lat_g:
-            svg_bars(os.path.join(CHARTS, "latency.svg"), "Mean query latency, 1 client", "milliseconds, client round trip", lat_g, "lower is better")
+            svg_bars(os.path.join(CHARTS, "latency.svg"), "Mean query latency, 1 client", "milliseconds, client round trip", lat_g, "lower is better", Q_ENGINES)
         if clients == 32 and qps_g:
-            svg_bars(os.path.join(CHARTS, "throughput.svg"), "Throughput, 32 clients", "queries per second", qps_g, "higher is better")
+            svg_bars(os.path.join(CHARTS, "throughput.svg"), "Throughput, 32 clients", "queries per second", qps_g, "higher is better", Q_ENGINES)
+
+    # batches: many queries per statement (vtext: the parameter queries; the engines: _msearch)
+    rows = []
+    for ds, name in SETS:
+        for e, ename in Q_ENGINES:
+            b = last([x for x in query[e] if x.get("batch", 1) > 1 and x.get("clients") == 32 and not x.get("session")], index=ds)
+            d = last([x for x in query[e] if x.get("batch", 1) == 1 and x.get("clients") == 32 and not x.get("session")
+                      and not x.get("count") and not x.get("fenced")], index=ds)
+            if b:
+                rows.append(f"| {name} | {ename} | {b['batch']} | {fmt(d and d['qps_best'])} | {fmt(b['qps_best'])} |")
+    if rows:
+        md += ["## Batches (32 clients)", "",
+               "Many queries in one request: vtext's parameter `queries` (one statement), the engines' `_msearch`. "
+               "Queries per second over the same query sets.", "",
+               "| Dataset | Engine | Queries per request | Queries/s, one per request | Queries/s, batches |", "|---|---|---:|---:|---:|"] + rows + [""]
+
+    # a resource pool for search (bench/pool_test.sh)
+    rows = []
+    for ds, name in SETS:
+        for e, ename in Q_ENGINES[:2]:
+            r = last([x for x in query[e] if x.get("session") and x.get("clients") == 32], index=ds)
+            d = last([x for x in query[e] if not x.get("session") and not x.get("count") and not x.get("fenced")
+                      and x.get("clients") == 32 and x.get("batch", 1) == 1], index=ds)
+            if r:
+                rows.append(f"| {name} | {ename} | {fmt(d and d['qps_best'])} | {fmt(r['qps_best'])} | {fmt(r['client_ms']['mean'], 2)} |")
+    if rows:
+        md += ["## Throughput with a resource pool for search (vtext, 32 clients)", "",
+               "`bench/pool_test.sh`: `CREATE RESOURCE POOL vtext_search ... EXECUTIONPARALLELISM 1 PLANNEDCONCURRENCY 64` and "
+               "`SET SESSION RESOURCE_POOL = vtext_search` in every session.", "",
+               "| Dataset | View | Queries/s, general pool | Queries/s, search pool | Client mean (ms), search pool |", "|---|---|---:|---:|---:|"] + rows + [""]
 
     # fenced
     f = last([x for x in query["vtext"] if x.get("fenced")], index="msmarco")
@@ -262,10 +319,10 @@ def main():
     # relevance
     rel = relevance()
     if rel:
-        md += ["## Relevance (MS MARCO passage, dev, 6,980 judged queries)", "", "| Engine | MRR@10 | nDCG@10 | Same top 10 as vtext |", "|---|---:|---:|---:|"]
+        md += ["## Relevance (MS MARCO passage, dev, 6,980 judged queries)", "", "| Engine | MRR@10 | nDCG@10 |", "|---|---:|---:|"]
         for e, ename in ENGINES:
             if e in rel:
-                md.append(f"| {ename} | {rel[e]['mrr@10']} | {rel[e]['ndcg@10']} | {rel[e].get('same_top10_as_first', 1.0) if e != 'vtext' else '-'} |")
+                md.append(f"| {ename} | {rel[e]['mrr@10']} | {rel[e]['ndcg@10']} |")
         md.append("")
 
     # agreement of counts
@@ -299,11 +356,12 @@ def main():
 
     # latency per kind of query (syntax sets, 1 client, client round trip)
     kinds = {}
-    wins = {e: [0, 0] for e, _ in ENGINES[1:]}
+    pairs = [(v, e) for v in ("vtext", "vtext_snap") for e in ("es", "os")]
+    wins = {pq: [0, 0] for pq in pairs}
     slow = []
     for ds, name in SETS[1:]:
         qpath = os.path.join(HERE, "queries", f"{ds}.tsv")
-        t = {e: read_times(os.path.join(OUT, f"{e}_{ds}.times")) for e, _ in ENGINES}
+        t = {e: read_times(os.path.join(OUT, f"vtext_{ds}_snap.times" if e == "vtext_snap" else f"{e}_{ds}.times")) for e, _ in Q_ENGINES}
         if not os.path.exists(qpath) or not t["vtext"]:
             continue
         for l in open(qpath, encoding="utf-8"):
@@ -311,29 +369,31 @@ def main():
             if qid not in t["vtext"]:
                 continue
             k = kind_of(text)
-            for e, _ in ENGINES:
+            for e, _ in Q_ENGINES:
                 if t[e] and qid in t[e]:
                     kinds.setdefault(k, {}).setdefault(e, []).append(t[e][qid])
-            for e, _ in ENGINES[1:]:
-                if t[e] and qid in t[e]:
-                    wins[e][0] += t["vtext"][qid] < t[e][qid]
-                    wins[e][1] += 1
-                    if t[e][qid] < t["vtext"][qid]:
-                        slow.append((t["vtext"][qid] - t[e][qid], name, text, e, t["vtext"][qid], t[e][qid]))
+            for v, e in pairs:
+                if t[v] and t[e] and qid in t[v] and qid in t[e]:
+                    wins[(v, e)][0] += t[v][qid] < t[e][qid]
+                    wins[(v, e)][1] += 1
+                    if v == "vtext_snap" and t[e][qid] < t[v][qid]:
+                        slow.append((t[v][qid] - t[e][qid], name, text, e, t[v][qid], t[e][qid]))
     if kinds:
         md += ["## Latency by kind of query (Enron, PubMed, Wikipedia; 1 client, client round trip, mean ms)", "",
-               "| Kind | Queries | " + " | ".join(n for _, n in ENGINES) + " |", "|---|---:|" + "---:|" * len(ENGINES)]
+               "| Kind | Queries | " + " | ".join(n for _, n in Q_ENGINES) + " |", "|---|---:|" + "---:|" * len(Q_ENGINES)]
         for k in ("words", "boolean", "phrase", "w/N, pre/N", "prefix / wildcard", "fuzzy"):
             if k in kinds:
                 v = kinds[k]
                 md.append(f"| {k} | {len(v.get('vtext', []))} | " + " | ".join(
-                    fmt(sum(v[e]) / len(v[e]), 2) if v.get(e) else "-" for e, _ in ENGINES) + " |")
+                    fmt(sum(v[e]) / len(v[e]), 2) if v.get(e) else "-" for e, _ in Q_ENGINES) + " |")
         md.append("")
-        md += ["Queries where vtext is faster: " + ", ".join(f"{wins[e][0]} of {wins[e][1]} against {n}" for e, n in ENGINES[1:] if wins[e][1]) + ".", ""]
+        names = dict(Q_ENGINES)
+        md += ["Queries where vtext is faster: " + "; ".join(f"{names[v]} {wins[(v, e)][0]} of {wins[(v, e)][1]} against {names[e]}"
+                                                         for v, e in pairs if wins[(v, e)][1]) + ".", ""]
         slow.sort(reverse=True)
         if slow:
-            md += ["Queries where an engine is faster than vtext, the largest differences first:", "",
-                   "| Dataset | Query | Engine | vtext (ms) | Engine (ms) |", "|---|---|---|---:|---:|"]
+            md += ["Queries where an engine is faster than vtext snap, the largest differences first:", "",
+                   "| Dataset | Query | Engine | vtext snap (ms) | Engine (ms) |", "|---|---|---|---:|---:|"]
             for d, name, text, e, a, b in slow[:15]:
                 md.append(f"| {name} | `{text}` | {dict(ENGINES)[e]} | {fmt(a, 2)} | {fmt(b, 2)} |")
             md.append("")

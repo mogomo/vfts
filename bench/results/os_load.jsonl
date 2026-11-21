@@ -1,0 +1,5 @@
+{"engine": "os", "dataset": "msmarco", "shards": 1, "workers": 16, "docs": 8841823, "count": 8841823, "bulk_s": 151.7, "refresh_s": 2.3, "merge_s": 53.2, "index_s": 207.2, "bytes": 4167005807, "segments": 1}
+{"engine": "os", "dataset": "enron", "shards": 1, "workers": 16, "docs": 517401, "count": 517401, "bulk_s": 31.2, "refresh_s": 6.5, "merge_s": 15.2, "index_s": 52.8, "bytes": 1226793182, "segments": 1}
+{"engine": "os", "dataset": "pubmed", "shards": 1, "workers": 16, "docs": 932746, "count": 932746, "bulk_s": 34.9, "refresh_s": 0.2, "merge_s": 16.2, "index_s": 51.3, "bytes": 1189592569, "segments": 1}
+{"engine": "os", "dataset": "wiki_he", "shards": 1, "workers": 16, "docs": 300000, "count": 300000, "bulk_s": 37.3, "refresh_s": 1.5, "merge_s": 27.2, "index_s": 66.1, "bytes": 2274817620, "segments": 1}
+{"engine": "os", "dataset": "wiki_ar", "shards": 1, "workers": 16, "docs": 300000, "count": 300000, "bulk_s": 28.2, "refresh_s": 0.1, "merge_s": 19.0, "index_s": 47.3, "bytes": 1587666203, "segments": 1}

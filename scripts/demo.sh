@@ -60,22 +60,29 @@ sql "SELECT * FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query
 sql "SELECT r.rank, r.doc_id, c.body FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='holmes', k=5) OVER() FROM demo.cases_live) r JOIN demo.cases c USING (doc_id) ORDER BY r.rank;"
 
 step "5. The query language" "Boolean, phrase, proximity (w/N any order, pre/N in order), prefix, wildcard, fuzzy."
-for q in 'contract AND NOT indemnify' '"indemnity clause"' 'contract w/5 indemnity' 'seller pre/3 indemnify' 'indemn*' 'contr?ct' 'holmse~1' '"supply contract indemnity"~3'; do
+for q in 'contract AND NOT indemnify' '"indemnity clause"' 'contract w/5 indemnity' 'seller pre/3 indemnify' 'indemn*' 'contr?ct' 'holmse~1' '"contract supply"~2'; do
     sql "SELECT '$(echo "$q" | sed "s/'/''/g")' AS query, LISTAGG(doc_id::VARCHAR USING PARAMETERS separator=' ') AS doc_ids FROM (SELECT doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='$(echo "$q" | sed "s/'/''/g")', k=10) OVER() FROM demo.cases_live) r ORDER BY doc_id) x;"
 done
 
-step "6. Stem or exact: mode" "running in mode stem finds run, runs; in mode exact only running."
-sql "SELECT 'stem' AS mode, LISTAGG(doc_id::VARCHAR) AS doc_ids FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='run', k=10) OVER() FROM demo.cases_live) r
-     UNION ALL SELECT 'exact', LISTAGG(doc_id::VARCHAR) FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='run', k=10, mode='exact') OVER() FROM demo.cases_live) r;"
+step "6. Stem or exact: mode" "contracts in mode stem finds contract (documents 1 and 2); in mode exact only the word" "contracts itself (no document has it)."
+sql "SELECT 'stem' AS mode, LISTAGG(doc_id::VARCHAR USING PARAMETERS separator=' ') AS doc_ids FROM (SELECT doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='contracts', k=10) OVER() FROM demo.cases_live) r ORDER BY doc_id) x
+     UNION ALL SELECT 'exact', LISTAGG(doc_id::VARCHAR USING PARAMETERS separator=' ') FROM (SELECT doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='contracts', k=10, mode='exact') OVER() FROM demo.cases_live) r ORDER BY doc_id) x;"
 
 step "7. Other languages" "French with lang='fr'; Hebrew prefixes and acronyms; Arabic article and diacritics."
 sql "SELECT doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='contrat', lang='fr', k=5) OVER() FROM demo.cases_live) r;"
 sql "SELECT doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='בית', lang='he', k=5) OVER() FROM demo.cases_live) r;"
-sql "SELECT doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='צה\"ל', k=5) OVER() FROM demo.cases_live) r;"
+sql "SELECT doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='צה״ל', k=5) OVER() FROM demo.cases_live) r;"
 sql "SELECT doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='كتاب', lang='ar', k=5) OVER() FROM demo.cases_live) r;"
 
-step "8. Counting: vtext.tcount" "The number of matching documents, without scoring."
+step "8. Counting, batches, score scale" "tcount: the number of matching documents, without scoring."
 sql "SELECT * FROM (SELECT vtext.tcount(* USING PARAMETERS index='cases', query='contract OR indemn*') OVER() FROM demo.cases_live) r;"
+sql "SELECT qid, rank, doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', k=2,
+     queries=E'1\tindemnity\n2\tholmes\n3\tcontract w/5 indemnity') OVER() FROM demo.cases_live) r ORDER BY qid, rank;"
+echo "   (above: three queries in one statement, the parameter queries; a batch pays Vertica's statement cost once)"
+sql "SELECT a.doc_id, a.score AS opensearch_scale, c.score AS elasticsearch_scale FROM
+     (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='indemnity', k=1) OVER() FROM demo.cases_live) a
+     JOIN (SELECT vtext.tsearch(* USING PARAMETERS index='cases', query='indemnity', k=1, bm25='classic') OVER() FROM demo.cases_live) c ON a.doc_id = c.doc_id;"
+echo "   (bm25='classic' gives the scores of Elasticsearch: k1 + 1 = 2.2 times those of Lucene and OpenSearch)"
 
 step "9. Snippets: vtext.tsnippet" "The matching words marked in the original text."
 sql "SELECT r.rank, vtext.tsnippet(c.body, 'contract w/5 indemnity' USING PARAMETERS index='cases') AS snippet
@@ -85,7 +92,7 @@ sql "SELECT r.rank, vtext.tsnippet(c.body, 'contract w/5 indemnity' USING PARAME
 step "10. No rebuild after new loads" \
      "New, updated and deleted rows are searchable at once: the live tail is analyzed at query time." \
      "A delete or an update that keeps ver is written to the journal."
-sql "INSERT INTO demo.cases (doc_id, body, lang) VALUES (9, 'New contract with an indemnity cap.', 'en');
+sql "INSERT INTO demo.cases (doc_id, body, lang, vec) VALUES (9, 'New contract with an indemnity cap.', 'en', ARRAY[0.85, 0.15, 0.0]);
 UPDATE demo.cases SET body = 'Payment terms only.', ver = CLOCK_TIMESTAMP() WHERE doc_id = 2;
 DELETE FROM demo.cases WHERE doc_id = 8; INSERT INTO demo.cases_journal (doc_id, op) VALUES (8, 'D');
 COMMIT;"

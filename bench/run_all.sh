@@ -10,6 +10,7 @@
 #   data       download and prepare the datasets           (bench/data/fetch.sh, prepare.py)
 #   engines    install Elasticsearch and OpenSearch        (bench/engines/engines.sh)
 #   vtext      load every dataset into Vertica, build the vtext indexes, run the queries
+#   vqueries   only the vtext query runs, on the indexes already loaded (not in the default list)
 #   fenced     the MS MARCO queries again with the functions FENCED, then back to unfenced
 #   es         Elasticsearch: load every dataset, run the queries
 #   os         OpenSearch: the same
@@ -53,7 +54,7 @@ print(json.dumps({
   "memory_gb": round(int(sh("grep MemTotal /proc/meminfo | awk '{print \$2}'") or 0) / 1048576, 1),
   "os": sh("grep PRETTY_NAME /etc/os-release | cut -d= -f2").strip('"'), "kernel": platform.release(),
   "vertica": sh("vsql -X -At -c 'SELECT version()'"),
-  "vtext": sh("vsql -X -At -c 'SELECT version || \" \" || build FROM (SELECT vtext.tversion() OVER()) v'"),
+  "vtext": sh("vsql -X -At -c 'SELECT version || CHR(32) || build FROM (SELECT vtext.tversion() OVER()) v'"),
   "elasticsearch": os.environ.get("ES_VERSION", "9.5.6"), "opensearch": os.environ.get("OS_VERSION", "3.10.0"),
   "engine_heap": os.environ.get("ENGINE_HEAP", "16g")}))
 EOF
@@ -67,12 +68,12 @@ step_data() {
 
 step_engines() { timeout 3600 bench/engines/engines.sh install; }
 
-run_vt() {   # dataset clients run_file
-    local ds=$1 c=$2 run=$3
+run_vt() {   # dataset clients view run_file times_file
+    local ds=$1 c=$2 view=$3 run=$4 times=$5
     read -r qf qx extra <<< "$(queries_of "$ds")"
     local q=$qf; [ "$c" -gt 1 ] && q=$qx
     timeout 7200 python3 -I bench/run_vertica.py "$ds" bench "$q" --clients "$c" --repeat "$REPEAT" --mode "$(mode_of "$ds")" \
-        --param max_expansions=100000 ${extra:-} ${run:+--run "$run" --times "${run%.run}.times"} | tee -a "$R/vtext_query.jsonl"
+        --view "$view" --param max_expansions=100000 ${extra:-} ${run:+--run "$run"} ${times:+--times "$times"} | tee -a "$R/vtext_query.jsonl"
 }
 
 run_eng() {   # engine dataset clients run_file
@@ -88,17 +89,31 @@ step_vtext() {
     for ds in $SETS; do
         log "vtext: load $ds"
         timeout 10000 bench/load_vertica.sh "$ds" "$(opts_of "$ds")" | tee -a "$R/vtext_load.jsonl"
-        log "vtext: queries $ds"
-        run_vt "$ds" 1 "$OUT/vtext_$ds.run"
-        # the answers on the scale of Elasticsearch (bm25='classic'), to compare them with its own
-        read -r qf qx extra <<< "$(queries_of "$ds")"
-        timeout 3600 python3 -I bench/run_vertica.py "$ds" bench "$qf" --repeat 1 --warmup 0 --mode "$(mode_of "$ds")" \
-            --param max_expansions=100000 --param "bm25='classic'" ${extra:-} --run "$OUT/vtext_${ds}_classic.run" > /dev/null
-        run_vt "$ds" 32 ""
-        read -r qf qx extra <<< "$(queries_of "$ds")"
-        [ "$ds" != msmarco ] && timeout 3600 python3 -I bench/run_vertica.py "$ds" bench "$qf" --count --repeat 1 --warmup 0 \
-            --mode "$(mode_of "$ds")" --param max_expansions=100000 --run "$OUT/vtext_${ds}_count.run" > /dev/null
+        vqueries_of "$ds"
     done
+}
+
+vqueries_of() {   # the query runs of one dataset (index loaded)
+    local ds=$1
+    log "vtext: queries $ds"
+    # live: every committed row is searched (the default); snap: the rows up to the last refresh,
+    # the guarantee of Elasticsearch and OpenSearch (searchable after a refresh)
+    run_vt "$ds" 1 live "$OUT/vtext_$ds.run" "$OUT/vtext_$ds.times"
+    run_vt "$ds" 1 snap "" "$OUT/vtext_${ds}_snap.times"
+    # the answers on the scale of Elasticsearch (bm25='classic'), to compare them with its own
+    read -r qf qx extra <<< "$(queries_of "$ds")"
+    timeout 3600 python3 -I bench/run_vertica.py "$ds" bench "$qf" --repeat 1 --warmup 0 --mode "$(mode_of "$ds")" \
+        --param max_expansions=100000 --param "bm25='classic'" ${extra:-} --run "$OUT/vtext_${ds}_classic.run" > /dev/null
+    run_vt "$ds" 32 live "" ""
+    run_vt "$ds" 32 snap "" ""
+    [ "$ds" != msmarco ] && timeout 3600 python3 -I bench/run_vertica.py "$ds" bench "$qf" --count --repeat 1 --warmup 0 \
+        --mode "$(mode_of "$ds")" --param max_expansions=100000 --run "$OUT/vtext_${ds}_count.run" > /dev/null
+}
+
+# the vtext query runs again, on the indexes loaded by the step vtext (after a change of the library)
+step_vqueries() {
+    bench/engines/engines.sh stop all
+    for ds in $SETS; do vqueries_of "$ds"; done
 }
 
 step_fenced() {
@@ -127,6 +142,14 @@ step_engine() {   # es | os
 }
 
 step_refresh() {
+    # the engines first: the vtext test adds the rows to the source table (the count of new rows is
+    # 1% of the table before)
+    for e in es os; do
+        bench/engines/engines.sh stop all
+        timeout 600 bench/engines/engines.sh start "$e" > /dev/null
+        timeout 7200 bench/refresh_test.sh msmarco "$e" | tee -a "$R/vtext_refresh.jsonl"
+    done
+    bench/engines/engines.sh stop all
     timeout 7200 bench/refresh_test.sh msmarco | tee -a "$R/vtext_refresh.jsonl"
 }
 
@@ -139,6 +162,7 @@ for s in $STEPS; do
         data) step_data ;;
         engines) step_engines ;;
         vtext) step_vtext ;;
+        vqueries) step_vqueries ;;
         fenced) step_fenced ;;
         es) step_engine es ;;
         os) step_engine os ;;

@@ -159,14 +159,61 @@ bool is_emoji(std::string_view seg)
     return false;
 }
 
+// The script of a character for splitting words at script changes: Common and Inherited
+// characters (digits, punctuation, marks) have none (-1); Han, Hiragana, Katakana and Hangul are
+// one group, as in Lucene's ScriptIterator.
+int split_script(UChar32 c)
+{
+    UErrorCode st = U_ZERO_ERROR;
+    const UScriptCode sc = uscript_getScript(c, &st);
+    if (U_FAILURE(st) || sc == USCRIPT_COMMON || sc == USCRIPT_INHERITED || sc == USCRIPT_UNKNOWN) return -1;
+    if (sc == USCRIPT_HIRAGANA || sc == USCRIPT_KATAKANA || sc == USCRIPT_HANGUL) return USCRIPT_HAN;
+    return sc;
+}
+
+// The byte ranges of the script runs of a word that mixes scripts ("lewisi.הכנסת"), or nothing.
+// Lucene's ICUTokenizer cuts the text into runs of one script before it looks for words; a
+// character without a script stays in the run before it.
+bool script_runs(std::string_view w, std::vector<std::pair<std::size_t, std::size_t>> &runs)
+{
+    runs.clear();
+    bool non_ascii = false;
+    for (unsigned char ch : w) non_ascii |= ch >= 0x80;
+    if (!non_ascii) return false;
+    int cur = -1;
+    std::size_t run_start = 0;
+    for (int32_t i = 0, n = static_cast<int32_t>(w.size()); i < n;) {
+        const int32_t at = i;
+        UChar32 c;
+        U8_NEXT(reinterpret_cast<const uint8_t *>(w.data()), i, n, c);
+        if (c < 0) continue;
+        const int sc = split_script(c);
+        if (sc < 0) continue;
+        if (cur < 0) { cur = sc; continue; }
+        if (sc != cur) {
+            runs.emplace_back(run_start, static_cast<std::size_t>(at));
+            run_start = static_cast<std::size_t>(at);
+            cur = sc;
+        }
+    }
+    if (runs.empty()) return false;
+    runs.emplace_back(run_start, w.size());
+    return true;
+}
+
 } // namespace
 
 struct Analyzer::Impl {
-    std::unique_ptr<icu::BreakIterator> bi;
-    UText *ut = nullptr;
+    std::unique_ptr<icu::BreakIterator> bi, sub;    // sub: words inside a script run of a mixed word
+    UText *ut = nullptr, *sub_ut = nullptr;
     std::string scratch;
+    std::vector<std::pair<std::size_t, std::size_t>> runs;
     Impl() : bi(prototype().clone()) { if (!bi) throw std::runtime_error("ICU break iterator clone failed"); }
-    ~Impl() { if (ut) utext_close(ut); }
+    ~Impl()
+    {
+        if (ut) utext_close(ut);
+        if (sub_ut) utext_close(sub_ut);
+    }
 };
 
 Analyzer::Analyzer(const AnalyzerOptions &opts) : opts_(opts), impl_(new Impl) {}
@@ -240,12 +287,9 @@ void Analyzer::analyze(std::string_view text, Lang doc_lang)
 
     std::string &norm = impl_->scratch;
     std::uint32_t pos = 0;
-    int32_t start = bi.first();
-    for (int32_t end = bi.next(); end != icu::BreakIterator::DONE; start = end, end = bi.next()) {
-        const std::string_view word = text.substr(static_cast<std::size_t>(start), static_cast<std::size_t>(end - start));
-        if (bi.getRuleStatus() < UBRK_WORD_NONE_LIMIT && !is_emoji(word)) continue;      // spaces, punctuation
+    auto emit = [&](std::string_view word, std::uint32_t start, std::uint32_t end) {
         const Script s = normalize_piece(word, doc_lang, norm);
-        if (norm.empty() || norm.size() > opts_.max_token_bytes) continue;
+        if (norm.empty() || norm.size() > opts_.max_token_bytes) return;
         Lang stem_lang = LANG_NONE;
         if (s == Script::Unsupported) {
             if (!opts_.unsupported_plain)
@@ -259,12 +303,41 @@ void Analyzer::analyze(std::string_view text, Lang doc_lang)
         t.off = static_cast<std::uint32_t>(arena_.size());
         t.len = static_cast<std::uint32_t>(norm.size());
         t.pos = pos++;
-        t.start = static_cast<std::uint32_t>(start);
-        t.end = static_cast<std::uint32_t>(end);
+        t.start = start;
+        t.end = end;
         t.lang = stem_lang;
         t.script = s;
         arena_.append(norm);
         tokens_.push_back(t);
+    };
+    int32_t start = bi.first();
+    for (int32_t end = bi.next(); end != icu::BreakIterator::DONE; start = end, end = bi.next()) {
+        const std::string_view word = text.substr(static_cast<std::size_t>(start), static_cast<std::size_t>(end - start));
+        if (bi.getRuleStatus() < UBRK_WORD_NONE_LIMIT && !is_emoji(word)) continue;      // spaces, punctuation
+        if (!script_runs(word, impl_->runs)) {
+            emit(word, static_cast<std::uint32_t>(start), static_cast<std::uint32_t>(end));
+            continue;
+        }
+        // a word across scripts: the words of each script run
+        if (!impl_->sub) {
+            impl_->sub.reset(prototype().clone());
+            if (!impl_->sub) throw std::runtime_error("ICU break iterator clone failed");
+        }
+        icu::BreakIterator &sb = *impl_->sub;
+        for (const auto &r : impl_->runs) {
+            const std::string_view run = word.substr(r.first, r.second - r.first);
+            impl_->sub_ut = utext_openUTF8(impl_->sub_ut, run.data(), static_cast<int64_t>(run.size()), &st);
+            if (U_FAILURE(st)) throw std::runtime_error(std::string("ICU utext_openUTF8 failed: ") + u_errorName(st));
+            sb.setText(impl_->sub_ut, st);
+            if (U_FAILURE(st)) throw std::runtime_error(std::string("ICU setText failed: ") + u_errorName(st));
+            int32_t s0 = sb.first();
+            for (int32_t e0 = sb.next(); e0 != icu::BreakIterator::DONE; s0 = e0, e0 = sb.next()) {
+                const std::string_view w = run.substr(static_cast<std::size_t>(s0), static_cast<std::size_t>(e0 - s0));
+                if (sb.getRuleStatus() < UBRK_WORD_NONE_LIMIT && !is_emoji(w)) continue;
+                const auto base = static_cast<std::uint32_t>(start) + static_cast<std::uint32_t>(r.first);
+                emit(w, base + static_cast<std::uint32_t>(s0), base + static_cast<std::uint32_t>(e0));
+            }
+        }
     }
 }
 
