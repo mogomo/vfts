@@ -74,6 +74,7 @@ refuse to search, rather than search the masked text ([Access policies](#access-
 - [Restrictions and future work](#restrictions-and-future-work)
 - [Files](#files)
 - [License](#license)
+- [Disclaimer](#disclaimer)
 
 ## What it does
 
@@ -1538,3 +1539,10 @@ SQL (UNION ALL, `vfts.hybrid` with weights).
 MIT, see LICENSE. The libraries linked in have their own licenses: ICU (Unicode License),
 libstemmer_c (BSD), CRoaring (Apache 2.0 / MIT). The benchmark datasets are not part of this
 repository; their licenses are listed in `bench/data/fetch.sh`.
+
+## Disclaimer
+
+This repository is provided "as is", without warranty of any kind, express or implied. It is a
+personal demonstration project. It is not part of Rocket Software's Vertica offering and is not
+endorsed or supported by Rocket Software. All product names, trademarks and brands mentioned here
+belong to their respective owners and are used for identification and reference only.
