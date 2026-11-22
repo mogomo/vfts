@@ -4,7 +4,7 @@
     python3 -I bench/eval.py <qrels.tsv> <run.tsv> [<run2.tsv> ...]
 
 qrels: "qid 0 doc_id grade" (MS MARCO: grade 1 for every judged passage).
-run:   "qid <tab> doc_id <tab> rank <tab> score" (vtext_cli --run, bench/run_*.py).
+run:   "qid <tab> doc_id <tab> rank <tab> score" (vfts_cli --run, bench/run_*.py).
 Queries without any result count as 0. Prints one JSON line per run.
 Also compares two runs: with two or more runs, the share of queries whose top 10 doc ids are the
 same, in the same order, as in the first run.

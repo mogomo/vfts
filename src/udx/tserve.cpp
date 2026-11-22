@@ -1,8 +1,8 @@
-// vtext.tserve(* USING PARAMETERS index, endpoint, token, workers, k, mode, ...) OVER()
+// vfts.tserve(* USING PARAMETERS index, endpoint, token, workers, k, mode, ...) OVER()
 //     FROM <schema>.<index>_snap
 //
 // A long-running statement that answers searches over a channel instead of one statement per
-// query. It is meant for tools/vtext_broker, which opens a normal Vertica session for a user (so
+// query. It is meant for tools/vfts_broker, which opens a normal Vertica session for a user (so
 // Vertica checks the login, the grants on the view and the resource pool), runs this statement in
 // it, and then sends that user's searches over the channel.
 //
@@ -39,7 +39,7 @@
 #include <thread>
 
 using namespace Vertica;
-using namespace vtext_udx;
+using namespace vfts_udx;
 
 namespace {
 
@@ -80,26 +80,27 @@ private:
         if (endpoint.empty() || endpoint.size() >= sizeof(sockaddr_un::sun_path)) fail("parameter endpoint (a Unix socket path) is required");
         if (token.size() < 16) fail("parameter token (at least 16 characters) is required");
         {
-            // only a broker's socket: <dir>/vtext_broker.<name>.sock, a socket file (so that the
+            // only a broker's socket: <dir>/vfts_broker.<name>.sock, a socket file (so that the
             // function cannot be pointed at other local services)
             const std::size_t sl = endpoint.rfind('/');
             const std::string base = sl == std::string::npos ? endpoint : endpoint.substr(sl + 1);
             struct stat st{};
-            if (base.rfind("vtext_broker.", 0) != 0 || base.size() < 18 || base.compare(base.size() - 5, 5, ".sock") != 0 ||
+            static const std::string pre = "vfts_broker.", suf = ".sock";   // and a name of at least one character
+            if (base.rfind(pre, 0) != 0 || base.size() < pre.size() + 1 + suf.size() || base.compare(base.size() - suf.size(), suf.size(), suf) != 0 ||
                 ::stat(endpoint.c_str(), &st) != 0 || !S_ISSOCK(st.st_mode))
-                fail("endpoint must be the socket of vtext_broker (<dir>/vtext_broker.<name>.sock)");
+                fail("endpoint must be the socket of vfts_broker (<dir>/vfts_broker.<name>.sock)");
         }
         std::int64_t workers = s.integer("workers", 0);
         if (workers < 0 || workers > 1024) fail("workers must be 0 (one per core) to 1024");
         if (workers == 0) workers = std::max<std::int64_t>(1, std::thread::hardware_concurrency());
-        const vtext::SearchOptions o = parse_search_options(s, 1);
+        const vfts::SearchOptions o = parse_search_options(s, 1);
 
         ViewInput v;
         v.read(in, false);
         auto li = v.open(resolve_cache_dir(s), index, srv.getUserName());
-        const vtext::AnalyzerOptions aopts = parse_index_options(li->options);
-        std::unique_ptr<vtext::Searcher> sp = v.searcher(*li);
-        vtext::Searcher &searcher = *sp;
+        const vfts::AnalyzerOptions aopts = parse_index_options(li->options);
+        std::unique_ptr<vfts::Searcher> sp = v.searcher(*li);
+        vfts::Searcher &searcher = *sp;
         searcher.ready();
 
         const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
@@ -112,7 +113,7 @@ private:
             ::close(fd);
             fail("cannot connect to " + endpoint + ": " + e);
         }
-        const std::string hello = "VTEXT1 " + token + "\n";
+        const std::string hello = "VFTS1 " + token + "\n";
         if (!write_all(fd, hello.data(), hello.size())) { ::close(fd); fail("channel closed at the start"); }
 
         std::mutex mu, wmu;
@@ -123,7 +124,7 @@ private:
         std::vector<std::thread> pool;
         for (std::int64_t w = 0; w < workers; ++w)
             pool.emplace_back([&] {
-                vtext::Analyzer analyzer(aopts);
+                vfts::Analyzer analyzer(aopts);
                 std::string frame;
                 for (;;) {
                     Job j;
@@ -137,9 +138,9 @@ private:
                     frame.assign(12, '\0');
                     std::int32_t n;
                     try {
-                        const std::vector<vtext::Hit> hits = searcher.search(j.query, o, analyzer);
+                        const std::vector<vfts::Hit> hits = searcher.search(j.query, o, analyzer);
                         n = static_cast<std::int32_t>(hits.size());
-                        for (const vtext::Hit &h : hits) {
+                        for (const vfts::Hit &h : hits) {
                             frame.append(reinterpret_cast<const char *>(&h.doc_id), 8);
                             frame.append(reinterpret_cast<const char *>(&h.score), 4);
                         }

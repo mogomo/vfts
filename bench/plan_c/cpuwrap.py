@@ -3,7 +3,7 @@
 
     python3 -I bench/plan_c/cpuwrap.py <out.jsonl> <test-name> -- <command> [args ...]
 
-The command prints one JSON line (bench/run_vertica.py, bench/run_engines.py, vtext_cli --clients,
+The command prints one JSON line (bench/run_vertica.py, bench/run_engines.py, vfts_cli --clients,
 bench/plan_c/sqlload.py). That line gets the fields "test" and "cpu" and is appended to out.jsonl
 (and printed). CPU over the whole command (warm-up included), in cores (1.0 = one core busy):
 

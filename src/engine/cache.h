@@ -1,22 +1,22 @@
 // The per-node cache: copies of the index's segments, mmap'ed by the search functions.
 //
-//   <cache_dir>/<index>/seg_<segment_id>.vts     one file per segment (segment.h), never changed
-//   <cache_dir>/<index>/gen_<generation>.vtg     the active segments of a generation, their
+//   <cache_dir>/<index>/seg_<segment_id>.vfs     one file per segment (segment.h), never changed
+//   <cache_dir>/<index>/gen_<generation>.vfg     the active segments of a generation, their
 //                                                tombstones and the tombstones' effect on document
 //                                                frequencies (computed once, here), the access
 //                                                mode and keys (mode 0600, like every file here)
 //   <cache_dir>/<index>/ACTIVE                   the active generation number
 //
 // The cache is only a copy of the index tables: a missing or damaged file is never a data loss
-// (CALL vtext.load_all('<index>') writes it again). Files are written to a temporary name,
+// (CALL vfts.load_all('<index>') writes it again). Files are written to a temporary name,
 // verified and renamed; ACTIVE is replaced last. The previous generation's files are kept, so a
 // query that runs while a refresh activates a new generation finishes on the old one.
 //
 // In a process, the mapping of a segment file is kept and shared by later queries and later
 // generations: a new generation maps only its new segments. What ACTIVE says is trusted for
 // ACTIVE_CHECK_MS; a query whose view carries a newer generation reads it again at once.
-#ifndef VTEXT_ENGINE_CACHE_H
-#define VTEXT_ENGINE_CACHE_H
+#ifndef VFTS_ENGINE_CACHE_H
+#define VFTS_ENGINE_CACHE_H
 
 #include "search.h"
 
@@ -25,9 +25,9 @@
 #include <string>
 #include <vector>
 
-namespace vtext {
+namespace vfts {
 
-constexpr const char *DEFAULT_CACHE_DIR = "/tmp/vtext";
+constexpr const char *DEFAULT_CACHE_DIR = "/tmp/vfts";
 constexpr int ACTIVE_CHECK_MS = 200;
 
 // Letters, digits and underscore, 1 to 64 characters: an index name can never point outside
@@ -73,7 +73,7 @@ private:
 struct LoadedIndex {
     std::int64_t gen = 0;
     std::string options;                    // as given to CacheWriter::activate
-    std::string access;                     // as given to CacheWriter::activate ("" in files of vtext 0.1.0)
+    std::string access;                     // as given to CacheWriter::activate ("" in files of vfts 0.1.0)
     std::vector<std::string> keys;
     std::vector<SegmentRef> refs;
     std::uint64_t bytes = 0, docs = 0, dead = 0;
@@ -96,9 +96,9 @@ struct CacheInfo {
 };
 CacheInfo cache_info(const std::string &cache_dir, const std::string &index);
 
-// Removes an index's cache directory (only files that vtext writes).
+// Removes an index's cache directory (only files that vfts writes).
 void drop_cache(const std::string &cache_dir, const std::string &index);
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

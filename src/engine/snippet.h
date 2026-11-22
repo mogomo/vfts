@@ -5,15 +5,15 @@
 // stem match). The best windows of `words` words are chosen by the number of different query words
 // they contain, then by the number of hits; they are returned in text order. The original text is
 // kept: marks are inserted at the byte offsets of the hits.
-#ifndef VTEXT_ENGINE_SNIPPET_H
-#define VTEXT_ENGINE_SNIPPET_H
+#ifndef VFTS_ENGINE_SNIPPET_H
+#define VFTS_ENGINE_SNIPPET_H
 
 #include "analyzer.h"
 #include "search.h"
 
 #include <string>
 
-namespace vtext {
+namespace vfts {
 
 struct SnippetOptions {
     MatchMode match = MatchMode::Stem;
@@ -38,6 +38,6 @@ private:
     std::size_t hits_ = 0;
 };
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

@@ -14,7 +14,7 @@
 #include <optional>
 #include <set>
 
-using namespace vtext;
+using namespace vfts;
 using Doc = std::vector<std::string>;
 using Corpus = std::map<std::int64_t, Doc>;
 

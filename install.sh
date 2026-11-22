@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# vtext: one install for any Vertica database (one node or many, Enterprise or Eon).
+# vfts: one install for any Vertica database (one node or many, Enterprise or Eon).
 #
 #   ./install.sh                 check, build, test, deploy (unfenced), build the tools, verify
 #   ./install.sh --fenced        the same, the functions fenced (a crash cannot stop a node; slower)
 #   ./install.sh --check         only check the environment
 #   ./install.sh --skip-tests    no engine unit tests (faster)
 #   ./install.sh --uninstall     remove the library and functions (index tables stay)
-#   ./install.sh --uninstall --drop    also drop the schema vtext with every index
+#   ./install.sh --uninstall --drop    also drop the schema vfts with every index
 #
 # Run it on a Vertica node, as a user that can read the repository, with the vsql connection
 # variables of a superuser (dbadmin):
@@ -51,9 +51,9 @@ ok "connected: $v"
 ver=$(echo "$v" | sed -n 's/.*v\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
 [ -n "$ver" ] || warn "could not read the version from: $v"
 if [ -n "$ver" ] && [ "$(printf '%s\n26.2\n' "$ver" | sort -V | head -1)" != "26.2" ]; then
-    die "Vertica $ver: vtext needs 26.2 or later (tested on 26.3)"
+    die "Vertica $ver: vfts needs 26.2 or later (tested on 26.3)"
 fi
-[ "$ver" = "26.2" ] && warn "Vertica 26.2: same SDK version as 26.3 (26.2.0), but vtext was tested on 26.3 only"
+[ "$ver" = "26.2" ] && warn "Vertica 26.2: same SDK version as 26.3 (26.2.0), but vfts was tested on 26.3 only"
 [ "$(q "SELECT is_super_user FROM v_catalog.users WHERE user_name = CURRENT_USER();")" = t ] || \
     die "the user $(q 'SELECT CURRENT_USER();') is not a superuser: CREATE LIBRARY needs one (dbadmin)"
 ok "superuser: $(q 'SELECT CURRENT_USER();')"
@@ -73,7 +73,7 @@ if [ "$UNINSTALL" = yes ]; then
     step "Uninstall"
     if [ "$DROP" = yes ]; then timeout 600 scripts/deploy.sh --undeploy --drop || die "uninstall failed"
     else timeout 600 scripts/deploy.sh --undeploy || die "uninstall failed"; fi
-    ok "removed$( [ "$DROP" = yes ] && echo ", with the schema vtext and every index" || echo "; the index tables stay (--drop removes them)")"
+    ok "removed$( [ "$DROP" = yes ] && echo ", with the schema vfts and every index" || echo "; the index tables stay (--drop removes them)")"
     exit 0
 fi
 
@@ -86,60 +86,60 @@ ok "g++ $(g++ -dumpfullversion 2> /dev/null || g++ -dumpversion)"
 for t in make curl tar; do command -v $t > /dev/null || die "$t not found"; done
 ok "make, curl, tar"
 case "$PWD" in
-    *[[:space:]]*) die "the repository's path has a space ($PWD): ICU's build cannot handle that; move it (e.g. to ~/vertica-text-udx)" ;;
+    *[[:space:]]*) die "the repository's path has a space ($PWD): ICU's build cannot handle that; move it (e.g. to ~/vfts)" ;;
 esac
 [ "$CHECK_ONLY" = yes ] && { echo; echo "Environment ready."; exit 0; }
 
 # ---------------------------------------------------------------- 2. build
-step "2. Build (dependencies once, then vtext)"
+step "2. Build (dependencies once, then vfts)"
 mkdir -p build || die "cannot create build/ in $PWD"
 [ -f third_party/install/lib/libicuuc.a ] || echo "   building ICU, Snowball and CRoaring once (5 to 20 minutes; log: build/deps.log)"
 timeout 3600 make deps > build/deps.log 2>&1 || die "dependencies failed: see build/deps.log"
 ok "dependencies (third_party/install: ICU, Snowball, CRoaring)"
 J=$(nproc 2> /dev/null || echo 2)
 timeout 3600 make -j"$J" > build/make.log 2>&1 || die "build failed: see build/make.log"
-ok "build/libvtext.so"
+ok "build/libvfts.so"
 if [ "$SKIP_TESTS" = no ]; then
     timeout 3600 make -j"$J" test > build/test.log 2>&1 || die "engine tests failed: see build/test.log"
     ok "engine unit tests passed"
 fi
-timeout 3600 make -j"$J" tools > build/tools.log 2>&1 && ok "tools: build/tools/vtext_broker, vtext_cli, httpload" \
+timeout 3600 make -j"$J" tools > build/tools.log 2>&1 && ok "tools: build/tools/vfts_broker, vfts_cli, httpload" \
     || warn "tools did not build (see build/tools.log); the database functions do not need them"
 
 # ---------------------------------------------------------------- 3. deploy
 step "3. Deploy into the database ($( [ "$FENCED" = yes ] && echo fenced || echo unfenced ))"
 timeout 900 scripts/deploy.sh --fenced="$FENCED" > build/deploy.log 2>&1 || die "deploy failed: see build/deploy.log"
-ok "schema vtext: library, functions, procedures, tables (copied to every node)"
+ok "schema vfts: library, functions, procedures, tables (copied to every node)"
 
 # ---------------------------------------------------------------- 4. verify
 step "4. Verify"
-tv=$(q "SELECT version || ' (' || build || ', ICU ' || icu || ')' FROM (SELECT vtext.tversion() OVER()) v;")
-[ -n "$tv" ] || die "vtext.tversion() did not answer"
-ok "vtext $tv"
-out=$(EX_SCHEMA=vtext_selftest EX_INDEX=vtext_selftest timeout 600 scripts/examples.sh 2>&1); rc=$?
+tv=$(q "SELECT version || ' (' || build || ', ICU ' || icu || ')' FROM (SELECT vfts.tversion() OVER()) v;")
+[ -n "$tv" ] || die "vfts.tversion() did not answer"
+ok "vfts $tv"
+out=$(EX_SCHEMA=vfts_selftest EX_INDEX=vfts_selftest timeout 600 scripts/examples.sh 2>&1); rc=$?
 if [ $rc -ne 0 ] || grep -qE "ERROR|FATAL|could not connect|server closed" <<< "$out"; then
     printf '%s\n' "$out" | grep -B3 -E "ERROR|FATAL|could not connect|server closed" | head -20
     [ $rc -eq 124 ] && die "the examples did not finish in 10 minutes"
-    [ $rc -eq 3 ] && die "the schema or index vtext_selftest exists and was not made by vtext: not touched"
+    [ $rc -eq 3 ] && die "the schema or index vfts_selftest exists and was not made by vfts: not touched"
     die "the examples failed (exit $rc; above)"
 fi
-ok "every function ran on a test table (schema vtext_selftest, then removed)"
+ok "every function ran on a test table (schema vfts_selftest, then removed)"
 
 # ---------------------------------------------------------------- done
 step "Installed"
 cat << EOF
    Next:
-   - Index a table:  CALL vtext.create_index('docs', 'app.docs', 'lang=en');   (README: Prepare a table)
-   - Search:         SELECT * FROM (SELECT vtext.tsearch(* USING PARAMETERS index='docs', query='...', k=10) OVER()
+   - Index a table:  CALL vfts.create_index('docs', 'app.docs', 'lang=en');   (README: Prepare a table)
+   - Search:         SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='...', k=10) OVER()
                                     FROM app.docs_live) r;
    - Let users search: GRANT USAGE ON SCHEMA app TO <role>; GRANT SELECT ON app.docs_live, app.docs_snap TO <role>;
-   - Keep it fresh:  CALL vtext.refresh_index('docs');   on a schedule
-   - Node caches:    /tmp/vtext by default; for production pass cache_dir=<dir> to create_index
+   - Keep it fresh:  CALL vfts.refresh_index('docs');   on a schedule
+   - Node caches:    /tmp/vfts by default; for production pass cache_dir=<dir> to create_index
                      (the directory must exist on every node, writable by the database's OS user)
 EOF
 if [ "${eon:-0}" -gt 1 ]; then
-    echo "   - Eon: after create_index / refresh_index on the primary subcluster, run CALL vtext.load_all('docs');"
+    echo "   - Eon: after create_index / refresh_index on the primary subcluster, run CALL vfts.load_all('docs');"
     echo "     from a session on each secondary subcluster"
 fi
-echo "   - Many clients:   build/tools/vtext_broker --port 9300 --schema app --mode serve   (README: tserve and vtext_broker)"
+echo "   - Many clients:   build/tools/vfts_broker --port 9300 --schema app --mode serve   (README: tserve and vfts_broker)"
 echo "   - More:           scripts/demo.sh (a guided tour), tests/sql/run_all.sh (SQL tests)"

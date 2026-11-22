@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Load a dataset into Elasticsearch or OpenSearch with analyzers equivalent to vtext's.
+"""Load a dataset into Elasticsearch or OpenSearch with analyzers equivalent to vfts's.
 
     python3 -I bench/load_engines.py <es|os> <dataset> [--shards N] [--workers W] [--no-merge]
 
-Reads $VTEXT_DATA/<dataset>/docs.dat (bench/data/prepare.py), creates the index <dataset>
+Reads $VFTS_DATA/<dataset>/docs.dat (bench/data/prepare.py), creates the index <dataset>
 (dropped first if it exists), bulk-loads with W parallel workers, refreshes, force-merges to one
 segment per shard (unless --no-merge), and prints one JSON line with the timings and sizes, which
 bench/run_all.sh appends to bench/results/<engine>_load.jsonl.
 
-Equivalence with vtext (docs/design.md "Analysis"):
+Equivalence with vfts (docs/design.md "Analysis"):
   tokenizer   icu_tokenizer                         (ICU word boundaries, UAX #29)
   normalize   icu_normalizer (nfkc_cf)              (NFKC + case folding)
-              apostrophes ' ʼ ＇ -> '               (char filter, vtext unifies them too)
+              apostrophes ' ʼ ＇ -> '               (char filter, vfts unifies them too)
               Latin accents removed                 (icu_transform restricted to Latin letters)
-              Arabic / Persian normalization        (the Lucene filters vtext follows)
+              Arabic / Persian normalization        (the Lucene filters vfts follows)
               Hebrew points removed, ״ -> " ׳ -> '   (pattern_replace / char filter)
-  stem        English: snowball English on field body (vtext: mode='stem', expansion by stem)
-              body.exact: no stemming                (vtext: mode='exact', and prefix/wildcard/fuzzy)
+  stem        English: snowball English on field body (vfts: mode='stem', expansion by stem)
+              body.exact: no stemming                (vfts: mode='exact', and prefix/wildcard/fuzzy)
   similarity  BM25, k1 = 1.2, b = 0.75 (the default of both engines)
 Python standard library only.
 """
@@ -27,7 +27,7 @@ import os
 import sys
 import time
 
-DATA = os.environ.get("VTEXT_DATA", os.path.expanduser("~/vtext_data"))
+DATA = os.environ.get("VFTS_DATA", os.path.expanduser("~/vfts_data"))
 PORTS = {"es": int(os.environ.get("ES_PORT", 9200)), "os": int(os.environ.get("OS_PORT", 9201))}
 LANG = {"msmarco": "en", "enron": "en", "pubmed": "en", "wiki_he": "he", "wiki_ar": "ar"}
 
@@ -45,24 +45,24 @@ def request(port, method, path, body=None, timeout=3600):
 
 
 def settings(lang, shards):
-    char_filters = {"vt_quotes": {"type": "mapping", "mappings": ["\\u2019=>'", "\\u02BC=>'", "\\uFF07=>'", "\\u05F4=>\"", "\\u05F3=>'"]}}
+    char_filters = {"vf_quotes": {"type": "mapping", "mappings": ["\\u2019=>'", "\\u02BC=>'", "\\uFF07=>'", "\\u05F4=>\"", "\\u05F3=>'"]}}
     filters = {
-        "vt_latin_fold": {"type": "icu_transform", "id": "[\\u0041-\\u024F\\u1E00-\\u1EFF\\u0300-\\u036F] NFD; [:Nonspacing Mark:] Remove; NFC"},
-        "vt_hebrew_points": {"type": "pattern_replace", "pattern": "[\\u0591-\\u05C7]", "replacement": ""},
-        "vt_arabic_extra": {"type": "pattern_replace", "pattern": "[\\u0654]", "replacement": ""},
-        "vt_snowball_en": {"type": "snowball", "language": "English"},
+        "vf_latin_fold": {"type": "icu_transform", "id": "[\\u0041-\\u024F\\u1E00-\\u1EFF\\u0300-\\u036F] NFD; [:Nonspacing Mark:] Remove; NFC"},
+        "vf_hebrew_points": {"type": "pattern_replace", "pattern": "[\\u0591-\\u05C7]", "replacement": ""},
+        "vf_arabic_extra": {"type": "pattern_replace", "pattern": "[\\u0654]", "replacement": ""},
+        "vf_snowball_en": {"type": "snowball", "language": "English"},
     }
-    base = ["icu_normalizer", "vt_latin_fold"]
+    base = ["icu_normalizer", "vf_latin_fold"]
     if lang == "ar":
-        base += ["arabic_normalization", "persian_normalization", "vt_arabic_extra"]
+        base += ["arabic_normalization", "persian_normalization", "vf_arabic_extra"]
     if lang == "he":
-        base += ["vt_hebrew_points"]
-    stem = base + (["vt_snowball_en"] if lang == "en" else ["arabic_stem"] if lang == "ar" else [])
+        base += ["vf_hebrew_points"]
+    stem = base + (["vf_snowball_en"] if lang == "en" else ["arabic_stem"] if lang == "ar" else [])
     if lang == "ar":
         filters["arabic_stem"] = {"type": "stemmer", "language": "arabic"}
     analyzers = {
-        "vt_exact": {"type": "custom", "tokenizer": "icu_tokenizer", "char_filter": ["vt_quotes"], "filter": base},
-        "vt_stem": {"type": "custom", "tokenizer": "icu_tokenizer", "char_filter": ["vt_quotes"], "filter": stem},
+        "vf_exact": {"type": "custom", "tokenizer": "icu_tokenizer", "char_filter": ["vf_quotes"], "filter": base},
+        "vf_stem": {"type": "custom", "tokenizer": "icu_tokenizer", "char_filter": ["vf_quotes"], "filter": stem},
     }
     return {
         "settings": {
@@ -74,7 +74,7 @@ def settings(lang, shards):
             "dynamic": "strict",
             "properties": {
                 "doc_id": {"type": "long"},
-                "body": {"type": "text", "analyzer": "vt_stem", "fields": {"exact": {"type": "text", "analyzer": "vt_exact"}}},
+                "body": {"type": "text", "analyzer": "vf_stem", "fields": {"exact": {"type": "text", "analyzer": "vf_exact"}}},
             },
         },
     }

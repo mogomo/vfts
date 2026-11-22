@@ -1,4 +1,4 @@
-# vtext design notes
+# vfts design notes
 
 This file explains the decisions and records the measurements behind them. The user's view is in
 the README; the exact bytes are in docs/format.md.
@@ -6,7 +6,7 @@ the README; the exact bytes are in docs/format.md.
 ## Pieces
 
     source table ──tbuild──> index tables ──tload──> node cache files ──mmap──> tsearch / tcount
-    (customer: doc_id,       (vtext.term_dict,       (/tmp/vtext/<index>/)      tsnippet, hybrid
+    (customer: doc_id,       (vfts.term_dict,       (/tmp/vfts/<index>/)      tsnippet, hybrid
      body, lang, ver)         postings, positions,
     journal (doc_id, op, ver) doc_stats, ...)
 
@@ -67,7 +67,7 @@ same float operations:
 `bm25='classic'` multiplies the weight by (1 + k1) first (in float): the classic formula
 `idf * tf * (k1 + 1) / (tf + K)`, which Elasticsearch uses (its `LegacyBM25Similarity`). Measured on
 MS MARCO: Elasticsearch 9.5.6 scores are exactly 2.2 times those of OpenSearch 3.10.0 for the
-same documents; the order is the same. vtext defaults to OpenSearch's scale (the formula the
+same documents; the order is the same. vfts defaults to OpenSearch's scale (the formula the
 design asks for) and offers Elasticsearch's.
 
 with the one-byte document length of Lucene (exact below 24 tokens, 4 significant bits above).
@@ -114,7 +114,7 @@ Document at a time over the segment's posting lists (`src/engine/search.cpp`):
   default one per core; while several queries run, each gets its share of the pool) with a top-k
   each, merged.
 
-**Top k of OR queries: MaxScore.** The common ranked query is a disjunction of words. vtext uses
+**Top k of OR queries: MaxScore.** The common ranked query is a disjunction of words. vfts uses
 MaxScore with block-max bounds:
 
 - every posting block of 128 documents stores its competitive (tf, norm) pairs ("impacts"), and
@@ -158,7 +158,7 @@ that do not move `ver` (an UPDATE that keeps it, a DELETE) are recorded in a jou
   60 s) covers clock differences between nodes and versions taken at statement start.
 - **Segments.** Each refresh adds segments; nothing already indexed is rewritten.
 - **Tombstones.** Every doc_id that has a newer row, or a journal row, in the refresh's range gets
-  a tombstone in the older segments (`vtext.tombstones`, a bitmap per segment in the cache).
+  a tombstone in the older segments (`vfts.tombstones`, a bitmap per segment in the cache).
 - **Live tail.** The view `<schema>.<index>_live` returns the source rows with `ver > boundary`,
   the doc_ids of journal rows with `ver > boundary` (with the current row's text when it still
   exists) and one sentinel row with the generation. tsearch masks every doc_id of the tail in the
@@ -175,7 +175,7 @@ ranks and scores of an index built from scratch on the current rows.
 
 ## Refresh
 
-`vtext.refresh_index` (the name `refresh` is a Vertica built-in):
+`vfts.refresh_index` (the name `refresh` is a Vertica built-in):
 
 1. Mark the index (one refresh at a time; a mark whose session is gone is ignored).
 2. Compute the boundary.
@@ -197,7 +197,7 @@ hold rows that are also in the (old, wider) tail, so results stay exact, and the
 
 ## Merge
 
-`vtext.merge(index [, max_segments])` merges segments from the node cache (`tmerge`, no text is
+`vfts.merge(index [, max_segments])` merges segments from the node cache (`tmerge`, no text is
 analyzed again): live documents, postings and positions merged term by term, tombstoned documents
 dropped, stem groups carried over. Then the same steps 4 to 8 as a refresh.
 
@@ -234,14 +234,14 @@ Who may search an index, and what the access policies of the source table do to 
   procedures that manage indexes are for the index owner (a superuser).
 - **The views are the only way in.** A search function reads the index from the node cache;
   what it is allowed to see must come with its input. Every index has a secret key (128 bits from
-  `/dev/urandom` through `UUID_GENERATE`) in `vtext.index_keys`, which no user can read, and on
+  `/dev/urandom` through `UUID_GENERATE`) in `vfts.index_keys`, which no user can read, and on
   every node in the generation file (mode 0600, written from rows of that table, so the key never
   appears in the text of a statement). The sentinel row of the views carries a token made from it;
   the functions recompute the token and refuse input without the right one. A statement that makes
   its own input (`FROM dual` with a generation number) is refused, so a search needs SELECT on the
   views: Vertica's own grants decide who searches.
 - **Access mode**, read from `v_catalog.access_policy` when the index is created, refreshed or
-  merged, and by `vtext.check_access(index)` (only a superuser or the table's owner sees the
+  merged, and by `vfts.check_access(index)` (only a superuser or the table's owner sees the
   policies, so only they run these):
   - `open` (no policy): the token is `md5(key:gen:key)`, a literal in the views; whoever may read
     the views may know it.
@@ -261,7 +261,7 @@ Who may search an index, and what the access policies of the source table do to 
     an index of the rows the user sees**: N, average length and every df leave the hidden
     documents out (in Lucene the term statistics come from the whole index, so a filter such as Elasticsearch's document level security does not change them; not measured here). The token is
     `md5(key:gen:user:n:s1:s2:key)`, computed by the view per statement with the key read from
-    `vtext.index_keys` (the view owner's privilege): n hidden documents, s1 and s2 the sums of the first
+    `vfts.index_keys` (the view owner's privilege): n hidden documents, s1 and s2 the sums of the first
     and second 32 bits of `md5(key:doc_id)` over them. Leaving out a hidden doc_id, adding one, or using
     the input of another user gives a wrong token; the user cannot compute one, the key is not in
     the view's text. The function opens exactly the generation the H rows were computed for
@@ -282,11 +282,11 @@ Who may search an index, and what the access policies of the source table do to 
 ## Node cache
 
 - Layout and files: docs/format.md. cache_dir: function parameter, then session parameter
-  (`ALTER SESSION SET UDPARAMETER FOR vtext.vtext cache_dir = '...'`), then `/tmp/vtext`. The procedures
+  (`ALTER SESSION SET UDPARAMETER FOR vfts.vfts cache_dir = '...'`), then `/tmp/vfts`. The procedures
   pass an index's `cache_dir` option to the functions they call; a search cannot read the manifest,
   so searches of such an index set the same directory as a parameter or session parameter.
-- `OVER(PARTITION NODES)` runs on every node only for a segmented input: `vtext.probe` (1,024
-  rows, segmented) and `vtext.tnode(k)`, which returns one row per node. Loads join the replicated
+- `OVER(PARTITION NODES)` runs on every node only for a segmented input: `vfts.probe` (1,024
+  rows, segmented) and `vfts.tnode(k)`, which returns one row per node. Loads join the replicated
   index tables with that one row per node: a local join (`DISTRIB(L,L)`), with `SYNTACTIC_JOIN`
   so that the row per node is the inner side (docs/VERTICA_NOTES.md: the planner reserves the
   declared width of LONG VARBINARY for every inner row).
@@ -294,7 +294,7 @@ Who may search an index, and what the access policies of the source table do to 
   refresh maps only its new segments. What ACTIVE says is trusted for 200 ms; a query whose view
   carries a newer generation reads it at once.
 - A node whose cache is older than the view's generation refuses to answer ("stale: run
-  CALL vtext.load_all"); a node without cache says so too.
+  CALL vfts.load_all"); a node without cache says so too.
 - Eon: a statement reaches the nodes of the session's subcluster only. Every subcluster keeps its
   own caches; `load_all` from a session on a secondary subcluster loads it (tested on 3 + 2 nodes).
 

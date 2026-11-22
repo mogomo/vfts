@@ -34,7 +34,7 @@ def main():
     repeat = int(arg("--repeat", 5))
     conn = re_.Conn(re_.PORTS[engine])
     queries = [l.rstrip("\n").split("\t", 1) for l in open(qpath, encoding="utf-8") if "\t" in l]
-    out = subprocess.run(["build/tools/vtext_cli", "explain", qpath, "--lang", lang], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["build/tools/vfts_cli", "explain", qpath, "--lang", lang], capture_output=True, text=True, check=True).stdout
     tr = re_.Translator(conn, index, mode)
     trees = [json.loads(l) for l in out.splitlines()]
     bodies = [{"match_none": {}} if t["tree"]["k"] == "error" else tr.query(t["tree"]) for t in trees]

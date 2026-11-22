@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <vector>
 
-namespace vtext {
+namespace vfts {
 
 namespace {
 
@@ -167,7 +167,7 @@ Segment::Segment(const void *data, std::size_t size) : base_(static_cast<const s
 {
     if (size < HEADER_BYTES) bad("shorter than the header");
     const SegmentHeader *h = reinterpret_cast<const SegmentHeader *>(base_);
-    if (std::memcmp(h->magic, SEGMENT_MAGIC, 8) != 0) bad("not a vtext segment (magic)");
+    if (std::memcmp(h->magic, SEGMENT_MAGIC, 8) != 0) bad("not a vfts segment (magic)");
     if (h->format != SEGMENT_FORMAT && h->format != SEGMENT_FORMAT_ORDERED)
         bad("format " + std::to_string(h->format) + ", expected " + std::to_string(SEGMENT_FORMAT) + " or " + std::to_string(SEGMENT_FORMAT_ORDERED));
     if (h->total_bytes != size) bad("size " + std::to_string(size) + " differs from header " + std::to_string(h->total_bytes));
@@ -395,4 +395,4 @@ bool Segment::verify_postings(const TermInfo &ti, std::uint32_t t) const
     return true;
 }
 
-} // namespace vtext
+} // namespace vfts

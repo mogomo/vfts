@@ -1,11 +1,11 @@
-// vtext_cli: the engine without Vertica, for measurements and debugging.
+// vfts_cli: the engine without Vertica, for measurements and debugging.
 //
-//   vtext_cli build  <docs.dat> <cache_dir> <index> [--threads N] [--lang en] [--max-segment-mb M]
-//   vtext_cli merge  <cache_dir> <index> <max_segments> [--no-reorder] [--force]   --force: rewrite even
+//   vfts_cli build  <docs.dat> <cache_dir> <index> [--threads N] [--lang en] [--max-segment-mb M]
+//   vfts_cli merge  <cache_dir> <index> <max_segments> [--no-reorder] [--force]   --force: rewrite even
 //                    when there are max_segments or fewer (one segment: reorder it)
-//   vtext_cli explain <queries.tsv> [--lang en] [--plain]   the parsed queries as JSON lines (for the
+//   vfts_cli explain <queries.tsv> [--lang en] [--plain]   the parsed queries as JSON lines (for the
 //                    Elasticsearch / OpenSearch translation in bench/run_engines.py)
-//   vtext_cli search <cache_dir> <index> <queries.tsv> [--k 10] [--threads N] [--mode stem|exact]
+//   vfts_cli search <cache_dir> <index> <queries.tsv> [--k 10] [--threads N] [--mode stem|exact]
 //                    [--repeat R] [--run out.tsv] [--no-pruning] [--count] [--plain] [--and]
 //                    [--max-expansions 50] [--prefix-length 0] [--classic] [--stats]
 //                    [--clients C]   C concurrent searchers, prints one JSON line with q/s
@@ -34,7 +34,7 @@
 #include <thread>
 #include <unistd.h>
 
-using namespace vtext;
+using namespace vfts;
 using Clock = std::chrono::steady_clock;
 
 static double secs(Clock::time_point a) { return std::chrono::duration<double>(Clock::now() - a).count(); }
@@ -253,7 +253,7 @@ static int search(int argc, char **argv)
         double sum = 0;
         for (double x : v) sum += x;
         auto pct = [&](double p) { return v.empty() ? 0.0 : v[std::min(v.size() - 1, static_cast<std::size_t>(p * v.size()))]; };
-        std::printf("{\"engine\": \"vtext_cli\", \"index\": \"%s\", \"queries\": %zu, \"clients\": %d, \"threads\": %d, \"errors\": %zu, "
+        std::printf("{\"engine\": \"vfts_cli\", \"index\": \"%s\", \"queries\": %zu, \"clients\": %d, \"threads\": %d, \"errors\": %zu, "
                     "\"ms\": {\"mean\": %.3f, \"p50\": %.3f, \"p90\": %.3f, \"p99\": %.3f, \"max\": %.3f}, \"qps_best\": %.1f}\n",
                     index.c_str(), qs.size(), clients, o.threads, errs.load() / static_cast<std::size_t>(repeat + 1),
                     v.empty() ? 0 : sum / v.size(), pct(0.5), pct(0.9), pct(0.99), v.empty() ? 0 : v.back(), best_qps);
@@ -403,9 +403,9 @@ int main(int argc, char **argv)
         if (argc >= 3 && std::strcmp(argv[1], "explain") == 0) return explain(argc, argv);
         if (argc >= 3 && std::strcmp(argv[1], "tokens") == 0) return tokens(argc, argv);
     } catch (const std::exception &e) {
-        std::fprintf(stderr, "vtext_cli: %s\n", e.what());
+        std::fprintf(stderr, "vfts_cli: %s\n", e.what());
         return 1;
     }
-    std::fprintf(stderr, "usage: see the comment at the top of tools/vtext_cli.cpp\n");
+    std::fprintf(stderr, "usage: see the comment at the top of tools/vfts_cli.cpp\n");
     return 2;
 }

@@ -11,7 +11,7 @@
 #include <algorithm>
 #include <set>
 
-using namespace vtext;
+using namespace vfts;
 
 static const char *W[] = {"run", "runs", "running", "contract", "contracts", "indemnity", "holmes", "watson", "the", "of", "a", "b", "c"};
 

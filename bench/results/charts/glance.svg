@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="490" viewBox="0 0 960 490" role="img" aria-label="vtext at a glance">
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="490" viewBox="0 0 960 490" role="img" aria-label="vfts at a glance">
 <style>.bg{fill:#fcfcfb}.tile{fill:#f2f1ee}.t1{fill:#0b0b0b}.t2{fill:#52514e}.ax{stroke:#bdbcb7}.v{fill:#2a78d6}.e{fill:#eb6834}@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.tile{fill:#262624}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.ax{stroke:#55544f}.v{fill:#3987e5}.e{fill:#d95926}}text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}</style>
 <rect class="bg" width="960" height="490" rx="8"/>
-<text class="t1" x="24" y="38" font-size="20" font-weight="700">vtext: full-text search inside Vertica, against Elasticsearch and OpenSearch</text>
+<text class="t1" x="24" y="38" font-size="20" font-weight="700">vfts: full-text search inside Vertica, against Elasticsearch and OpenSearch</text>
 <text class="t2" x="24" y="60" font-size="13">One machine, the same documents, analyzers and queries; every number is a recorded run (bench/results/).</text>
 <rect class="tile" x="24.0" y="80" width="216.0" height="112" rx="6"/>
 <text class="t1" x="40.0" y="124" font-size="30" font-weight="700">1.1-2.0x</text>
@@ -19,7 +19,7 @@
 <text class="t1" x="736.0" y="124" font-size="30" font-weight="700">0.49-0.68x</text>
 <text class="t1" x="736.0" y="150" font-size="13" font-weight="600">index size of the engines'</text>
 <text class="t2" x="736.0" y="172" font-size="12">the text is not copied out of Vertica</text>
-<text class="t1" x="24" y="222" font-size="14" font-weight="600">Throughput, 32 clients, one query per request: vtext tserve / the faster of Elasticsearch and OpenSearch</text>
+<text class="t1" x="24" y="222" font-size="14" font-weight="600">Throughput, 32 clients, one query per request: vfts tserve / the faster of Elasticsearch and OpenSearch</text>
 <text class="t1" x="160" y="252" font-size="13" text-anchor="end">MS MARCO</text>
 <path class="v" d="M170,236 h372.32498624105676 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-372.32498624105676 z"><title>MS MARCO: 1.11x</title></path>
 <text class="t2" x="554.3249862410568" y="252" font-size="12">1.11x</text>

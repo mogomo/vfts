@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a query set against a vtext index in Vertica and time it.
+"""Run a query set against a vfts index in Vertica and time it.
 
     python3 -I bench/run_vertica.py <index> <schema> <queries.tsv> [options]
 
@@ -78,11 +78,11 @@ def main():
             ids = list(range(i, min(i + batch, n)))
             lines = "\n".join(f"{j}\t{queries[j][1]}" for j in ids)
             cols = "qid, count" if counting else "qid, doc_id, rank, score"
-            return (f"SELECT /*+LABEL({label}_{i})*/ {cols} FROM (SELECT vtext.{fn}(* USING PARAMETERS queries={lit(lines)}, "
+            return (f"SELECT /*+LABEL({label}_{i})*/ {cols} FROM (SELECT vfts.{fn}(* USING PARAMETERS queries={lit(lines)}, "
                     f"{', '.join(params)}) OVER() FROM {schema}.{index}_{view}) r;\n")
         qid, text = queries[i]
         cols = f"{i}, count" if counting else f"{i}, doc_id, rank, score"
-        return (f"SELECT /*+LABEL({label}_{i})*/ {cols} FROM (SELECT vtext.{fn}(* USING PARAMETERS query={lit(text)}, "
+        return (f"SELECT /*+LABEL({label}_{i})*/ {cols} FROM (SELECT vfts.{fn}(* USING PARAMETERS query={lit(text)}, "
                 f"{', '.join(params)}) OVER() FROM {schema}.{index}_{view}) r;\n")
 
     def run_once(label, record):
@@ -129,7 +129,7 @@ def main():
                     rows.setdefault(int(p[0]), []).append(p[1:])
         return rows, client_ms, wall, errs[0]
 
-    run_id = "vtb" + uuid.uuid4().hex[:10]
+    run_id = "vfb" + uuid.uuid4().hex[:10]
     for w in range(warmup):
         run_once(f"{run_id}w{w}", False)
     server = [1e18] * n
@@ -179,7 +179,7 @@ def main():
     def pct(v, p):
         return round(v[min(len(v) - 1, int(p * len(v)))], 3) if v else 0
 
-    print(json.dumps({"engine": "vtext", "index": index, "view": view, "batch": batch, "queries": n, "measured": len(s), "clients": clients,
+    print(json.dumps({"engine": "vfts", "index": index, "view": view, "batch": batch, "queries": n, "measured": len(s), "clients": clients,
                       "mode": mode, "plain": plain, "count": counting, "k": k, "params": extra, "session": session_sql, "errors": errors,
                       "server_ms": {"mean": round(sum(s) / max(len(s), 1), 3), "p50": pct(s, .5), "p90": pct(s, .9), "p99": pct(s, .99), "max": pct(s, 1)},
                       "client_ms": {"mean": round(sum(c) / max(len(c), 1), 3), "p50": pct(c, .5), "p90": pct(c, .9), "p99": pct(c, .99), "max": pct(c, 1)},

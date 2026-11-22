@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <set>
 
-namespace vtext {
+namespace vfts {
 
 namespace {
 
@@ -182,4 +182,4 @@ std::string Snippeter::snippet(std::string_view text, Lang lang)
     return out;
 }
 
-} // namespace vtext
+} // namespace vfts

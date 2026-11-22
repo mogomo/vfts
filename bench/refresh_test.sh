@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Refresh time for 1% new rows: rows are added to the source table (copies of existing documents
-# with new ids), then searched without refresh (the live tail), then vtext.refresh_index makes them
+# with new ids), then searched without refresh (the live tail), then vfts.refresh_index makes them
 # a new segment. Prints JSON lines. With an engine running (es|os as second argument) the same
 # documents are indexed there with _bulk and _refresh, for comparison.
 #
@@ -20,14 +20,14 @@ if [ -z "$ENGINE" ]; then
     sleep 1
     # a search over the live tail (the new rows are analyzed at query time)
     t0=$(date +%s.%N)
-    Q "SELECT COUNT(*) FROM (SELECT vtext.tsearch(* USING PARAMETERS index='$DS', query='what is the population of canada', syntax='plain', k=10) OVER() FROM bench.${DS}_live) r" > /dev/null
+    Q "SELECT COUNT(*) FROM (SELECT vfts.tsearch(* USING PARAMETERS index='$DS', query='what is the population of canada', syntax='plain', k=10) OVER() FROM bench.${DS}_live) r" > /dev/null
     t1=$(date +%s.%N)
-    Q "CALL vtext.refresh_index('$DS')" > /dev/null
+    Q "CALL vfts.refresh_index('$DS')" > /dev/null
     t2=$(date +%s.%N)
-    Q "SELECT COUNT(*) FROM (SELECT vtext.tsearch(* USING PARAMETERS index='$DS', query='what is the population of canada', syntax='plain', k=10) OVER() FROM bench.${DS}_live) r" > /dev/null
+    Q "SELECT COUNT(*) FROM (SELECT vfts.tsearch(* USING PARAMETERS index='$DS', query='what is the population of canada', syntax='plain', k=10) OVER() FROM bench.${DS}_live) r" > /dev/null
     t3=$(date +%s.%N)
-    note=$(Q "SELECT refresh_note FROM vtext.indexes WHERE index_name = '$DS'")
-    printf '{"engine": "vtext", "dataset": "%s", "added": %s, "query_with_tail_ms": %.1f, "refresh_s": %.1f, "query_after_ms": %.1f, "note": "%s"}\n' \
+    note=$(Q "SELECT refresh_note FROM vfts.indexes WHERE index_name = '$DS'")
+    printf '{"engine": "vfts", "dataset": "%s", "added": %s, "query_with_tail_ms": %.1f, "refresh_s": %.1f, "query_after_ms": %.1f, "note": "%s"}\n' \
         "$DS" "$ADD" "$(echo "($t1 - $t0) * 1000" | bc)" "$(echo "$t2 - $t1" | bc)" "$(echo "($t3 - $t2) * 1000" | bc)" "$note"
 else
     # the same new documents for Elasticsearch / OpenSearch: bulk them, then refresh
@@ -35,7 +35,7 @@ else
 import http.client, json, os, sys, time
 engine, ds, add, maxid = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 port = int(os.environ.get("ES_PORT", 9200)) if engine == "es" else int(os.environ.get("OS_PORT", 9201))
-path = os.path.join(os.environ.get("VTEXT_DATA", os.path.expanduser("~/vtext_data")), ds, "docs.dat")
+path = os.path.join(os.environ.get("VFTS_DATA", os.path.expanduser("~/vfts_data")), ds, "docs.dat")
 docs = []
 with open(path, "rb") as f:
     buf = b""

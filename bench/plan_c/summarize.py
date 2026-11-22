@@ -95,7 +95,7 @@ for ds in ("enron", "msmarco", "pubmed"):
             out.append(f"| {c} | " + " | ".join(cells) + " |")
         out += ["", "statement ms (server) at 32 sessions: " + ", ".join(
             f"B={b}: {round(R[f'c3_{ds}_{v}_c32_b{b}']['server_ms']['mean'] * b, 1)}" for b in bs if f"c3_{ds}_{v}_c32_b{b}" in R)]
-out += ["", "## C4 engine only (vtext_cli, no SQL; q/s, mean ms, CPU host cores)", "",
+out += ["", "## C4 engine only (vfts_cli, no SQL; q/s, mean ms, CPU host cores)", "",
         "| Dataset | " + " | ".join(f"{c} clients" for c in (1, 4, 8, 16, 32, 64)) + " | 32 clients, all threads |", "|---|" + "---:|" * 7]
 for ds in ("enron", "pubmed", "msmarco"):
     cells = []

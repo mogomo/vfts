@@ -1,7 +1,7 @@
 // Term expansion for prefix, wildcard and fuzzy words: which dictionary terms they match.
 // All comparisons are on Unicode code points of the normalized terms.
-#ifndef VTEXT_ENGINE_EXPAND_H
-#define VTEXT_ENGINE_EXPAND_H
+#ifndef VFTS_ENGINE_EXPAND_H
+#define VFTS_ENGINE_EXPAND_H
 
 #include <cstdint>
 #include <functional>
@@ -9,7 +9,7 @@
 #include <string_view>
 #include <vector>
 
-namespace vtext {
+namespace vfts {
 
 // UTF-8 to code points (invalid bytes become U+FFFD).
 void to_code_points(std::string_view s, std::vector<std::uint32_t> &out);
@@ -35,6 +35,6 @@ void fuzzy_terms(std::uint32_t n, const std::function<std::string_view(std::uint
 // The literal prefix of a wildcard pattern (before the first * or ?), as bytes.
 std::string literal_prefix(std::string_view pattern);
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

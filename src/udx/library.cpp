@@ -5,9 +5,9 @@
 
 RegisterLibrary("Mo (github.com/mogomo)",
                 __DATE__,
-                vtext::LIBRARY_VERSION,
+                vfts::LIBRARY_VERSION,
                 VERTICA_BUILD_ID_Brand_Version,
-                "https://github.com/mogomo/vertica-text-udx",
-                "vtext: full-text search (BM25, phrase, proximity, fuzzy) on Vertica tables",
+                "https://github.com/mogomo/vfts",
+                "vfts: full-text search (BM25, phrase, proximity, fuzzy) on Vertica tables",
                 "",
                 "");

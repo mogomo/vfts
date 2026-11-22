@@ -1,23 +1,23 @@
-// vtext.tsnippet(body, query [USING PARAMETERS index, mode, lang, words, fragments, pre_tag,
+// vfts.tsnippet(body, query [USING PARAMETERS index, mode, lang, words, fragments, pre_tag,
 //                post_tag, separator, prefix_length])
 //
 // A scalar function: the parts of `body` that match `query`, with the hits marked (snippet.h).
 // With `index`, the text is analyzed with that index's settings (read from the node's cache), so
 // the marks agree with what tsearch matched. Join it to the search result, for the top hits only:
-//   SELECT r.rank, d.doc_id, vtext.tsnippet(d.body, 'contract w/5 indemnity' USING PARAMETERS index='emails')
-//   FROM (SELECT vtext.tsearch(...) OVER() FROM app.emails_live) r JOIN app.emails d USING (doc_id);
+//   SELECT r.rank, d.doc_id, vfts.tsnippet(d.body, 'contract w/5 indemnity' USING PARAMETERS index='emails')
+//   FROM (SELECT vfts.tsearch(...) OVER() FROM app.emails_live) r JOIN app.emails d USING (doc_id);
 #include "udx_common.h"
 #include "../engine/snippet.h"
 
 using namespace Vertica;
-using namespace vtext_udx;
+using namespace vfts_udx;
 
 namespace {
 
 class TSnippet : public ScalarFunction {
-    vtext::AnalyzerOptions aopts_;
-    vtext::SnippetOptions sopts_;
-    std::unique_ptr<vtext::Snippeter> sn_;
+    vfts::AnalyzerOptions aopts_;
+    vfts::SnippetOptions sopts_;
+    std::unique_ptr<vfts::Snippeter> sn_;
     std::string last_query_;
     bool lang_column_ = false;
 
@@ -27,15 +27,15 @@ public:
         try {
             Settings s(srv);
             if (s.has("index")) {
-                auto li = vtext::open_index(resolve_cache_dir(s), read_index_name(s), 0);
+                auto li = vfts::open_index(resolve_cache_dir(s), read_index_name(s), 0);
                 aopts_ = parse_index_options(li->options);
             } else {
                 aopts_ = analyzer_options(s);
             }
             const std::string mode = s.has("mode") ? s.text("mode", "stem") : s.text("match", "stem");
-            if (mode == "exact") sopts_.match = vtext::MatchMode::Exact;
+            if (mode == "exact") sopts_.match = vfts::MatchMode::Exact;
             else if (mode != "stem") fail("mode must be 'stem' or 'exact'");
-            if (s.has("lang")) sopts_.query.lang = vtext::parse_lang(s.text("lang", ""));
+            if (s.has("lang")) sopts_.query.lang = vfts::parse_lang(s.text("lang", ""));
             sopts_.words = static_cast<int>(s.integer("words", 20));
             sopts_.fragments = static_cast<int>(s.integer("fragments", 2));
             if (sopts_.words < 1 || sopts_.words > 10000 || sopts_.fragments < 1 || sopts_.fragments > 100)
@@ -57,11 +57,11 @@ public:
                 if (in.isNull(0) || in.isNull(1)) { out.getStringRef().setNull(); out.next(); continue; }
                 const std::string q = in.getStringRef(1).str();
                 if (!sn_ || q != last_query_) {
-                    sn_.reset(new vtext::Snippeter(aopts_, q, sopts_));
+                    sn_.reset(new vfts::Snippeter(aopts_, q, sopts_));
                     last_query_ = q;
                 }
-                vtext::Lang lang = vtext::LANG_NONE;
-                if (lang_column_ && !in.isNull(2)) vtext::find_lang(in.getStringRef(2).str(), lang);
+                vfts::Lang lang = vfts::LANG_NONE;
+                if (lang_column_ && !in.isNull(2)) vfts::find_lang(in.getStringRef(2).str(), lang);
                 const VString &body = in.getStringRef(0);
                 std::string r = sn_->snippet(std::string_view(body.data(), body.length()), lang);
                 if (r.size() > 65000) r.resize(65000);

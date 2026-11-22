@@ -4,7 +4,7 @@
 
 #include <stdexcept>
 
-namespace vtext {
+namespace vfts {
 
 namespace {
 
@@ -118,4 +118,4 @@ std::vector<std::string> snowball_algorithms()
     return out;
 }
 
-} // namespace vtext
+} // namespace vfts

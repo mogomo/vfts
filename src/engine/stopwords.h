@@ -1,7 +1,7 @@
 // Stopword lists, used only at query time when a query asks for stopwords=true. They are never
 // removed at index time: that would break exact phrase search.
-#ifndef VTEXT_ENGINE_STOPWORDS_H
-#define VTEXT_ENGINE_STOPWORDS_H
+#ifndef VFTS_ENGINE_STOPWORDS_H
+#define VFTS_ENGINE_STOPWORDS_H
 
 #include "analyzer.h"
 
@@ -9,7 +9,7 @@
 #include <string_view>
 #include <unordered_set>
 
-namespace vtext {
+namespace vfts {
 
 class Stopwords {
 public:
@@ -26,6 +26,6 @@ private:
 // The raw list of a language code, space separated ("" if there is none).
 const char *stopword_list(std::string_view code);
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

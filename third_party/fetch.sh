@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download the pinned sources of the three libraries vtext links statically:
+# Download the pinned sources of the three libraries vfts links statically:
 #   ICU 79.1 (tokenizer, normalization), libstemmer_c 3.2.0 (Snowball), CRoaring 5.5.5 (bitmaps).
 # Every file is checked against its SHA-256 before it is used.
 #

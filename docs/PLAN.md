@@ -1,4 +1,4 @@
-# vtext plan
+# vfts plan
 
 A milestone is done when all its tests pass, it is committed, and this file and
 `docs/VERTICA_NOTES.md` are updated.
@@ -13,7 +13,7 @@ A milestone is done when all its tests pass, it is committed, and this file and
 | M6 | `tsnippet`, `hybrid` with vvector | RRF output tested on a small fixture | done 2026-11-21 |
 | M7 | Multi-node Enterprise and Eon with a secondary subcluster; per-node cache | the same results on every system | done 2026-11-21 (Enterprise: 1 node only) |
 | M8 | Benchmark, README, `blog/` article with charts | every number comes from a recorded run | done 2026-11-21 |
-| M9 | Many clients: tserve + vtext_broker, parallel batches, faster phrases and patterns, tmatch, join test | 32-client throughput and join results recorded with one native client for all engines | done 2026-11-21 |
+| M9 | Many clients: tserve + vfts_broker, parallel batches, faster phrases and patterns, tmatch, join test | 32-client throughput and join results recorded with one native client for all engines | done 2026-11-21 |
 | M10 | Access (views as the only input, row access policies, masks refused, internal functions not granted) and document order (graph bisection at merge) | every user's results equal an index of the rows they see; same hits in both orders; affected benchmarks rerun | done 2026-11-21 |
 
 ## Test systems
@@ -37,7 +37,7 @@ ICU 79.1, libstemmer_c 3.2.0 (Snowball), CRoaring 5.5.5. See `third_party/fetch.
 - [x] Snowball stemmers (list read with `sb_stemmer_list()`), Hebrew light prefix stripping
 - [x] unsupported scripts: error, or plain with `on_unsupported='plain'`
 - [x] unit tests per language group, Sherlock Holmes cases
-- [x] `vtext.tokenize()` UDx for inspection
+- [x] `vfts.tokenize()` UDx for inspection
 
 Result: tests/engine/test_analyzer.cpp and tests/sql/test_tokenize.sh pass on Enterprise 26.3
 (unfenced, g++ 15.2) and on the 5-node Eon cluster 26.3 (fenced, g++ 8.5). Arabic: Lucene's light
@@ -78,10 +78,10 @@ equal plain SQL; BM25 scores equal the formula within 1e-4), tests/sql/test_fres
 
 ### M8 benchmark and documents
 - [x] datasets downloaded and prepared (bench/data), Elasticsearch 9.5.6 and OpenSearch 3.10.0 installed natively
-- [x] loaders and runners (vtext through vsql, engines through HTTP), relevance evaluation
+- [x] loaders and runners (vfts through vsql, engines through HTTP), relevance evaluation
 - [x] speed work: MaxScore with impacts, windows, stem group postings, doc-range slices, thread pool
 - [x] build path in Vertica: PARTITION BEST, declared widths, local cache write
-- [x] MS MARCO measured on vtext, Elasticsearch, OpenSearch
+- [x] MS MARCO measured on vfts, Elasticsearch, OpenSearch
 - [x] Enron, PubMed, Wikipedia he/ar on all three (bench/run_all.sh, 2026-11-21)
 - [x] fenced run, refresh of 1% new rows, batches (`queries` / `_msearch`), resource pool test
 - [x] answers compared query by query; fixes found that way: w/N and pre/N with Lucene's span
@@ -101,7 +101,7 @@ proximity, on Enron batches, on refresh; index half to two thirds of the engines
       2,000 per second on the test machine (SELECT 1: 6,000), so one statement per query cannot reach the engines
 - [x] native load generator (tools/httpload) for all engines; the Python client had limited Elasticsearch and OpenSearch
 - [x] tsearch batches in parallel (search_many: every (query, slice) piece on the pool, cost-based slices)
-- [x] vtext.tserve (one statement per session, searches over a Unix socket, one-time token) and tools/vtext_broker
+- [x] vfts.tserve (one statement per session, searches over a Unix socket, one-time token) and tools/vfts_broker
       (HTTP, each user's own sessions, modes serve and sql); tests/sql/test_serve.sh
 - [x] engine: phrase and w/N bounds before positions are read, merged-impact window bounds for phrases, bit sets for
       large constant-score patterns, stem groups through their own list; every hit and score unchanged (A/B against
@@ -118,17 +118,25 @@ by an attribute 6 to 15 times slower.
 ### M10 access and document order
 - [x] found: every function was granted to PUBLIC and tsearch trusted its input, so any user could search any index
       (input made with a generation number) and call the functions that write node caches
-- [x] per-index key (vtext.index_keys, no grant), generation file version 2 with the access mode and keys, access
+- [x] per-index key (vfts.index_keys, no grant), generation file version 2 with the access mode and keys, access
       token in the views' sentinel, checked by every search function (src/udx/view_input.h); REVOKE + GRANT of the
-      search functions only; vtext.check_access (new key, policies read again); upgrade of existing indexes at install
+      search functions only; vfts.check_access (new key, policies read again); upgrade of existing indexes at install
 - [x] row access policies: the views return the indexed documents the caller cannot see (packed, 2,500 per row) and a
       digest bound to the user and the generation; scores equal an index of the visible rows (tests/sql/test_access.sh)
 - [x] column masks on indexed columns: searches refused
-- [x] session parameters for any user (vtext_<name> in the public namespace)
+- [x] session parameters for any user (vfts_<name> in the public namespace)
 - [x] recursive graph bisection at merge (src/engine/reorder.cpp), segment format 5 (doc_order section), format 4
       byte for byte when not reordered; index option reorder
 - [x] engine A/B on all five collections (bench/plan_c/reorder_ab.sh): identical hits; faster on Enron and PubMed,
       slower on MS MARCO and Arabic Wikipedia phrases; the benchmark reorders Enron and PubMed only
-- [x] reruns: vtext builds of Enron, PubMed, Hebrew Wikipedia; vtext rounds of the 32-client and 1-client comparison
+- [x] reruns: vfts builds of Enron, PubMed, Hebrew Wikipedia; vfts rounds of the 32-client and 1-client comparison
       (stage1.sh f1v); access cost (bench/plan_c/access_cost.sh)
 
+
+### M11 the name vfts
+- [x] vtext renamed to vfts (repository vfts; schema, library, tools, session parameters, test schemas, file magic
+      bytes VFTSSEG1 and VFTSGEN1, cache files .vfs and .vfg), version 0.3.0; nothing else changed
+      (the benchmark files differ only in the name)
+- [x] functionality tests with the new names on Ubuntu (unfenced) and Eon (fenced): engine tests, the SQL suites,
+      install.sh, uninstall, examples.sh: all passed (169 SQL checks on each); the README examples equal a new
+      run apart from the version; bench/report.py on the renamed files gives the same tables

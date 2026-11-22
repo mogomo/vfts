@@ -1,8 +1,8 @@
-// vtext.tsearch(* USING PARAMETERS index, query, k, ...) OVER() FROM <schema>.<index>_live
-// vtext.tcount (* USING PARAMETERS index, query, ...)    OVER() FROM <schema>.<index>_live
-// vtext.tmatch (* USING PARAMETERS index, query, ...)    OVER() FROM <schema>.<index>_live
+// vfts.tsearch(* USING PARAMETERS index, query, k, ...) OVER() FROM <schema>.<index>_live
+// vfts.tcount (* USING PARAMETERS index, query, ...)    OVER() FROM <schema>.<index>_live
+// vfts.tmatch (* USING PARAMETERS index, query, ...)    OVER() FROM <schema>.<index>_live
 //
-// Input: the columns of the views made by vtext.create_index (qid, query, doc_id, body, lang, op,
+// Input: the columns of the views made by vfts.create_index (qid, query, doc_id, body, lang, op,
 // gen), read by view_input.h, which also checks the view's access token. Query rows (qid, query)
 // may be added to the view's rows; the parameter query adds qid 0.
 // Output: tsearch (qid, doc_id, score, rank), best first; tcount (qid, count); tmatch (qid, doc_id),
@@ -15,7 +15,7 @@
 #include <thread>
 
 using namespace Vertica;
-using namespace vtext_udx;
+using namespace vfts_udx;
 
 namespace {
 
@@ -69,8 +69,8 @@ private:
         const auto t1 = clk::now();
         auto li = v.open(resolve_cache_dir(s), index, srv.getUserName());
         const auto t2 = clk::now();
-        std::unique_ptr<vtext::Searcher> sp = v.searcher(*li);
-        vtext::Searcher &searcher = *sp;
+        std::unique_ptr<vfts::Searcher> sp = v.searcher(*li);
+        vfts::Searcher &searcher = *sp;
         searcher.ready();
         const auto t3 = clk::now();
         struct Timing {
@@ -79,12 +79,12 @@ private:
             {
                 if (!on) return;
                 auto ms = [](clk::time_point a, clk::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
-                srv.log("vtext timing: parameters %.3f ms, read %.3f ms, open+token %.3f ms, searcher %.3f ms, search %.3f ms (%zu hidden)",
+                srv.log("vfts timing: parameters %.3f ms, read %.3f ms, open+token %.3f ms, searcher %.3f ms, search %.3f ms (%zu hidden)",
                         ms(te, t0), ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, clk::now()), hidden);
             }
         } timing{srv, s.text("debug_timing", "") == "1", te, t0, t1, t2, t3, v.hidden.size()};
 
-        vtext::SearchOptions o = parse_search_options(s);
+        vfts::SearchOptions o = parse_search_options(s);
 
         if (matching_) {
             // every match, no scores: (qid, doc_id)
@@ -115,10 +115,10 @@ private:
                     out.next();
                 }
             } else {
-                const std::vector<std::vector<vtext::Hit>> hits = searcher.search_many(texts, o);
+                const std::vector<std::vector<vfts::Hit>> hits = searcher.search_many(texts, o);
                 for (std::size_t i = at; i < end; ++i) {
                     vint rank = 0;
-                    for (const vtext::Hit &h : hits[i - at]) {
+                    for (const vfts::Hit &h : hits[i - at]) {
                         out.setInt(0, queries[i].first);
                         out.setInt(1, h.doc_id);
                         out.setFloat(2, h.score);

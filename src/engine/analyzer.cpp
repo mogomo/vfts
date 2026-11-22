@@ -11,7 +11,7 @@
 
 #include <mutex>
 
-namespace vtext {
+namespace vfts {
 
 namespace {
 
@@ -352,4 +352,4 @@ std::vector<std::string> analyze_terms(std::string_view text, Lang lang, const A
 
 std::string icu_version() { return U_ICU_VERSION; }
 
-} // namespace vtext
+} // namespace vfts

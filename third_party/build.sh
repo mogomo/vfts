@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build the static, position-independent libraries vtext links into libvtext.so.
+# Build the static, position-independent libraries vfts links into libvfts.so.
 # Run third_party/fetch.sh first. Output: third_party/install/{include,lib}.
 #
 #   third_party/build.sh [jobs]      (default: all cores)
 #
 # Static linking means nothing has to be installed on the Vertica nodes. The library is linked with
 # -Wl,--exclude-libs,ALL (see Makefile), so these copies of ICU and Snowball stay private to
-# libvtext.so and never clash with the ICU inside the Vertica server process.
+# libvfts.so and never clash with the ICU inside the Vertica server process.
 set -euo pipefail
 cd "$(dirname "$0")"
 JOBS=${1:-$(nproc)}

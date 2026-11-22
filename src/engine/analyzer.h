@@ -11,8 +11,8 @@
 //
 // An Analyzer is not thread safe: use one per thread. Creating one is cheap (a clone of a
 // prototype break iterator).
-#ifndef VTEXT_ENGINE_ANALYZER_H
-#define VTEXT_ENGINE_ANALYZER_H
+#ifndef VFTS_ENGINE_ANALYZER_H
+#define VFTS_ENGINE_ANALYZER_H
 
 #include "language.h"
 
@@ -23,7 +23,7 @@
 #include <string_view>
 #include <vector>
 
-namespace vtext {
+namespace vfts {
 
 enum class AccentFold : std::uint8_t {
     None,       // keep every accent
@@ -89,6 +89,6 @@ std::vector<std::string> analyze_terms(std::string_view text, Lang lang = LANG_N
 // The ICU version linked in, e.g. "79.1".
 std::string icu_version();
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

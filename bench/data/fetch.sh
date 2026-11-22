@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download the raw benchmark datasets into $VTEXT_DATA (default ~/vtext_data). Nothing from the
+# Download the raw benchmark datasets into $VFTS_DATA (default ~/vfts_data). Nothing from the
 # datasets is stored in this repository. Check each license before you use the data:
 #
 #   msmarco   MS MARCO passage ranking: 8.8M passages, dev queries and judgements.
@@ -16,7 +16,7 @@
 # Downloads resume where they stopped (curl -C -) and are capped in time, so a stalled
 # connection never hangs the script.
 set -euo pipefail
-DATA=${VTEXT_DATA:-$HOME/vtext_data}
+DATA=${VFTS_DATA:-$HOME/vfts_data}
 mkdir -p "$DATA/raw"
 cd "$DATA/raw"
 SETS=${*:-msmarco enron pubmed wiki}

@@ -1,18 +1,18 @@
-// vtext.tokenize(text [, lang] USING PARAMETERS lang, accent_fold, on_unsupported)
+// vfts.tokenize(text [, lang] USING PARAMETERS lang, accent_fold, on_unsupported)
 // Shows what the analyzer makes of a text: one row per word with its position, the indexed term,
 // its stem, the stemmer language and the byte offsets in the text. An exploder: call it without
-// OVER(), beside other columns (SELECT doc_id, vtext.tokenize(body) FROM t).
+// OVER(), beside other columns (SELECT doc_id, vfts.tokenize(body) FROM t).
 #include "udx_common.h"
 #include "../engine/stemmer.h"
 
 using namespace Vertica;
-using namespace vtext_udx;
+using namespace vfts_udx;
 
 namespace {
 
 class Tokenize : public TransformFunction {
-    std::unique_ptr<vtext::Analyzer> analyzer_;
-    std::unique_ptr<vtext::Stemmer> stemmer_;
+    std::unique_ptr<vfts::Analyzer> analyzer_;
+    std::unique_ptr<vfts::Stemmer> stemmer_;
     bool lang_column_ = false;
 
 public:
@@ -20,8 +20,8 @@ public:
     {
         try {
             Settings s(srv);
-            analyzer_.reset(new vtext::Analyzer(analyzer_options(s)));
-            stemmer_.reset(new vtext::Stemmer());
+            analyzer_.reset(new vfts::Analyzer(analyzer_options(s)));
+            stemmer_.reset(new vfts::Stemmer());
             lang_column_ = argTypes.getColumnCount() == 2;
         } catch (const std::exception &e) {
             vt_report_error(0, "tokenize: %s", e.what());
@@ -34,17 +34,17 @@ public:
             do {
                 if (in.isNull(0)) continue;
                 const VString &text = in.getStringRef(0);
-                vtext::Lang lang = vtext::LANG_NONE;
-                if (lang_column_ && !in.isNull(1)) lang = vtext::parse_lang(in.getStringRef(1).str());
+                vfts::Lang lang = vfts::LANG_NONE;
+                if (lang_column_ && !in.isNull(1)) lang = vfts::parse_lang(in.getStringRef(1).str());
                 analyzer_->analyze(std::string_view(text.data(), text.length()), lang);
                 for (std::size_t i = 0; i < analyzer_->size(); ++i) {
-                    const vtext::Token &t = analyzer_->token(i);
+                    const vfts::Token &t = analyzer_->token(i);
                     const std::string_view term = analyzer_->term(i);
                     const std::string_view st = stemmer_->stem(term, t.lang);
                     out.setInt(0, t.pos);
                     out.getStringRef(1).copy(term.data(), term.size());
                     out.getStringRef(2).copy(st.data(), st.size());
-                    const char *code = vtext::lang_info(t.lang).code;
+                    const char *code = vfts::lang_info(t.lang).code;
                     out.getStringRef(3).copy(code);
                     out.setInt(4, t.start);
                     out.setInt(5, t.end);

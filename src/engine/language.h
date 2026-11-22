@@ -4,14 +4,14 @@
 // script. The stemmer of a word is chosen from the language of its document when the word is
 // written in that language's script, and from the script otherwise (an English word inside a
 // Hebrew document is stemmed as English). See docs/design.md, "Languages".
-#ifndef VTEXT_ENGINE_LANGUAGE_H
-#define VTEXT_ENGINE_LANGUAGE_H
+#ifndef VFTS_ENGINE_LANGUAGE_H
+#define VFTS_ENGINE_LANGUAGE_H
 
 #include <cstdint>
 #include <string>
 #include <string_view>
 
-namespace vtext {
+namespace vfts {
 
 // Scripts the analyzer distinguishes. Unsupported scripts are written without spaces between
 // words (or, for Hangul, need a morphological analyser): see README "Languages".
@@ -53,6 +53,6 @@ Lang stem_lang_for(Script s, Lang doc, Lang latin_default);
 
 const char *script_name(Script s);
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

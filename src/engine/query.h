@@ -15,8 +15,8 @@
 //
 // The tree maps one to one onto Lucene's BooleanQuery (must / should / must_not), which is how
 // the benchmark builds the equivalent OpenSearch / Elasticsearch query.
-#ifndef VTEXT_ENGINE_QUERY_H
-#define VTEXT_ENGINE_QUERY_H
+#ifndef VFTS_ENGINE_QUERY_H
+#define VFTS_ENGINE_QUERY_H
 
 #include "analyzer.h"
 #include "stopwords.h"
@@ -26,7 +26,7 @@
 #include <string_view>
 #include <vector>
 
-namespace vtext {
+namespace vfts {
 
 enum class QKind : std::uint8_t { None, Term, Phrase, Prefix, Wildcard, Fuzzy, Bool, Near };
 
@@ -65,6 +65,6 @@ bool positional(const QNode &n);
 // Number of leaves (terms, phrases, patterns) in the tree.
 std::size_t count_leaves(const QNode &n);
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

@@ -4,7 +4,7 @@
     python3 -I bench/run_engines.py <es|os> <index> <queries.tsv> [options]
 
     --plain            queries are plain text: a match query (every word a should clause), the
-                       equivalent of vtext syntax='plain'
+                       equivalent of vfts syntax='plain'
     --mode stem|exact  field body (stemmed) or body.exact; default stem
     --k N              hits per query (default 10)
     --count            count matches (_count) instead of returning hits
@@ -16,8 +16,8 @@
     --batch B          B queries per request (_msearch); times per query are the request's time
                        divided by B (the counterpart of run_vertica.py --batch)
     --dump FILE        write the requests ("path<TAB>body" lines, for tools/httpload) and stop
-    --cli PATH         vtext_cli (default build/tools/vtext_cli): parses the query syntax, so that
-                       the engines get exactly the query vtext runs (see translate())
+    --cli PATH         vfts_cli (default build/tools/vfts_cli): parses the query syntax, so that
+                       the engines get exactly the query vfts runs (see translate())
 
 Prints one JSON line: server time ("took", ms) and client time (ms) percentiles, queries per
 second, errors. Python standard library only.
@@ -59,7 +59,7 @@ class Conn:
 
 
 class Translator:
-    """vtext's parsed query tree -> Elasticsearch / OpenSearch query DSL."""
+    """vfts's parsed query tree -> Elasticsearch / OpenSearch query DSL."""
 
     def __init__(self, conn, index, mode):
         self.conn, self.index = conn, index
@@ -151,7 +151,7 @@ def main():
     run_path = arg("--run")
     times_path = arg("--times")
     batch = int(arg("--batch", 1))
-    cli = arg("--cli", "build/tools/vtext_cli")
+    cli = arg("--cli", "build/tools/vfts_cli")
     port = PORTS[engine]
     queries = []
     with open(qpath, encoding="utf-8") as f:

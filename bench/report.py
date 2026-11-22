@@ -17,18 +17,18 @@ RES = os.path.join(HERE, "results")
 RAW = os.path.join(HERE, "out")            # written by bench/run_all.sh (not in git)
 OUT = os.path.join(HERE, "results", "runs")  # the hits and times of every query run, kept with the results
 CHARTS = os.path.join(RES, "charts")
-ENGINES = [("vtext", "vtext (Vertica)"), ("es", "Elasticsearch"), ("os", "OpenSearch")]
-# query results: vtext with the live view (every committed row) and the snap view (the rows up to the
+ENGINES = [("vfts", "vfts (Vertica)"), ("es", "Elasticsearch"), ("os", "OpenSearch")]
+# query results: vfts with the live view (every committed row) and the snap view (the rows up to the
 # last refresh: the guarantee of Elasticsearch and OpenSearch)
-Q_ENGINES = [("vtext", "vtext live"), ("vtext_snap", "vtext snap"), ("es", "Elasticsearch"), ("os", "OpenSearch")]
+Q_ENGINES = [("vfts", "vfts live"), ("vfts_snap", "vfts snap"), ("es", "Elasticsearch"), ("os", "OpenSearch")]
 # categorical slots 1-3 of the validated reference palette (light, dark): fixed per engine
-COLORS = {"vtext": ("#2a78d6", "#3987e5"), "es": ("#eb6834", "#d95926"), "os": ("#1baf7a", "#199e70"),
-          # vtext sent as batches / one statement per query (throughput.json): palette slots 4 and 7
-          "vtext_b": ("#eda100", "#c98500"), "vtext_s": ("#6250d6", "#9085e9")}
+COLORS = {"vfts": ("#2a78d6", "#3987e5"), "es": ("#eb6834", "#d95926"), "os": ("#1baf7a", "#199e70"),
+          # vfts sent as batches / one statement per query (throughput.json): palette slots 4 and 7
+          "vfts_b": ("#eda100", "#c98500"), "vfts_s": ("#6250d6", "#9085e9")}
 # the native-client comparison (bench/run_all.sh throughput -> throughput.json)
-T_ENGINES = [("vtext", "vtext, tserve"), ("vtext_b", "vtext, batches"), ("vtext_s", "vtext, 1 statement per query"),
+T_ENGINES = [("vfts", "vfts, tserve"), ("vfts_b", "vfts, batches"), ("vfts_s", "vfts, 1 statement per query"),
              ("es", "Elasticsearch"), ("os", "OpenSearch")]
-T_KEYS = {"vtext": "vtext_serve", "vtext_b": "vtext_batch", "vtext_s": "vtext_single", "es": "es_native", "os": "os_native"}
+T_KEYS = {"vfts": "vfts_serve", "vfts_b": "vfts_batch", "vfts_s": "vfts_single", "es": "es_native", "os": "os_native"}
 SETS = [("msmarco", "MS MARCO"), ("enron", "Enron"), ("pubmed", "PubMed"), ("wiki_he", "Wikipedia he"), ("wiki_ar", "Wikipedia ar")]
 
 
@@ -62,7 +62,7 @@ def mb(b):
 
 def svg_bars(path, title, unit, groups, better, series=None):
     """Horizontal grouped bars: groups = [(label, {engine: value})]. Values labelled at the bar tips.
-    vtext snap is the hatched blue of vtext (the same product, the other view)."""
+    vfts snap is the hatched blue of vfts (the same product, the other view)."""
     series = series or ENGINES
     bar, gap, ggap, left, right, top = 14, 3, 18, 120, 90, 80
     engines = [e for e, _ in series if any(v.get(e) is not None for _, v in groups)]
@@ -74,14 +74,14 @@ def svg_bars(path, title, unit, groups, better, series=None):
          "<style>",
          ".bg{fill:#fcfcfb}.t1{fill:#0b0b0b}.t2{fill:#52514e}.ax{stroke:#d9d8d4}",
          "".join(f".{e}{{fill:{c[0]}}}" for e, c in COLORS.items()),
-         f".vtext_snap{{fill:url(#hatch);stroke:{COLORS['vtext'][0]};stroke-width:1}}",
+         f".vfts_snap{{fill:url(#hatch);stroke:{COLORS['vfts'][0]};stroke-width:1}}",
          "@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.ax{stroke:#3a3a38}"
          + "".join(f".{e}{{fill:{c[1]}}}" for e, c in COLORS.items())
-         + f".vtext_snap{{fill:url(#hatch);stroke:{COLORS['vtext'][1]}}}" + "}",
+         + f".vfts_snap{{fill:url(#hatch);stroke:{COLORS['vfts'][1]}}}" + "}",
          "text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}",
          "</style>",
          '<defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">'
-         '<rect class="bg" width="6" height="6"/><rect class="vtext" width="3" height="6"/></pattern></defs>',
+         '<rect class="bg" width="6" height="6"/><rect class="vfts" width="3" height="6"/></pattern></defs>',
          f'<rect class="bg" width="{width}" height="{height}" rx="6"/>',
          f'<text class="t1" x="16" y="24" font-size="15" font-weight="600">{title}</text>',
          f'<text class="t2" x="16" y="42" font-size="12">{unit}, {better}</text>']
@@ -115,15 +115,15 @@ def svg_glance(path, f):
     """One-page summary card: hero numbers (each from a recorded result) and the throughput ratio
     per collection. f: dict of facts; tiles whose fact is missing are left out."""
     W, H = 960, 490
-    blue, orange, aqua = COLORS["vtext"], COLORS["es"], COLORS["os"]
-    s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="vtext at a glance">',
+    blue, orange, aqua = COLORS["vfts"], COLORS["es"], COLORS["os"]
+    s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="vfts at a glance">',
          "<style>.bg{fill:#fcfcfb}.tile{fill:#f2f1ee}.t1{fill:#0b0b0b}.t2{fill:#52514e}.ax{stroke:#bdbcb7}"
          f".v{{fill:{blue[0]}}}.e{{fill:{orange[0]}}}"
          "@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.tile{fill:#262624}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.ax{stroke:#55544f}"
          f".v{{fill:{blue[1]}}}.e{{fill:{orange[1]}}}}}"
          "text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}</style>",
          f'<rect class="bg" width="{W}" height="{H}" rx="8"/>',
-         '<text class="t1" x="24" y="38" font-size="20" font-weight="700">vtext: full-text search inside Vertica, against Elasticsearch and OpenSearch</text>',
+         '<text class="t1" x="24" y="38" font-size="20" font-weight="700">vfts: full-text search inside Vertica, against Elasticsearch and OpenSearch</text>',
          '<text class="t2" x="24" y="60" font-size="13">One machine, the same documents, analyzers and queries; every number is a recorded run (bench/results/).</text>']
     tiles = []
     if f.get("tp_min"):
@@ -151,7 +151,7 @@ def svg_glance(path, f):
         top, left, bw, bh, gap = 236, 170, W - 170 - 110, 22, 10
         vmax = max(2.0, max(r for _, r in ratios))
         sc = bw / vmax
-        s.append('<text class="t1" x="24" y="222" font-size="14" font-weight="600">Throughput, 32 clients, one query per request: vtext tserve / the faster of Elasticsearch and OpenSearch</text>')
+        s.append('<text class="t1" x="24" y="222" font-size="14" font-weight="600">Throughput, 32 clients, one query per request: vfts tserve / the faster of Elasticsearch and OpenSearch</text>')
         for i, (name, r) in enumerate(ratios):
             y = top + i * (bh + gap)
             w = r * sc
@@ -170,7 +170,7 @@ def svg_glance(path, f):
 
 
 def relevance():
-    qrels = os.path.join(os.environ.get("VTEXT_DATA", os.path.expanduser("~/vtext_data")), "msmarco", "qrels.dev.small.tsv")
+    qrels = os.path.join(os.environ.get("VFTS_DATA", os.path.expanduser("~/vfts_data")), "msmarco", "qrels.dev.small.tsv")
     runs = [os.path.join(OUT, f"{e}_msmarco.run") for e, _ in ENGINES]
     runs = [r for r in runs if os.path.exists(r)]
     if not os.path.exists(qrels) or not runs:
@@ -185,7 +185,7 @@ def relevance():
 
 
 def count_agreement(ds, other):
-    a = os.path.join(OUT, f"vtext_{ds}_count.run")
+    a = os.path.join(OUT, f"vfts_{ds}_count.run")
     b = os.path.join(OUT, f"{other}_{ds}_count.run")
     if not (os.path.exists(a) and os.path.exists(b)):
         return None
@@ -208,12 +208,12 @@ def read_run(path):
 
 
 def top_agreement(ds, other):
-    """The top 10 of vtext against an engine. Elasticsearch is compared with the vtext run with
+    """The top 10 of vfts against an engine. Elasticsearch is compared with the vfts run with
     bm25='classic' (its scale), OpenSearch with the default run. "Same scores": at every rank the
     score is the same (relative difference at most 1e-4). "Same documents": the documents above the
     10th score are the same (documents tied with the 10th may differ: the engines break ties
     differently). Score difference: over the documents both returned."""
-    mine = os.path.join(OUT, f"vtext_{ds}_classic.run" if other == "es" else f"vtext_{ds}.run")
+    mine = os.path.join(OUT, f"vfts_{ds}_classic.run" if other == "es" else f"vfts_{ds}.run")
     a, b = read_run(mine), read_run(os.path.join(OUT, f"{other}_{ds}.run"))
     if not a or b is None:
         return None
@@ -281,40 +281,40 @@ def main():
     env = json.load(open(os.path.join(RES, "env.json"))) if os.path.exists(os.path.join(RES, "env.json")) else {}
     load = {e: jsonl(f"{e}_load.jsonl") for e, _ in ENGINES}
     query = {e: jsonl(f"{e}_query.jsonl") for e, _ in ENGINES}
-    vt = query["vtext"]
-    query["vtext"] = [x for x in vt if x.get("view", "live") == "live"]
-    query["vtext_snap"] = [x for x in vt if x.get("view") == "snap"]
+    vf = query["vfts"]
+    query["vfts"] = [x for x in vf if x.get("view", "live") == "live"]
+    query["vfts_snap"] = [x for x in vf if x.get("view") == "snap"]
     md = ["# Benchmark results", "", "Generated by `bench/report.py` from `bench/results/*.jsonl`. Every number is a recorded run.", ""]
     if env:
         md += ["## Machine", "", "| | |", "|---|---|"] + [f"| {k} | {v} |" for k, v in env.items()] + [""]
 
     # loading
     md += ["## Index build", "",
-           "vtext: `CALL vtext.create_index` (analysis, index tables, node cache) + `CALL vtext.merge(name, 1)` (one segment); "
-           "the COPY into the source table is listed apart. Elasticsearch / OpenSearch: bulk load + refresh + force merge to one segment. Sizes: vtext node cache file and index tables; "
+           "vfts: `CALL vfts.create_index` (analysis, index tables, node cache) + `CALL vfts.merge(name, 1)` (one segment); "
+           "the COPY into the source table is listed apart. Elasticsearch / OpenSearch: bulk load + refresh + force merge to one segment. Sizes: vfts node cache file and index tables; "
            "the engines' store (includes their copy of the text, `_source`).", "",
-           "| Dataset | Documents | vtext index (s) | Vertica COPY (s) | Elasticsearch (s) | OpenSearch (s) | vtext cache (MB) | vtext tables (MB) | Elasticsearch (MB) | OpenSearch (MB) |",
+           "| Dataset | Documents | vfts index (s) | Vertica COPY (s) | Elasticsearch (s) | OpenSearch (s) | vfts cache (MB) | vfts tables (MB) | Elasticsearch (MB) | OpenSearch (MB) |",
            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     build_g, size_g = [], []
     for ds, name in SETS:
-        v, e, o = last(load["vtext"], dataset=ds), last(load["es"], dataset=ds), last(load["os"], dataset=ds)
+        v, e, o = last(load["vfts"], dataset=ds), last(load["es"], dataset=ds), last(load["os"], dataset=ds)
         if not (v or e or o):
             continue
         docs = (v or e or o).get("docs")
         md.append(f"| {name} | {fmt(docs)} | {fmt(v and v.get('index_s'))} | {fmt(v and v.get('copy_s'))} | {fmt(e and e.get('index_s'))} | "
                   f"{fmt(o and o.get('index_s'))} | {fmt(mb(v and v.get('cache_bytes')))} | {fmt(mb(v and v.get('index_table_bytes')))} | "
                   f"{fmt(mb(e and e.get('bytes')))} | {fmt(mb(o and o.get('bytes')))} |")
-        build_g.append((name, {"vtext": v and v.get("index_s"), "es": e and e.get("index_s"), "os": o and o.get("index_s")}))
-        size_g.append((name, {"vtext": mb(v and v.get("cache_bytes")), "es": mb(e and e.get("bytes")), "os": mb(o and o.get("bytes"))}))
+        build_g.append((name, {"vfts": v and v.get("index_s"), "es": e and e.get("index_s"), "os": o and o.get("index_s")}))
+        size_g.append((name, {"vfts": mb(v and v.get("cache_bytes")), "es": mb(e and e.get("bytes")), "os": mb(o and o.get("bytes"))}))
     md.append("")
     if build_g:
         svg_bars(os.path.join(CHARTS, "build.svg"), "Index build time", "seconds", build_g, "lower is better")
         svg_bars(os.path.join(CHARTS, "size.svg"), "Index size",
-                 "MB; vtext: node cache (the text stays in its table); engines: store with their text copy",
+                 "MB; vfts: node cache (the text stays in its table); engines: store with their text copy",
                  size_g, "lower is better")
 
     # queries
-    for clients, title in ((1, "Latency, 1 client (vtext through vsql, one statement per query)"),
+    for clients, title in ((1, "Latency, 1 client (vfts through vsql, one statement per query)"),
                            (32, "Throughput, 32 clients (first run: vsql per client, engines through one Python process)")):
         md += [f"## {title}", ""]
         if clients == 32:
@@ -348,7 +348,7 @@ def main():
         if clients == 32 and qps_g:
             svg_bars(os.path.join(CHARTS, "throughput.svg"), "Throughput, 32 clients", "queries per second", qps_g, "higher is better", Q_ENGINES)
 
-    # batches: many queries per statement (vtext: the parameter queries; the engines: _msearch)
+    # batches: many queries per statement (vfts: the parameter queries; the engines: _msearch)
     rows = []
     for ds, name in SETS:
         for e, ename in Q_ENGINES:
@@ -359,7 +359,7 @@ def main():
                 rows.append(f"| {name} | {ename} | {b['batch']} | {fmt(d and d['qps_best'])} | {fmt(b['qps_best'])} |")
     if rows:
         md += ["## Batches (32 clients)", "",
-               "Many queries in one request: vtext's parameter `queries` (one statement), the engines' `_msearch`. "
+               "Many queries in one request: vfts's parameter `queries` (one statement), the engines' `_msearch`. "
                "Queries per second over the same query sets.", "",
                "| Dataset | Engine | Queries per request | Queries/s, one per request | Queries/s, batches |", "|---|---|---:|---:|---:|"] + rows + [""]
 
@@ -373,16 +373,16 @@ def main():
             if r:
                 rows.append(f"| {name} | {ename} | {fmt(d and d['qps_best'])} | {fmt(r['qps_best'])} | {fmt(r['client_ms']['mean'], 2)} |")
     if rows:
-        md += ["## Throughput with a resource pool for search (vtext, 32 clients)", "",
-               "`bench/pool_test.sh`: `CREATE RESOURCE POOL vtext_search ... EXECUTIONPARALLELISM 1 PLANNEDCONCURRENCY 64` and "
-               "`SET SESSION RESOURCE_POOL = vtext_search` in every session.", "",
+        md += ["## Throughput with a resource pool for search (vfts, 32 clients)", "",
+               "`bench/pool_test.sh`: `CREATE RESOURCE POOL vfts_search ... EXECUTIONPARALLELISM 1 PLANNEDCONCURRENCY 64` and "
+               "`SET SESSION RESOURCE_POOL = vfts_search` in every session.", "",
                "| Dataset | View | Queries/s, general pool | Queries/s, search pool | Client mean (ms), search pool |", "|---|---|---:|---:|---:|"] + rows + [""]
 
     # fenced
-    f = last([x for x in query["vtext"] if x.get("fenced")], index="msmarco")
-    u = last([x for x in query["vtext"] if not x.get("fenced") and x.get("clients") == 1 and not x.get("count")], index="msmarco")
+    f = last([x for x in query["vfts"] if x.get("fenced")], index="msmarco")
+    u = last([x for x in query["vfts"] if not x.get("fenced") and x.get("clients") == 1 and not x.get("count")], index="msmarco")
     if f and u:
-        md += ["## Fenced and unfenced (vtext, MS MARCO, 1 client)", "", "| Mode | Server mean (ms) | Client mean (ms) |", "|---|---:|---:|",
+        md += ["## Fenced and unfenced (vfts, MS MARCO, 1 client)", "", "| Mode | Server mean (ms) | Client mean (ms) |", "|---|---:|---:|",
                f"| unfenced | {fmt(u['server_ms']['mean'], 2)} | {fmt(u['client_ms']['mean'], 2)} |",
                f"| fenced | {fmt(f['server_ms']['mean'], 2)} | {fmt(f['client_ms']['mean'], 2)} |", ""]
 
@@ -403,7 +403,7 @@ def main():
             if a:
                 rows.append(f"| {name} | {oname} | {a[0]} of {a[1]} |")
     if rows:
-        md += ["## Same matches (counts per query, syntax queries)", "", "| Dataset | Engine | Queries with the same count as vtext |", "|---|---|---:|"] + rows + [""]
+        md += ["## Same matches (counts per query, syntax queries)", "", "| Dataset | Engine | Queries with the same count as vfts |", "|---|---|---:|"] + rows + [""]
 
 
     # agreement of the top 10
@@ -417,7 +417,7 @@ def main():
                 rows.append(f"| {name} | {oname} | {a['queries']} | {a['same_scores']} | {a['same_docs']} | {med} | {mx} |")
     if rows:
         md += ["## Same answers (top 10)", "",
-               "Elasticsearch against vtext with `bm25='classic'` (the scale of Elasticsearch), OpenSearch against vtext's default. "
+               "Elasticsearch against vfts with `bm25='classic'` (the scale of Elasticsearch), OpenSearch against vfts's default. "
                "Same scores: the score at every rank is the same (relative difference at most 1e-4). Same documents: the documents "
                "scored above the 10th are the same (documents tied with the 10th may differ: each engine breaks ties its own way). "
                "Score difference: relative, over the documents both engines returned.", "",
@@ -426,17 +426,17 @@ def main():
 
     # latency per kind of query (syntax sets, 1 client, client round trip)
     kinds = {}
-    pairs = [(v, e) for v in ("vtext", "vtext_snap") for e in ("es", "os")]
+    pairs = [(v, e) for v in ("vfts", "vfts_snap") for e in ("es", "os")]
     wins = {pq: [0, 0] for pq in pairs}
     slow = []
     for ds, name in SETS[1:]:
         qpath = os.path.join(HERE, "queries", f"{ds}.tsv")
-        t = {e: read_times(os.path.join(OUT, f"vtext_{ds}_snap.times" if e == "vtext_snap" else f"{e}_{ds}.times")) for e, _ in Q_ENGINES}
-        if not os.path.exists(qpath) or not t["vtext"]:
+        t = {e: read_times(os.path.join(OUT, f"vfts_{ds}_snap.times" if e == "vfts_snap" else f"{e}_{ds}.times")) for e, _ in Q_ENGINES}
+        if not os.path.exists(qpath) or not t["vfts"]:
             continue
         for l in open(qpath, encoding="utf-8"):
             qid, _, text = l.rstrip("\n").partition("\t")
-            if qid not in t["vtext"]:
+            if qid not in t["vfts"]:
                 continue
             k = kind_of(text)
             for e, _ in Q_ENGINES:
@@ -446,7 +446,7 @@ def main():
                 if t[v] and t[e] and qid in t[v] and qid in t[e]:
                     wins[(v, e)][0] += t[v][qid] < t[e][qid]
                     wins[(v, e)][1] += 1
-                    if v == "vtext_snap" and t[e][qid] < t[v][qid]:
+                    if v == "vfts_snap" and t[e][qid] < t[v][qid]:
                         slow.append((t[v][qid] - t[e][qid], name, text, e, t[v][qid], t[e][qid]))
     if kinds:
         md += ["## Latency by kind of query (Enron, PubMed, Wikipedia; 1 client, client round trip, mean ms)", "",
@@ -454,27 +454,27 @@ def main():
         for k in ("words", "boolean", "phrase", "w/N, pre/N", "prefix / wildcard", "fuzzy"):
             if k in kinds:
                 v = kinds[k]
-                md.append(f"| {k} | {len(v.get('vtext', []))} | " + " | ".join(
+                md.append(f"| {k} | {len(v.get('vfts', []))} | " + " | ".join(
                     fmt(sum(v[e]) / len(v[e]), 2) if v.get(e) else "-" for e, _ in Q_ENGINES) + " |")
         md.append("")
         names = dict(Q_ENGINES)
-        md += ["Queries where vtext is faster: " + "; ".join(f"{names[v]} {wins[(v, e)][0]} of {wins[(v, e)][1]} against {names[e]}"
+        md += ["Queries where vfts is faster: " + "; ".join(f"{names[v]} {wins[(v, e)][0]} of {wins[(v, e)][1]} against {names[e]}"
                                                          for v, e in pairs if wins[(v, e)][1]) + ".", ""]
         slow.sort(reverse=True)
         if slow:
-            md += ["Queries where an engine is faster than vtext snap, the largest differences first:", "",
-                   "| Dataset | Query | Engine | vtext snap (ms) | Engine (ms) |", "|---|---|---|---:|---:|"]
+            md += ["Queries where an engine is faster than vfts snap, the largest differences first:", "",
+                   "| Dataset | Query | Engine | vfts snap (ms) | Engine (ms) |", "|---|---|---|---:|---:|"]
             for d, name, text, e, a, b in slow[:15]:
                 md.append(f"| {name} | `{text}` | {dict(ENGINES)[e]} | {fmt(a, 2)} | {fmt(b, 2)} |")
             md.append("")
 
     # refresh
-    ref = jsonl("vtext_refresh.jsonl")
+    ref = jsonl("vfts_refresh.jsonl")
     if ref:
         md += ["## New rows (1% of MS MARCO)", "", "| Engine | Rows added | Searchable without refresh | Refresh (s) | Query with the rows in the live tail (ms) |", "|---|---:|---|---:|---:|"]
         for r in ref:
-            if r["engine"] == "vtext":
-                md.append(f"| vtext | {fmt(r['added'])} | yes (live tail) | {fmt(r['refresh_s'])} | {fmt(r['query_with_tail_ms'])} |")
+            if r["engine"] == "vfts":
+                md.append(f"| vfts | {fmt(r['added'])} | yes (live tail) | {fmt(r['refresh_s'])} | {fmt(r['query_with_tail_ms'])} |")
             else:
                 md.append(f"| {dict(ENGINES)[r['engine']]} | {fmt(r['added'])} | after refresh | {fmt(r['refresh_s'])} | - |")
         md.append("")
@@ -485,7 +485,7 @@ def main():
         t = json.load(open(tp))
         md += ["## Throughput and latency through one native client (step throughput)", "",
                "32 closed-loop clients (tools/httpload, keep-alive HTTP), one query per request; 3 rounds in alternating order, "
-               "median of the rounds' best q/s; CPU governor performance. vtext through tools/vtext_broker: tserve (one "
+               "median of the rounds' best q/s; CPU governor performance. vfts through tools/vfts_broker: tserve (one "
                "statement per session, searches over a channel), batches (8 sessions, idle-else-queue), one statement per query "
                "(32 sessions). Full table with ranges: throughput.md.", "",
                "| Dataset | " + " | ".join(n for _, n in T_ENGINES) + " |", "|---|" + "---:|" * len(T_ENGINES)]
@@ -506,32 +506,32 @@ def main():
             if vl:
                 l_g.append((name, vl))
         md += ["", "One client, mean ms per query (best of 3 runs per query, median of the rounds):", "",
-               "| Dataset | " + " | ".join(n for e, n in T_ENGINES if e != "vtext_b") + " |", "|---|" + "---:|" * (len(T_ENGINES) - 1)]
+               "| Dataset | " + " | ".join(n for e, n in T_ENGINES if e != "vfts_b") + " |", "|---|" + "---:|" * (len(T_ENGINES) - 1)]
         for ds, name in SETS:
             md.append(f"| {name} | " + " | ".join(fmt((t.get(T_KEYS[e] + "_1client", {}).get(ds) or {}).get("ms_mean"), 2)
-                                                  for e, _ in T_ENGINES if e != "vtext_b") + " |")
+                                                  for e, _ in T_ENGINES if e != "vfts_b") + " |")
         md.append("")
         if q_g:
             svg_bars(os.path.join(CHARTS, "throughput.svg"), "Throughput, 32 clients", "queries per second, one query per request", q_g,
                      "higher is better", T_ENGINES)
         if l_g:
             svg_bars(os.path.join(CHARTS, "latency_http.svg"), "Mean latency, 1 client, same HTTP client for all", "milliseconds", l_g,
-                     "lower is better", [x for x in T_ENGINES if x[0] != "vtext_b"])
+                     "lower is better", [x for x in T_ENGINES if x[0] != "vfts_b"])
 
     # search next to other data (bench/join_test.py -> join.jsonl)
     jn = {r["engine"]: r for r in jsonl("join.jsonl")}
     if jn:
         md += ["## Search next to other data (Enron, bench/join_test.py)", "",
-               "An attribute custodian (150 values) for every document; 10 custodians on hold. vtext: a table joined at query time; "
+               "An attribute custodian (150 values) for every document; 10 custodians on hold. vfts: a table joined at query time; "
                "the engines: a field in every document (_update_by_query on a clone of the index). J3 and J4: 40 queries, one "
                "client, best of 3 per query, mean.", "",
-               "| Test | " + " | ".join(dict(ENGINES)[e] for e in ("vtext", "es", "os") if e in jn) + " |",
+               "| Test | " + " | ".join(dict(ENGINES)[e] for e in ("vfts", "es", "os") if e in jn) + " |",
                "|---|" + "---:|" * len(jn)]
         for key, label, unit in (("j1_add_attribute_s", "J1 add the attribute to every document", "s"),
                                  ("j2_update_1pct_s", "J2 change it for 1% of the documents", "s"),
                                  ("j3_mean_ms", "J3 top 10 among the custodians on hold", "ms"),
                                  ("j4_mean_ms", "J4 matches per custodian", "ms")):
-            md.append(f"| {label} ({unit}) | " + " | ".join(fmt(jn[e].get(key), 3 if unit == "s" else 2) for e in ("vtext", "es", "os") if e in jn) + " |")
+            md.append(f"| {label} ({unit}) | " + " | ".join(fmt(jn[e].get(key), 3 if unit == "s" else 2) for e in ("vfts", "es", "os") if e in jn) + " |")
         md.append("")
 
     # the summary card
@@ -540,7 +540,7 @@ def main():
         t = json.load(open(tp))
         ratios = []
         for ds, name in SETS:
-            v = t.get("vtext_serve", {}).get(ds)
+            v = t.get("vfts_serve", {}).get(ds)
             e = [t.get(k, {}).get(ds) for k in ("es_native", "os_native")]
             e = [x["qps_median"] for x in e if x]
             if v and e:
@@ -551,15 +551,15 @@ def main():
     a = top_agreement("msmarco", "os")
     if a and a["queries"]:
         facts["same_pct"] = 100.0 * a["same_scores"] / a["queries"]
-        if rel and "vtext" in rel and "es" in rel:
-            facts["mrr_v"], facts["mrr_e"] = rel["vtext"]["mrr@10"], rel["es"]["mrr@10"]
+        if rel and "vfts" in rel and "es" in rel:
+            facts["mrr_v"], facts["mrr_e"] = rel["vfts"]["mrr@10"], rel["es"]["mrr@10"]
         else:
             facts.pop("same_pct")
-    sz = [g["vtext"] / min(x for x in (g.get("es"), g.get("os")) if x) for _, g in size_g if g.get("vtext") and (g.get("es") or g.get("os"))]
+    sz = [g["vfts"] / min(x for x in (g.get("es"), g.get("os")) if x) for _, g in size_g if g.get("vfts") and (g.get("es") or g.get("os"))]
     if sz:
         facts["size_lo"], facts["size_hi"] = min(sz), max(sz)
-    if "vtext" in jn and ("es" in jn or "os" in jn):
-        facts["j2_v"] = jn["vtext"]["j2_update_1pct_s"]
+    if "vfts" in jn and ("es" in jn or "os" in jn):
+        facts["j2_v"] = jn["vfts"]["j2_update_1pct_s"]
         facts["j2_e"] = min(jn[e]["j2_update_1pct_s"] for e in ("es", "os") if e in jn)
     facts["lose"] = ["Where Elasticsearch and OpenSearch win: one SQL statement per search (a third to an eighth of their throughput),",
                      "filtering or counting matches by an attribute (1-3 ms vs 17-18 ms), PubMed with one client, phrases of very frequent words."]

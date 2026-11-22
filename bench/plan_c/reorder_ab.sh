@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # Document reordering, engine only (no SQL): the one-segment index of each dataset as loaded for the
 # benchmark (documents in doc_id order) against the same segment reordered by recursive graph
-# bisection (vtext_cli merge --force). Same queries and options as the benchmark; the hits of
+# bisection (vfts_cli merge --force). Same queries and options as the benchmark; the hits of
 # both must be identical (k = 10 and k = 100); then latency at 1 client (1 thread) and q/s at 32
 # clients, the two indexes in turn, 3 rounds.
 #
 #   bench/plan_c/reorder_ab.sh [dataset ...]      default: enron pubmed msmarco wiki_he wiki_ar
 #
-# Reads the node cache of the Vertica indexes (/tmp/vtext/<dataset>), writes copies to
-# ~/vtext_bp (removed at the end unless KEEP=1). Results: bench/out/plan_c/reorder_ab.jsonl.
+# Reads the node cache of the Vertica indexes (/tmp/vfts/<dataset>), writes copies to
+# ~/vfts_bp (removed at the end unless KEEP=1). Results: bench/out/plan_c/reorder_ab.jsonl.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
-DATA=${VTEXT_DATA:-$HOME/vtext_data}
-SRC=${VTEXT_CACHE:-/tmp/vtext}
-WORK=${VTEXT_BP_DIR:-$HOME/vtext_bp}
+DATA=${VFTS_DATA:-$HOME/vfts_data}
+SRC=${VFTS_CACHE:-/tmp/vfts}
+WORK=${VFTS_BP_DIR:-$HOME/vfts_bp}
 OUT=bench/out/plan_c/reorder_ab.jsonl
-CLI=build/tools/vtext_cli
+CLI=build/tools/vfts_cli
 SETS=${*:-enron pubmed msmarco wiki_he wiki_ar}
 mkdir -p "$WORK" bench/out/plan_c
 qfile() { case $1 in msmarco) echo "$DATA/msmarco/queries.dev.small.tsv" ;; *) echo "bench/queries/$1_x25.tsv" ;; esac; }
@@ -28,7 +28,7 @@ for ds in $SETS; do
     rm -rf "$WORK/${ds}_plain" "$WORK/${ds}_bp"
     mkdir -p "$WORK/${ds}_plain"
     g=$(cat "$SRC/$ds/ACTIVE")
-    cp "$SRC/$ds/ACTIVE" "$SRC/$ds/gen_$g.vtg" "$WORK/${ds}_plain/"
+    cp "$SRC/$ds/ACTIVE" "$SRC/$ds/gen_$g.vfg" "$WORK/${ds}_plain/"
     for f in $(ls "$SRC/$ds" | grep '^seg_'); do cp "$SRC/$ds/$f" "$WORK/${ds}_plain/"; done
     # only the active generation's segments matter; the plain copy keeps doc_id order
     cp -r "$WORK/${ds}_plain" "$WORK/${ds}_bp"

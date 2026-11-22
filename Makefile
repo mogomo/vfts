@@ -1,9 +1,9 @@
-# vtext Makefile.
+# vfts Makefile.
 # Compiler flags and link line follow /opt/vertica/sdk/examples/makefile (Vertica 26.x):
 # -shared -fPIC, _GLIBCXX_USE_CXX11_ABI=1, Vertica.cpp compiled in. Difference: -std=c++17.
 #
 #   make deps                 download and build ICU, libstemmer_c and CRoaring (third_party/)
-#   make                      build build/libvtext.so
+#   make                      build build/libvfts.so
 #   make test                 engine unit tests, no Vertica needed
 #   make tools                build/tools/* (command-line helpers used by tests and the benchmark)
 #   make deploy [FENCED=yes|no]
@@ -19,7 +19,7 @@ FENCED   ?= no
 VERTICA_CXX11_ABI ?= 1
 
 BUILD_DIR := build
-LIB       := $(BUILD_DIR)/libvtext.so
+LIB       := $(BUILD_DIR)/libvfts.so
 TP        := third_party/install
 
 ENGINE_SRC := $(wildcard src/engine/*.cpp)
@@ -37,9 +37,9 @@ BUILD_FLAGS := $(OPT) -ffp-contract=off -std=c++17 $(shell uname -m) $(notdir $(
 # -ffp-contract=off: no fused multiply-add, so every node computes bit-identical BM25 scores.
 # Never -ffast-math, never -march=native: one .so must run on every node of a cluster.
 COMMON_FLAGS := -std=c++17 -g $(OPT) -ffp-contract=off -Wall -pthread -I $(TP)/include \
-                -DVTEXT_BUILD_FLAGS='"$(BUILD_FLAGS)"' -D_GLIBCXX_USE_CXX11_ABI=$(VERTICA_CXX11_ABI)
+                -DVFTS_BUILD_FLAGS='"$(BUILD_FLAGS)"' -D_GLIBCXX_USE_CXX11_ABI=$(VERTICA_CXX11_ABI)
 UDX_FLAGS    := $(COMMON_FLAGS) -DNDEBUG -fno-plt -I $(SDK_HOME)/include -Wno-unused-value -shared -fPIC
-# The static libraries stay private to libvtext.so: their symbols are not exported, so they never
+# The static libraries stay private to libvfts.so: their symbols are not exported, so they never
 # clash with the ICU of the Vertica server process.
 UDX_LINK     := -Wl,--exclude-libs,ALL -Wl,-Bsymbolic -Wl,--no-undefined -ldl
 

@@ -1,8 +1,8 @@
 // Builds a segment from documents: analyze, collect postings per term, write (segment_writer.h).
 // Documents may arrive in any order; the segment numbers them in doc_id order.
 // Not thread safe: one builder per thread (a build with T threads makes T segments).
-#ifndef VTEXT_ENGINE_BUILDER_H
-#define VTEXT_ENGINE_BUILDER_H
+#ifndef VFTS_ENGINE_BUILDER_H
+#define VFTS_ENGINE_BUILDER_H
 
 #include "analyzer.h"
 #include "stemmer.h"
@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-namespace vtext {
+namespace vfts {
 
 class SegmentBuilder {
 public:
@@ -59,6 +59,6 @@ private:
 // The hash of the term map (FNV-1a 64, mixed). Exposed for tests.
 std::uint64_t term_hash(std::string_view s);
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

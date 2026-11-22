@@ -1,51 +1,51 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="465" viewBox="0 0 720 465" role="img" aria-label="Index size">
 <style>
 .bg{fill:#fcfcfb}.t1{fill:#0b0b0b}.t2{fill:#52514e}.ax{stroke:#d9d8d4}
-.vtext{fill:#2a78d6}.es{fill:#eb6834}.os{fill:#1baf7a}.vtext_b{fill:#eda100}.vtext_s{fill:#6250d6}
-.vtext_snap{fill:url(#hatch);stroke:#2a78d6;stroke-width:1}
-@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.ax{stroke:#3a3a38}.vtext{fill:#3987e5}.es{fill:#d95926}.os{fill:#199e70}.vtext_b{fill:#c98500}.vtext_s{fill:#9085e9}.vtext_snap{fill:url(#hatch);stroke:#3987e5}}
+.vfts{fill:#2a78d6}.es{fill:#eb6834}.os{fill:#1baf7a}.vfts_b{fill:#eda100}.vfts_s{fill:#6250d6}
+.vfts_snap{fill:url(#hatch);stroke:#2a78d6;stroke-width:1}
+@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.ax{stroke:#3a3a38}.vfts{fill:#3987e5}.es{fill:#d95926}.os{fill:#199e70}.vfts_b{fill:#c98500}.vfts_s{fill:#9085e9}.vfts_snap{fill:url(#hatch);stroke:#3987e5}}
 text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}
 </style>
-<defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)"><rect class="bg" width="6" height="6"/><rect class="vtext" width="3" height="6"/></pattern></defs>
+<defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)"><rect class="bg" width="6" height="6"/><rect class="vfts" width="3" height="6"/></pattern></defs>
 <rect class="bg" width="720" height="465" rx="6"/>
 <text class="t1" x="16" y="24" font-size="15" font-weight="600">Index size</text>
-<text class="t2" x="16" y="42" font-size="12">MB; vtext: node cache (the text stays in its table); engines: store with their text copy, lower is better</text>
-<rect class="vtext" x="16" y="52" width="10" height="10" rx="2"/>
-<text class="t2" x="30" y="61" font-size="12">vtext (Vertica)</text>
-<rect class="es" x="156.0" y="52" width="10" height="10" rx="2"/>
-<text class="t2" x="170.0" y="61" font-size="12">Elasticsearch</text>
-<rect class="os" x="281.6" y="52" width="10" height="10" rx="2"/>
-<text class="t2" x="295.6" y="61" font-size="12">OpenSearch</text>
+<text class="t2" x="16" y="42" font-size="12">MB; vfts: node cache (the text stays in its table); engines: store with their text copy, lower is better</text>
+<rect class="vfts" x="16" y="52" width="10" height="10" rx="2"/>
+<text class="t2" x="30" y="61" font-size="12">vfts (Vertica)</text>
+<rect class="es" x="148.8" y="52" width="10" height="10" rx="2"/>
+<text class="t2" x="162.8" y="61" font-size="12">Elasticsearch</text>
+<rect class="os" x="274.40000000000003" y="52" width="10" height="10" rx="2"/>
+<text class="t2" x="288.40000000000003" y="61" font-size="12">OpenSearch</text>
 <text class="t1" x="110" y="109.5" font-size="12" text-anchor="end">MS MARCO</text>
-<path class="vtext" d="M120,80 h337.10151187904967 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-337.10151187904967 z"><title>vtext: 2787</title></path>
+<path class="vfts" d="M120,80 h337.10151187904967 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-337.10151187904967 z"><title>vfts: 2787</title></path>
 <text class="t2" x="467.10151187904967" y="91" font-size="11">2,787</text>
 <path class="es" d="M120,97 h500.1252699784017 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-500.1252699784017 z"><title>es: 4119</title></path>
 <text class="t2" x="630.1252699784018" y="108" font-size="11">4,119</text>
 <path class="os" d="M120,114 h506.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-506.0 z"><title>os: 4167</title></path>
 <text class="t2" x="636.0" y="125" font-size="11">4,167</text>
 <text class="t1" x="110" y="178.5" font-size="12" text-anchor="end">Enron</text>
-<path class="vtext" d="M120,149 h69.3117350611951 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-69.3117350611951 z"><title>vtext: 599</title></path>
+<path class="vfts" d="M120,149 h69.3117350611951 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-69.3117350611951 z"><title>vfts: 599</title></path>
 <text class="t2" x="199.3117350611951" y="160" font-size="11">599</text>
 <path class="es" d="M120,166 h146.05039596832253 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-146.05039596832253 z"><title>es: 1226</title></path>
 <text class="t2" x="276.0503959683225" y="177" font-size="11">1,226</text>
 <path class="os" d="M120,183 h146.17278617710582 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-146.17278617710582 z"><title>os: 1227</title></path>
 <text class="t2" x="276.1727861771058" y="194" font-size="11">1,227</text>
 <text class="t1" x="110" y="247.5" font-size="12" text-anchor="end">PubMed</text>
-<path class="vtext" d="M120,218 h73.10583153347731 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-73.10583153347731 z"><title>vtext: 630</title></path>
+<path class="vfts" d="M120,218 h73.10583153347731 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-73.10583153347731 z"><title>vfts: 630</title></path>
 <text class="t2" x="203.10583153347733" y="229" font-size="11">630</text>
 <path class="es" d="M120,235 h141.64434845212384 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-141.64434845212384 z"><title>es: 1190</title></path>
 <text class="t2" x="271.64434845212384" y="246" font-size="11">1,190</text>
 <path class="os" d="M120,252 h141.64434845212384 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-141.64434845212384 z"><title>os: 1190</title></path>
 <text class="t2" x="271.64434845212384" y="263" font-size="11">1,190</text>
 <text class="t1" x="110" y="316.5" font-size="12" text-anchor="end">Wikipedia he</text>
-<path class="vtext" d="M120,287 h146.9071274298056 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-146.9071274298056 z"><title>vtext: 1233</title></path>
+<path class="vfts" d="M120,287 h146.9071274298056 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-146.9071274298056 z"><title>vfts: 1233</title></path>
 <text class="t2" x="276.9071274298056" y="298" font-size="11">1,233</text>
 <path class="es" d="M120,304 h274.9272858171346 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-274.9272858171346 z"><title>es: 2279</title></path>
 <text class="t2" x="404.9272858171346" y="315" font-size="11">2,279</text>
 <path class="os" d="M120,321 h274.43772498200144 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-274.43772498200144 z"><title>os: 2275</title></path>
 <text class="t2" x="404.43772498200144" y="332" font-size="11">2,275</text>
 <text class="t1" x="110" y="385.5" font-size="12" text-anchor="end">Wikipedia ar</text>
-<path class="vtext" d="M120,356 h110.19006479481641 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-110.19006479481641 z"><title>vtext: 933</title></path>
+<path class="vfts" d="M120,356 h110.19006479481641 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-110.19006479481641 z"><title>vfts: 933</title></path>
 <text class="t2" x="240.1900647948164" y="367" font-size="11">933</text>
 <path class="es" d="M120,373 h190.35565154787616 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-190.35565154787616 z"><title>es: 1588</title></path>
 <text class="t2" x="320.35565154787616" y="384" font-size="11">1,588</text>

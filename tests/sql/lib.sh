@@ -1,10 +1,10 @@
 # Helpers for the SQL tests. Source it from a test script.
 # Connection: vsql reads VSQL_HOST, VSQL_PORT, VSQL_USER, VSQL_PASSWORD, VSQL_DATABASE.
-# Every statement is capped by VTEXT_TEST_TIMEOUT seconds (default 600), so a test never hangs.
+# Every statement is capped by VFTS_TEST_TIMEOUT seconds (default 600), so a test never hangs.
 
 TEST_NAME=$(basename "$0" .sh)
 FAILS=0
-TIMEOUT=${VTEXT_TEST_TIMEOUT:-600}
+TIMEOUT=${VFTS_TEST_TIMEOUT:-600}
 
 # q 'SQL'          one statement, unaligned, no header; prints the rows (| between columns)
 q() { timeout "$TIMEOUT" vsql -X -A -t -q -v ON_ERROR_STOP=1 -c "$1"; }

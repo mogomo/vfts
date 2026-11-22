@@ -2,7 +2,7 @@
 #include "check.h"
 #include "../../src/engine/snippet.h"
 
-using namespace vtext;
+using namespace vfts;
 
 static std::string S(const std::string &text, const std::string &q, int words = 20, int fragments = 2, MatchMode m = MatchMode::Stem)
 {

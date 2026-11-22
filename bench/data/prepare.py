@@ -3,12 +3,12 @@
 
     python3 -I bench/data/prepare.py [msmarco] [enron] [pubmed] [wiki_he] [wiki_ar]   (default: all)
 
-Input:  $VTEXT_DATA/raw (default ~/vtext_data/raw)
-Output: $VTEXT_DATA/<dataset>/docs.dat   one record per document:
+Input:  $VFTS_DATA/raw (default ~/vfts_data/raw)
+Output: $VFTS_DATA/<dataset>/docs.dat   one record per document:
             doc_id \\x01 lang \\x01 body \\x02
         (control characters \\x00 \\x01 \\x02 are removed from the text, nothing else is changed),
-        $VTEXT_DATA/<dataset>/stats.txt   documents and bytes
-        $VTEXT_DATA/msmarco/queries.dev.small.tsv, qrels.dev.small.tsv   (MS MARCO only)
+        $VFTS_DATA/<dataset>/stats.txt   documents and bytes
+        $VFTS_DATA/msmarco/queries.dev.small.tsv, qrels.dev.small.tsv   (MS MARCO only)
 
 The same file is loaded into Vertica (COPY) and into Elasticsearch / OpenSearch (bench/load_engines.py),
 so every engine indexes exactly the same text. Python standard library only.
@@ -23,7 +23,7 @@ import tarfile
 import time
 import xml.etree.ElementTree as ET
 
-DATA = os.environ.get("VTEXT_DATA", os.path.expanduser("~/vtext_data"))
+DATA = os.environ.get("VFTS_DATA", os.path.expanduser("~/vfts_data"))
 RAW = os.path.join(DATA, "raw")
 LIMITS = {"pubmed": 1_000_000, "wiki_he": 300_000, "wiki_ar": 300_000}
 MAX_BODY = 1_000_000          # characters per document (Enron has a few huge attachments)

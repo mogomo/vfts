@@ -1,14 +1,14 @@
 // MD5 (RFC 1321), as Vertica's MD5() computes it: the hex digest of the bytes. Used for the access
 // tokens of the views (docs/design.md "Access"): the SQL side and the functions must compute the
 // same value, and MD5 is the digest both have.
-#ifndef VTEXT_ENGINE_MD5_H
-#define VTEXT_ENGINE_MD5_H
+#ifndef VFTS_ENGINE_MD5_H
+#define VFTS_ENGINE_MD5_H
 
 #include <cstdint>
 #include <cstring>
 #include <string>
 
-namespace vtext {
+namespace vfts {
 
 // The 16 bytes of MD5(msg). No allocation for messages shorter than 120 bytes.
 inline void md5_raw(const void *msg, std::size_t len, unsigned char out[16])
@@ -76,6 +76,6 @@ inline std::string md5_hex(const std::string &msg)
     return out;
 }
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

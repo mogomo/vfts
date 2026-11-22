@@ -3,8 +3,8 @@
 // Usage: set_docs, then for every term in ascending byte order begin_term / add_doc (ascending
 // docno) / end_term, add_stem in any order, finish. Every way of making a segment (new documents,
 // table rows, merge) goes through this class, so equal input always gives equal bytes.
-#ifndef VTEXT_ENGINE_SEGMENT_WRITER_H
-#define VTEXT_ENGINE_SEGMENT_WRITER_H
+#ifndef VFTS_ENGINE_SEGMENT_WRITER_H
+#define VFTS_ENGINE_SEGMENT_WRITER_H
 
 #include "segment.h"
 
@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-namespace vtext {
+namespace vfts {
 
 class SegmentWriter {
 public:
@@ -63,6 +63,6 @@ private:
     std::uint64_t term_pos_off_ = 0;
 };
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

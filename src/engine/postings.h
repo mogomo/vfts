@@ -1,8 +1,8 @@
 // Reading the postings of one term of a segment: documents in docno order, their tf and their
 // positions. Blocks of 128 documents are decoded when first touched; positions are decoded only
 // for documents that ask for them (phrase and proximity checks).
-#ifndef VTEXT_ENGINE_POSTINGS_H
-#define VTEXT_ENGINE_POSTINGS_H
+#ifndef VFTS_ENGINE_POSTINGS_H
+#define VFTS_ENGINE_POSTINGS_H
 
 #include "segment.h"
 
@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace vtext {
+namespace vfts {
 
 constexpr std::uint32_t NO_DOC = 0xFFFFFFFFu;
 
@@ -230,6 +230,6 @@ inline void term_docs(const Segment &seg, std::uint32_t term, std::vector<std::u
     for (std::uint32_t d = it.next(); d != NO_DOC; d = it.next()) out.push_back(d);
 }
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

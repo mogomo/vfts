@@ -10,7 +10,7 @@
 #include <numeric>
 #include <stdexcept>
 
-namespace vtext {
+namespace vfts {
 
 namespace {
 
@@ -232,4 +232,4 @@ std::vector<std::uint32_t> bisect_order(const ForwardIndex &f, const ReorderOpti
     return order;
 }
 
-} // namespace vtext
+} // namespace vfts

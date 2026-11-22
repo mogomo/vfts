@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install, start and stop the engines vtext is compared with, natively from their release
+# Install, start and stop the engines vfts is compared with, natively from their release
 # tarballs (no Docker). Both bring their own Java.
 #
 #   bench/engines/engines.sh install            download Elasticsearch and OpenSearch, add the ICU plugin
@@ -8,7 +8,7 @@
 #   bench/engines/engines.sh status
 #
 # Settings (environment):
-#   VTEXT_BENCH   install directory (default ~/vtext_bench)
+#   VFTS_BENCH    install directory (default ~/vfts_bench)
 #   ES_VERSION    default 9.5.6           OS_VERSION   default 3.10.0
 #   ENGINE_HEAP   JVM heap, default 16g (the same for both engines)
 #   ES_PORT       default 9200            OS_PORT      default 9201
@@ -16,7 +16,7 @@
 # Both listen on 127.0.0.1 only, with security switched off: they are test servers on the
 # benchmark machine, nothing else.
 set -euo pipefail
-B=${VTEXT_BENCH:-$HOME/vtext_bench}
+B=${VFTS_BENCH:-$HOME/vfts_bench}
 ES_VERSION=${ES_VERSION:-9.5.6}
 OS_VERSION=${OS_VERSION:-3.10.0}
 HEAP=${ENGINE_HEAP:-16g}
@@ -38,7 +38,7 @@ install() {
         tar xzf "$B/es.tar.gz" -C "$B"
         timeout 600 "$ES_HOME/bin/elasticsearch-plugin" install --batch analysis-icu
         cat >> "$ES_HOME/config/elasticsearch.yml" <<EOF
-cluster.name: vtext-bench-es
+cluster.name: vfts-bench-es
 node.name: es1
 network.host: 127.0.0.1
 http.port: $ES_PORT
@@ -57,7 +57,7 @@ EOF
         tar xzf "$B/os.tar.gz" -C "$B"
         timeout 600 "$OS_HOME/bin/opensearch-plugin" install --batch analysis-icu
         cat >> "$OS_HOME/config/opensearch.yml" <<EOF
-cluster.name: vtext-bench-os
+cluster.name: vfts-bench-os
 node.name: os1
 network.host: 127.0.0.1
 http.port: $OS_PORT

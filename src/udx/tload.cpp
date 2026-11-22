@@ -1,6 +1,6 @@
-// vtext.tload(<index rows> USING PARAMETERS index, cache_dir [, gen, options]) OVER(PARTITION NODES)
+// vfts.tload(<index rows> USING PARAMETERS index, cache_dir [, gen, options]) OVER(PARTITION NODES)
 //
-// Runs on every node (the procedures feed it through vtext.probe, see sql/procedures.sql) and
+// Runs on every node (the procedures feed it through vfts.probe, see sql/procedures.sql) and
 // writes the node's cache (cache.h):
 //   without gen: D, T, P, Q and S rows of one or more segments -> the segment files. Each file is
 //                assembled from the rows, its checksum compared with the S row, verified and
@@ -8,7 +8,7 @@
 //   with gen:    G rows (active segments and their checksums), X rows (tombstones) and K rows
 //                (term: the access mode, stem: a key; segment_id 0 the current key, 1 the previous
 //                one during a key change) -> the generation file, then ACTIVE. Every G segment
-//                must be in the cache. The procedures read K rows from vtext.index_keys, so a
+//                must be in the cache. The procedures read K rows from vfts.index_keys, so a
 //                key never appears in a statement's text.
 // Returns one row per node: node_name, status ('loaded' or 'activated'), segments, bytes.
 #include "udx_common.h"
@@ -20,7 +20,7 @@
 #include <thread>
 
 using namespace Vertica;
-using namespace vtext_udx;
+using namespace vfts_udx;
 
 namespace {
 
@@ -42,11 +42,11 @@ private:
         const std::string index = read_index_name(s);
         const std::string cache_dir = resolve_cache_dir(s);
         const bool activate = s.has("gen");
-        vtext::CacheWriter w(cache_dir, index);
-        std::map<std::int64_t, vtext::SegmentAssembler> asm_;
+        vfts::CacheWriter w(cache_dir, index);
+        std::map<std::int64_t, vfts::SegmentAssembler> asm_;
         std::map<std::int64_t, std::uint64_t> expect;           // segment -> checksum (S rows)
         std::map<std::int64_t, std::int64_t> max_ver;
-        vtext::Generation g;
+        vfts::Generation g;
         std::map<std::int64_t, std::vector<std::uint32_t>> dead;
         std::uint64_t rows = 0;
         do {
@@ -55,7 +55,7 @@ private:
             const std::int64_t sid = in.getIntRef(IC_SEGMENT);
             if (++rows % 100000 == 0 && isCanceled()) fail("canceled");
             if (kind == "G") {
-                vtext::GenSegment gs;
+                vfts::GenSegment gs;
                 gs.segment_id = sid;
                 gs.checksum = static_cast<std::uint64_t>(in.getIntRef(IC_DOC_ID));
                 g.segs.push_back(gs);
@@ -73,10 +73,10 @@ private:
             } else if (kind == "S") {
                 expect[sid] = static_cast<std::uint64_t>(in.getIntRef(IC_DOC_ID));
             } else if (kind == "D") {
-                asm_[sid].add(vtext::DocRow{static_cast<std::uint32_t>(in.getIntRef(IC_DOCNO)), in.getIntRef(IC_DOC_ID),
+                asm_[sid].add(vfts::DocRow{static_cast<std::uint32_t>(in.getIntRef(IC_DOCNO)), in.getIntRef(IC_DOC_ID),
                                             static_cast<std::uint32_t>(in.getIntRef(IC_N))});
             } else if (kind == "T") {
-                vtext::TermDictRow r;
+                vfts::TermDictRow r;
                 r.term_id = static_cast<std::uint32_t>(in.getIntRef(IC_TERM_ID));
                 r.term = in.getStringRef(IC_TERM).str();
                 r.stem = in.isNull(IC_STEM) ? std::string() : in.getStringRef(IC_STEM).str();
@@ -84,7 +84,7 @@ private:
                 r.doc_freq = static_cast<std::uint32_t>(in.getIntRef(IC_N));
                 asm_[sid].add(r);
             } else if (kind == "P") {
-                vtext::PostingRow r;
+                vfts::PostingRow r;
                 r.term_id = static_cast<std::uint32_t>(in.getIntRef(IC_TERM_ID));
                 r.chunk_id = static_cast<std::uint32_t>(in.getIntRef(IC_CHUNK));
                 const VString &b = in.getStringRef(IC_BIN);
@@ -114,7 +114,7 @@ private:
             w.activate(g);
         } else {
             // assemble, verify and write the segments in parallel (engine work only, no SDK calls)
-            std::vector<std::pair<std::int64_t, vtext::SegmentAssembler *>> todo;
+            std::vector<std::pair<std::int64_t, vfts::SegmentAssembler *>> todo;
             for (auto &kv : asm_) {
                 auto e = expect.find(kv.first);
                 if (e == expect.end()) fail("no summary row for segment " + std::to_string(kv.first));
@@ -130,7 +130,7 @@ private:
                     try {
                         const std::int64_t sid = todo[i].first;
                         const std::string seg = todo[i].second->finish(sid, 0);
-                        vtext::Segment view(seg.data(), seg.size());
+                        vfts::Segment view(seg.data(), seg.size());
                         if (view.header().checksum != expect[sid])
                             throw std::runtime_error("segment " + std::to_string(sid) + " assembled from the tables has another checksum than its summary row");
                         w.write_segment(seg);

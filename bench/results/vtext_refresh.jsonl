@@ -1,3 +1,0 @@
-{"engine": "es", "dataset": "msmarco", "added": 88418, "refresh_s": 8.6}
-{"engine": "os", "dataset": "msmarco", "added": 88418, "refresh_s": 8.1}
-{"engine": "vtext", "dataset": "msmarco", "added": 88418, "query_with_tail_ms": 1965.4, "refresh_s": 3.1, "query_after_ms": 19.5, "note": "incremental: 88418 rows into 1 segments, 0 tombstones, 0 journal rows"}

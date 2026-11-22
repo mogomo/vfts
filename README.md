@@ -1,4 +1,4 @@
-# vertica-text-udx (vtext)
+# vfts: full-text search for Vertica
 
 Full-text search inside Vertica, as a C++ UDx library: BM25 ranking, boolean, phrase and
 proximity search (with the e-discovery operators `w/N` and `pre/N`), prefix, wildcard and fuzzy
@@ -6,8 +6,8 @@ words, every language written with spaces between words (Arabic and Hebrew inclu
 changed rows searchable at once without a rebuild, snippets, and hybrid search with
 [vvector](https://github.com/mogomo/vertica-vector-db).
 
-    SELECT r.rank, d.doc_id, vtext.tsnippet(d.body, 'contract w/5 indemn*' USING PARAMETERS index='emails') AS snippet
-    FROM (SELECT vtext.tsearch(* USING PARAMETERS index='emails', query='contract w/5 indemn*', k=10) OVER()
+    SELECT r.rank, d.doc_id, vfts.tsnippet(d.body, 'contract w/5 indemn*' USING PARAMETERS index='emails') AS snippet
+    FROM (SELECT vfts.tsearch(* USING PARAMETERS index='emails', query='contract w/5 indemn*', k=10) OVER()
           FROM app.emails_live) r
     JOIN app.emails d USING (doc_id)
     ORDER BY r.rank;
@@ -15,7 +15,7 @@ changed rows searchable at once without a rebuild, snippets, and hybrid search w
 Use cases it was built and measured for: legal e-discovery (Enron email), pharma literature search
 (PubMed), support logs and general passage search (MS MARCO), Arabic and Hebrew text (Wikipedia).
 
-![vtext at a glance](bench/results/charts/glance.svg)
+![vfts at a glance](bench/results/charts/glance.svg)
 
 ## Full-text search in brief
 
@@ -36,12 +36,12 @@ Use cases it was built and measured for: legal e-discovery (Enron email), pharma
 The hard parts, for any engine: every language, exact and stable scores, fast top-k on millions of
 documents, **new and changed rows searchable at once**, and **many users at the same time**.
 Elasticsearch and OpenSearch solve them in a separate cluster; the price is a second copy of the
-data, a pipeline that keeps it in sync, and a second security model. vtext solves them inside
+data, a pipeline that keeps it in sync, and a second security model. vfts solves them inside
 Vertica.
 
 ## Why search inside Vertica
 
-| | Search engine next to the database | vtext inside Vertica |
+| | Search engine next to the database | vfts inside Vertica |
 |---|---|---|
 | Joins | none: copy every attribute into every document | search results are rows: `JOIN`, `GROUP BY`, window functions over any table |
 | Changed attributes (owner, status, legal hold) | rewrite (and re-analyze) each affected document | `UPDATE` the attribute table; the text index is not touched |
@@ -51,7 +51,7 @@ Vertica.
 | Many small searches at once | fast | as fast or faster through `tserve` ([Performance](#performance)); slower as one SQL statement each |
 
 Honest limits: a search engine is the better tool when every query is a tiny single search sent
-as its own request and nothing joins with it; and a column mask on the indexed text makes vtext
+as its own request and nothing joins with it; and a column mask on the indexed text makes vfts
 refuse to search, rather than search the masked text ([Access policies](#access-policies)).
 
 <!-- toc -->
@@ -61,12 +61,12 @@ refuse to search, rather than search the masked text ([Access policies](#access-
 - [How it was tested](#how-it-was-tested)
 - [Quick start](#quick-start)
 - [Languages](#languages)
-- [No rebuild after new loads](#no-rebuild-after-new-loads)
+- [No rebuild after new loads, updates or upgrades](#no-rebuild-after-new-loads-updates-or-upgrades)
 - [Install](#install)
 - [Prepare a table](#prepare-a-table)
 - [Reference](#reference)
   - [Index management](#index-management): create_index, refresh_index, merge, rebuild, load_all, check_access, info, drop_index, the views, [access policies](#access-policies)
-  - [Search functions](#search-functions): tsearch, tcount, tmatch, tserve and vtext_broker, tsnippet, hybrid, tokenize, tversion
+  - [Search functions](#search-functions): tsearch, tcount, tmatch, tserve and vfts_broker, tsnippet, hybrid, tokenize, tversion
   - [Query syntax](#query-syntax)
 - [Search patterns](#search-patterns)
 - [Performance](#performance)
@@ -83,10 +83,10 @@ refuse to search, rather than search the masked text ([Access policies](#access-
 | Queries | words; `"exact phrases"`; `AND`, `OR`, `NOT`, `-word`, `+word`, `( )`; `"phrase"~N`; `a w/N b` (within N words, any order); `a pre/N b` (a before b, at most N words); `indemn*`; `te?t`; `holmse~`, `holmse~1` (Damerau-Levenshtein); or plain text (`syntax='plain'`) |
 | Matching | `mode='stem'` (default: running, runs, run) or `mode='exact'`; one index serves both |
 | Languages | every language written with spaces: ICU word boundaries, NFKC with case folding, accent folding, Snowball stemmers, Arabic/Persian normalization, Hebrew points and prefixes ([Languages](#languages)) |
-| Freshness | inserts, updates and deletes are searchable at once (the live tail); `refresh_index` adds segments incrementally; a tiered merge keeps their number small ([No rebuild](#no-rebuild-after-new-loads)) |
+| Freshness | inserts, updates and deletes are searchable at once (the live tail); `refresh_index` adds segments incrementally; a tiered merge keeps their number small ([No rebuild](#no-rebuild-after-new-loads-updates-or-upgrades)) |
 | Scale | segments searched in parallel; global statistics, so scores do not depend on segments or nodes; Enterprise and Eon (also secondary subclusters) |
 | Storage | the index is in Vertica tables (backed up with the database); every node keeps a memory-mapped copy |
-| Many clients | `tserve` with `tools/vtext_broker`: an HTTP front end, each user's own Vertica sessions, searches over a channel instead of one statement each; with 32 clients 1.1 to 2.0 times the queries per second of Elasticsearch and OpenSearch on the benchmark ([tserve](#tserve-and-vtext_broker-many-clients)) |
+| Many clients | `tserve` with `tools/vfts_broker`: an HTTP front end, each user's own Vertica sessions, searches over a channel instead of one statement each; with 32 clients 1.1 to 2.0 times the queries per second of Elasticsearch and OpenSearch on the benchmark ([tserve](#tserve-and-vfts_broker-many-clients)) |
 | Extras | `tcount` (matches only), `tmatch` (every matching doc_id, for joins), `tsnippet` (marked fragments), `hybrid` (BM25 + vectors with Reciprocal Rank Fusion), `tokenize` |
 
 ## How it was tested
@@ -122,7 +122,7 @@ refuse to search, rather than search the masked text ([Access policies](#access-
 - **Benchmark** against Elasticsearch 9.5.6 and OpenSearch 3.10.0 on the same machine with the
   same data and equivalent analyzers ([Performance](#performance)): the same matches and, for 97%
   of the MS MARCO queries and 133 of 140 syntax queries, the same top 10 with the same scores.
-  MS MARCO relevance: MRR@10 0.1815 (vtext), 0.1815 (Elasticsearch), 0.1813 (OpenSearch).
+  MS MARCO relevance: MRR@10 0.1815 (vfts), 0.1815 (Elasticsearch), 0.1813 (OpenSearch).
 
 ## Quick start
 
@@ -138,8 +138,8 @@ By hand:
     INSERT INTO app.docs (doc_id, body) VALUES (1, 'The indemnity clause of the supply contract.');
     INSERT INTO app.docs (doc_id, body) VALUES (2, 'Sherlock Holmes'' notes, Holmes-style.');
     COMMIT;
-    CALL vtext.create_index('docs', 'app.docs', 'lang=en');
-    SELECT * FROM (SELECT vtext.tsearch(* USING PARAMETERS index='docs', query='contract w/5 indemnity', k=10) OVER()
+    CALL vfts.create_index('docs', 'app.docs', 'lang=en');
+    SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='contract w/5 indemnity', k=10) OVER()
                    FROM app.docs_live) r;
 
 ## Languages
@@ -159,7 +159,7 @@ the list of distinct words.
 | Indic | Hindi, Nepali, Tamil | Snowball |
 | Others with spaces | Georgian, Slovak, Croatian, Bulgarian, ... | none: exact words |
 
-The Snowball stemmers linked in (libstemmer_c 3.2.0, `SELECT * FROM (SELECT vtext.tversion() OVER()) v;`):
+The Snowball stemmers linked in (libstemmer_c 3.2.0, `SELECT * FROM (SELECT vfts.tversion() OVER()) v;`):
 arabic, armenian, basque, catalan, czech, danish, dutch, english, esperanto, estonian, finnish,
 french, german, greek, hindi, hungarian, indonesian, irish, italian, lithuanian, nepali, norwegian,
 persian, polish, portuguese, romanian, russian, serbian, sesotho, spanish, swedish, tamil, turkish,
@@ -188,18 +188,36 @@ indexed as ICU splits it, without stemming.
 **Stopwords** are never removed from the index (that would break exact phrases). A query can drop
 them with `stopwords=true`.
 
-## No rebuild after new loads
+## No rebuild after new loads, updates or upgrades
 
-**Why no rebuild is needed.** vtext works the way Lucene does:
+**An index is built once.** vfts works the way Lucene does:
 
-1. New rows go into small new index segments (`refresh_index`). Nothing indexed is rewritten.
-2. Rows that are not indexed yet are searched directly at query time: the view `<index>_live`
-   returns them, and `tsearch` analyzes them on the fly (the **live tail**). Results are always exact.
-3. Deleted and replaced rows are hidden with a tombstone bitmap. An update is a delete plus an insert.
-4. A background merge combines small segments and drops deleted documents.
+1. **New rows are searchable as soon as they are committed.** Rows written since the last refresh
+   are searched at query time: the view `<index>_live` returns them, and `tsearch` analyzes them on
+   the fly (the **live tail**). Results are exact without any refresh.
+2. **Changed and deleted rows** are hidden with a tombstone bitmap. An update is a delete plus an
+   insert.
+3. **`refresh_index` adds the live tail as small new segments.** Nothing indexed is rewritten. It
+   is needed for speed, not for correct answers: every query analyzes every tail row (a tail of
+   88,418 MS MARCO rows: 2.0 s per query), so run it often, every minute or every hour.
+4. **`refresh_index` then runs a tiered merge** that combines small segments and drops deleted
+   documents. Searches keep using the previous generation while it runs.
 
-The one thing vtext needs from the source table is a version column (`ver`, the time a row was
-written) and, for deletes and for updates that keep `ver`, a journal table that records them.
+The one thing vfts needs from the source table is a version column (`ver`, the time a row was
+written) and, for deletes and for updates that keep `ver`, a journal table that records them
+([Prepare a table](#prepare-a-table)).
+
+**Vertica upgrades.** The index is stored in ordinary Vertica tables (backed up and restored with
+the database) and in node cache files whose format belongs to vfts, not to Vertica, so an upgrade
+of Vertica keeps it. The library may need to be compiled again for the new Vertica version
+(`make && make deploy`); the index does not need a rebuild. Not tested yet: vfts was tested on
+Vertica 26.3.0-2 only.
+
+**vfts upgrades** (`git pull && make && make deploy`) keep the index too, unless a version changes
+the analyzer (how words are found, normalized and stemmed, for example a new Snowball release) or
+the file format. Such a version says so under [Upgrade and uninstall](#upgrade-and-uninstall), and
+the index is built again, so that old and new rows are analyzed the same way. 0.3.0 is one: it
+renamed vtext to vfts.
 BM25 statistics (number of documents, average length, document frequencies) are computed over all
 segments, the live tail and all nodes, minus tombstones: scores do not depend on how rows are split
 into segments or nodes.
@@ -209,18 +227,18 @@ into segments or nodes.
 **One command, for any Vertica database** (one node or many, Enterprise or Eon). On a Vertica
 node, in a directory whose path has no spaces, with the connection of a superuser:
 
-    git clone <this repository> && cd vertica-text-udx
+    git clone <this repository> && cd vfts
     export VSQL_USER=dbadmin VSQL_PASSWORD=... VSQL_DATABASE=...
     ./install.sh                 # or ./install.sh --fenced
 
 `install.sh` checks the environment (connection, superuser, Vertica version, SDK, compiler, that
-the session's node is this machine), builds the three static dependencies once and then vtext,
+the session's node is this machine), builds the three static dependencies once and then vfts,
 runs the engine tests, deploys the library, functions and procedures (copied to every node),
 builds the tools, and runs every function on a test table to verify. It stops at the first
 problem and says what to fix. It can be run again (an upgrade); its test uses the schema
-`vtext_selftest` and never touches anything else. `./install.sh --check` only checks;
+`vfts_selftest` and never touches anything else. `./install.sh --check` only checks;
 `./install.sh --uninstall` removes the library, functions and procedures (the indexes stay), and
-`--uninstall --drop` also drops every index (views and node caches included) and the schema `vtext`. The steps below are what it does, for reference and for the parts that
+`--uninstall --drop` also drops every index (views and node caches included) and the schema `vfts`. The steps below are what it does, for reference and for the parts that
 come after the install (indexing, grants, Eon subclusters, the broker).
 
 ### 1. Check the environment
@@ -238,21 +256,21 @@ nodes' (the library links ICU, Snowball and CRoaring statically: nothing else is
 
 ### 2. Build and test
 
-    git clone <this repository> && cd vertica-text-udx
+    git clone <this repository> && cd vfts
     make deps        # downloads and builds ICU 79.1, libstemmer_c 3.2.0, CRoaring 5.5.5 (pinned checksums)
-    make             # build/libvtext.so
+    make             # build/libvfts.so
     make test        # engine unit tests, no database needed
-    make tools       # optional: build/tools/vtext_broker (many clients), vtext_cli, httpload
+    make tools       # optional: build/tools/vfts_broker (many clients), vfts_cli, httpload
 
 ### 3. Deploy into the database
 
-On a Vertica node (with the built `build/libvtext.so` and the repository's `sql/` directory):
+On a Vertica node (with the built `build/libvfts.so` and the repository's `sql/` directory):
 
     export VSQL_HOST=localhost VSQL_PORT=5433 VSQL_USER=dbadmin VSQL_PASSWORD=... VSQL_DATABASE=...
     make deploy                 # unfenced: fastest, runs inside the Vertica process
     make deploy FENCED=yes      # or fenced: a separate process per node, a crash cannot stop the node (slower)
 
-`make deploy` (scripts/deploy.sh, sql/install.sql) creates the schema `vtext`, its tables, the
+`make deploy` (scripts/deploy.sh, sql/install.sql) creates the schema `vfts`, its tables, the
 library, every function and procedure, and grants the functions to PUBLIC (the procedures are for
 dbadmin, or `GRANT EXECUTE ON PROCEDURE ...`). `CREATE LIBRARY` reads the library as the database's
 OS user (deploy.sh hands it a copy in /tmp) and copies it to every node of the cluster, so this runs
@@ -261,15 +279,15 @@ scripts: the connection comes from the `VSQL_*` variables.
 
 ### 4. Verify
 
-    vsql -c "SELECT * FROM (SELECT vtext.tversion() OVER()) v;"   # version, build, ICU, stemmers
+    vsql -c "SELECT * FROM (SELECT vfts.tversion() OVER()) v;"   # version, build, ICU, stemmers
     scripts/examples.sh         # every function on a small table (the examples of the Reference)
     tests/sql/run_all.sh        # the SQL tests (create and drop their own schemas)
 
 ### 5. Index a table and let users search
 
 1. [Prepare the table](#prepare-a-table): `doc_id`, the text, optionally `lang`, and a version column `ver`.
-2. `CALL vtext.create_index('docs', 'app.docs', 'lang=en');` as dbadmin (or a user with write
-   access to the `vtext` tables and the source table: procedures run with the caller's privileges).
+2. `CALL vfts.create_index('docs', 'app.docs', 'lang=en');` as dbadmin (or a user with write
+   access to the `vfts` tables and the source table: procedures run with the caller's privileges).
 3. Users who search need `USAGE` on the schema and `SELECT` on the views:
    `GRANT USAGE ON SCHEMA app TO analysts; GRANT SELECT ON app.docs_live, app.docs_snap TO analysts;`
    (Vertica checks the source table against the view's owner, the user who ran `create_index`: it
@@ -277,27 +295,27 @@ scripts: the connection comes from the `VSQL_*` variables.
    need `SELECT` on the source table for the join. The views are the only way to search: a
    statement that makes its own input for `tsearch` is refused, and row access policies of the
    source table apply to every search ([Access policies](#access-policies)).
-4. Run `CALL vtext.refresh_index('docs');` on a schedule (a cron job or any scheduler): new rows
+4. Run `CALL vfts.refresh_index('docs');` on a schedule (a cron job or any scheduler): new rows
    are searchable at once anyway; refresh keeps the live tail short.
 
-Where the node caches live: `/tmp/vtext` by default. Use a directory that survives a reboot for
-production: the index option `cache_dir=/data/vtext` at `create_index` (it must exist on every node,
+Where the node caches live: `/tmp/vfts` by default. Use a directory that survives a reboot for
+production: the index option `cache_dir=/data/vfts` at `create_index` (it must exist on every node,
 writable by the database's OS user). A lost cache is rebuilt from the index tables with `load_all`.
 
 ### 6. Several nodes, Eon and subclusters
 
 - **Enterprise, several nodes**: nothing more; `create_index` and `refresh_index` load every node.
 - **Eon**: run `create_index` and `refresh_index` on the primary subcluster; on each secondary
-  subcluster, run `CALL vtext.load_all('docs');` from a session connected to it after each
+  subcluster, run `CALL vfts.load_all('docs');` from a session connected to it after each
   refresh (a node that is behind refuses to answer, with that message).
-- **New node**: `CALL vtext.load_all('docs');`.
+- **New node**: `CALL vfts.load_all('docs');`.
 
-### 7. Many clients (optional): vtext_broker
+### 7. Many clients (optional): vfts_broker
 
-For many small searches at once, run `build/tools/vtext_broker` on a node, as the database's OS
-user, and send searches to it over HTTP ([tserve and vtext_broker](#tserve-and-vtext_broker-many-clients)):
+For many small searches at once, run `build/tools/vfts_broker` on a node, as the database's OS
+user, and send searches to it over HTTP ([tserve and vfts_broker](#tserve-and-vfts_broker-many-clients)):
 
-    build/tools/vtext_broker --port 9300 --schema app --mode serve --param "mode='stem'" &
+    build/tools/vfts_broker --port 9300 --schema app --mode serve --param "mode='stem'" &
     curl -XPOST localhost:9300/docs/_search -u alice:secret -d '{"query": "contract w/5 indemn*"}'
 
 It listens on 127.0.0.1 by default (`--bind` to change); each user's searches run in that user's
@@ -307,13 +325,13 @@ own Vertica sessions.
 
     git pull && make && make deploy      # replaces the library and functions; indexes and caches stay
 
-Upgrading from vtext 0.1.0: the deploy gives every existing index its key and new views
-(`vtext.upgrade_access`; an index whose node caches are missing reports it, then run
-`CALL vtext.check_access('<index>')` after `load_all`), and takes back the EXECUTE grants on the
-internal functions that 0.1.0 gave to every user. Existing segments stay as they are; the next merge
-reorders them ([merge](#merge)).
+vfts was named vtext up to version 0.2.0 (version numbers before 0.3.0 in these documents are
+vtext's). vfts 0.3.0 only renames it: the schema, the library, the tools, the session parameters,
+the cache file names and the file formats' magic bytes. It does not read vtext's indexes: remove
+vtext with its own `./install.sh --uninstall --drop`, install vfts, and create the indexes again.
+
     ./install.sh --uninstall             # removes library, functions and procedures; indexes stay
-    ./install.sh --uninstall --drop      # also drops every index (views, node caches) and the schema vtext
+    ./install.sh --uninstall --drop      # also drops every index (views, node caches) and the schema vfts
 
 An unfenced upgrade is safe while the database runs: the old library stays mapped for searches
 still running.
@@ -350,18 +368,18 @@ Ready to run:
                              ver TIMESTAMPTZ NOT NULL DEFAULT CLOCK_TIMESTAMP());
     CREATE TABLE app.emails_journal (doc_id INT, op CHAR(1), ver TIMESTAMPTZ DEFAULT CLOCK_TIMESTAMP());
     -- load: COPY app.emails (doc_id, body, lang) FROM ... ;
-    CALL vtext.create_index('emails', 'app.emails', 'lang=en journal=app.emails_journal');
+    CALL vfts.create_index('emails', 'app.emails', 'lang=en journal=app.emails_journal');
 
     -- later: changes
     UPDATE app.emails SET body = '...', ver = CLOCK_TIMESTAMP() WHERE doc_id = 42;
     DELETE FROM app.emails WHERE doc_id = 43; INSERT INTO app.emails_journal (doc_id, op) VALUES (43, 'D');
     COMMIT;
     -- searchable now through app.emails_live; folded into the index with:
-    CALL vtext.refresh_index('emails');
+    CALL vfts.refresh_index('emails');
 
 ## Reference
 
-Every object lives in schema `vtext`. Procedures manage indexes (`CALL vtext.x(...)`); functions
+Every object lives in schema `vfts`. Procedures manage indexes (`CALL vfts.x(...)`); functions
 search (`SELECT ...`). Short examples use the demo table `demo.cases` of `scripts/demo.sh`; every
 function also has a full example with its real output in
 [Examples: every function](#examples-every-function-with-its-output) (`scripts/examples.sh`).
@@ -376,7 +394,7 @@ Registers a source table as an index, creates the views `<schema>.<index>_live` 
 `<index>_snap` in the table's schema, builds the index from every row and loads it on every node of
 the session's subcluster.
 
-    CALL vtext.create_index(index, source_table [, options]);
+    CALL vfts.create_index(index, source_table [, options]);
 
 | Argument | Meaning |
 |---|---|
@@ -395,12 +413,12 @@ the session's subcluster.
 | threads | 0 | build threads per instance (0: a quarter of the cores) |
 | max_segment_mb | 2048 | a build thread starts a new segment above this memory |
 | merge_factor | 10 | segments per tier of the merge policy |
-| cache_dir | /tmp/vtext | directory of the node caches |
+| cache_dir | /tmp/vfts | directory of the node caches |
 | build | true | `false`: register and create the views only |
 | access | auto | `auto`: follow the access policies of the source table ([Access policies](#access-policies)); `rows`: apply its row access policies to every search even before one exists |
 | reorder | true | merges number the documents by recursive graph bisection (smaller and faster index, same results); `false`: keep doc_id order |
 
-    CALL vtext.create_index('cases', 'demo.cases', 'lang=en journal=demo.cases_journal margin=0');
+    CALL vfts.create_index('cases', 'demo.cases', 'lang=en journal=demo.cases_journal margin=0');
 
 #### refresh_index
 
@@ -411,7 +429,7 @@ and the journal's deletes, loads every node, and moves the views' boundary. Incr
 changes are one transaction. Then runs the tiered merge policy. (The name `refresh` is a Vertica
 built-in function and cannot be a procedure.)
 
-    CALL vtext.refresh_index(index);
+    CALL vfts.refresh_index(index);
 
 When to run it: whenever convenient - every minute, every hour. Searches are exact without it; a
 longer live tail only costs query time (every tail row is analyzed per query).
@@ -425,8 +443,8 @@ documents with similar words are next to each other (recursive graph bisection: 
 more skipped blocks; the same hits and scores; index option `reorder=false` keeps doc_id order).
 Searches keep working on the previous generation while it runs.
 
-    CALL vtext.merge(index);                -- the tiered policy (also run by refresh_index)
-    CALL vtext.merge(index, max_segments);  -- merge the smallest segments until at most max_segments remain
+    CALL vfts.merge(index);                -- the tiered policy (also run by refresh_index)
+    CALL vfts.merge(index, max_segments);  -- merge the smallest segments until at most max_segments remain
 
 Fewer segments use less CPU per query; more segments are searched in parallel (lower latency for
 one query at a time). The benchmark shows both ([Performance](#performance)).
@@ -437,7 +455,7 @@ one query at a time). The benchmark shows both ([Performance](#performance)).
 
 For recovery only: indexes every row again as new segments and drops the old ones.
 
-    CALL vtext.rebuild(index);
+    CALL vfts.rebuild(index);
 
 #### load_all
 
@@ -447,11 +465,11 @@ Writes the node cache of every node of the session's subcluster from the index t
 node, a secondary subcluster (Eon), or a damaged cache directory. Segments a node has already are
 not written again.
 
-    CALL vtext.load_all(index);
+    CALL vfts.load_all(index);
 
 On Eon, every subcluster keeps its own caches: run `load_all` from a session on each secondary
 subcluster after a refresh on the primary. A node whose cache is behind refuses to answer:
-`cache of index cases is stale on this node (generation 3, the view needs 4): run CALL vtext.load_all('cases')`.
+`cache of index cases is stale on this node (generation 3, the view needs 4): run CALL vfts.load_all('cases')`.
 
 #### check_access
 
@@ -463,9 +481,9 @@ on the views from someone (a token copied from a view before stops working). `re
 `merge` re-read the policies too. Run as a superuser or the table's owner (the only users who see
 the policies).
 
-    CALL vtext.check_access(index);
+    CALL vfts.check_access(index);
 
-On Eon, the new key reaches the nodes of the session's subcluster: run `CALL vtext.load_all(index)`
+On Eon, the new key reaches the nodes of the session's subcluster: run `CALL vfts.load_all(index)`
 from a session on each secondary subcluster afterwards, as after a refresh.
 
 #### info
@@ -474,10 +492,10 @@ from a session on each secondary subcluster afterwards, as after a refresh.
 
 Segments, documents, the live tail, the last refresh and the caches of the subcluster, as notices.
 
-    CALL vtext.info(index);
+    CALL vfts.info(index);
 
-Per node: `SELECT * FROM (SELECT vtext.tinfo(USING PARAMETERS index='cases') OVER(PARTITION NODES) FROM vtext.probe) i;`
-Tables to read: `vtext.indexes` (the manifest), `vtext.segments`, `vtext.index_stats`.
+Per node: `SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='cases') OVER(PARTITION NODES) FROM vfts.probe) i;`
+Tables to read: `vfts.indexes` (the manifest), `vfts.segments`, `vfts.index_stats`.
 
 #### drop_index
 
@@ -485,7 +503,7 @@ Tables to read: `vtext.indexes` (the manifest), `vtext.segments`, `vtext.index_s
 
 Removes the index: its rows (partitions), the views and the node caches of the subcluster.
 
-    CALL vtext.drop_index(index);
+    CALL vfts.drop_index(index);
 
 #### The views _live and _snap
 
@@ -517,8 +535,8 @@ Searches follow Vertica's access rules (details and the reasons: docs/design.md 
 - Only the views can feed the search functions: input made by the statement itself is refused,
   so a search needs `SELECT` on the views. The functions that write node caches are not granted to
   users.
-- vtext reads the policies at `create_index`, `refresh_index`, `merge` and `check_access`. After
-  creating or changing a policy, run `CALL vtext.check_access(index)`; or create the index with
+- vfts reads the policies at `create_index`, `refresh_index`, `merge` and `check_access`. After
+  creating or changing a policy, run `CALL vfts.check_access(index)`; or create the index with
   `access=rows` to apply row policies from the start.
 - Cost with a row policy: each statement joins the index's doc_ids with the source table and
   checks a digest of the hidden rows (measured in [Performance](#performance)); `tserve` pays it
@@ -533,7 +551,7 @@ Searches follow Vertica's access rules (details and the reasons: docs/design.md 
 
 The k best documents of a query, by BM25.
 
-    SELECT vtext.tsearch(* USING PARAMETERS index='name', query='...' [, parameter=value ...]) OVER()
+    SELECT vfts.tsearch(* USING PARAMETERS index='name', query='...' [, parameter=value ...]) OVER()
     FROM <schema>.<index>_live;
 
 Output: `(qid, doc_id, score, rank)`; rank 1 is the best; ties by doc_id. Join to the source
@@ -554,28 +572,28 @@ table with `USING (doc_id)`.
 | queries | | many queries in one statement: one per line, `qid<TAB>query` (or the query alone: qid = line number) |
 | bm25 | lucene | `lucene`: the scores of Lucene and OpenSearch; `classic`: times (1 + k1), the scores of Elasticsearch (its LegacyBM25 scale) |
 | threads | 0 | threads for this query (0: one per core). A large segment is cut into slices of documents, so one query can use every core; while many queries run, each gets its share |
-| cache_dir | /tmp/vtext | node cache directory (or the session parameter) |
+| cache_dir | /tmp/vfts | node cache directory (or the session parameter) |
 
 Many queries in one statement (a batch saves the per-statement cost of Vertica, about 2 ms): the
 parameter `queries`, one query per line,
 
-    SELECT qid, rank, doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', k=3,
+    SELECT qid, rank, doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='cases', k=3,
                                    queries=E'1\tindemnity\n2\tholmes') OVER() FROM demo.cases_live) r
     ORDER BY qid, rank;
 
 or query rows `(qid, query)` added to the view's rows:
 
-    SELECT * FROM (SELECT vtext.tsearch(* USING PARAMETERS index='cases', k=3) OVER()
+    SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='cases', k=3) OVER()
                    FROM (SELECT * FROM demo.cases_live
                          UNION ALL SELECT 1, 'indemnity', NULL, NULL, NULL, NULL, NULL
                          UNION ALL SELECT 2, 'holmes', NULL, NULL, NULL, NULL, NULL) i) r
     ORDER BY qid, rank;
 
-Session defaults (any parameter except index and query): `ALTER SESSION SET UDPARAMETER vtext_mode = 'exact';`
-(any user; the name with the prefix `vtext_`), or `ALTER SESSION SET UDPARAMETER FOR vtext.vtext mode = 'exact';`
+Session defaults (any parameter except index and query): `ALTER SESSION SET UDPARAMETER vfts_mode = 'exact';`
+(any user; the name with the prefix `vfts_`), or `ALTER SESSION SET UDPARAMETER FOR vfts.vfts mode = 'exact';`
 (only users with USAGE on the library: do not grant that to searchers, it would let them create
-functions from the library's internal factories). With `ALTER SESSION SET UDPARAMETER vtext_debug_timing = '1'`,
-`tsearch` writes the time of each of its stages to the node's vertica.log (`vtext timing: ...`).
+functions from the library's internal factories). With `ALTER SESSION SET UDPARAMETER vfts_debug_timing = '1'`,
+`tsearch` writes the time of each of its stages to the node's vertica.log (`vfts timing: ...`).
 
 #### tcount
 
@@ -583,7 +601,7 @@ functions from the library's internal factories). With `ALTER SESSION SET UDPARA
 
 The number of matching documents (no scoring).
 
-    SELECT vtext.tcount(* USING PARAMETERS index='name', query='...' [, mode, syntax, operator, lang, ...]) OVER()
+    SELECT vfts.tcount(* USING PARAMETERS index='name', query='...' [, mode, syntax, operator, lang, ...]) OVER()
     FROM <schema>.<index>_live;
 
 Output: `(qid, count)`.
@@ -595,22 +613,22 @@ Output: `(qid, count)`.
 Every matching document, without scores and in no order: the input for joins and `GROUP BY` over
 all matches (a report of matches per owner, per month).
 
-    SELECT vtext.tmatch(* USING PARAMETERS index='name', query='...' [, mode, syntax, operator, lang, ...]) OVER()
+    SELECT vfts.tmatch(* USING PARAMETERS index='name', query='...' [, mode, syntax, operator, lang, ...]) OVER()
     FROM <schema>.<index>_live;
 
 Output: `(qid, doc_id)`. Same parameters as `tcount`.
 
-#### tserve and vtext_broker: many clients
+#### tserve and vfts_broker: many clients
 
-[Full example with output](#example-tserve-through-vtext_broker-mode-serve-http-in-the-users-own-vertica-session-one-tserve-statement)
+[Full example with output](#example-tserve-through-vfts_broker-mode-serve-http-in-the-users-own-vertica-session-one-tserve-statement)
 
-Every SQL statement costs Vertica about 2 ms of parsing, planning and executor set-up before vtext
+Every SQL statement costs Vertica about 2 ms of parsing, planning and executor set-up before vfts
 runs, and statements that call a UDx peak at about 2,000 per second on the test machine however
 many sessions send them. For many small searches at once there are two front ends in
-`tools/vtext_broker` (`make tools`), an HTTP service that a search application calls instead of
+`tools/vfts_broker` (`make tools`), an HTTP service that a search application calls instead of
 sending SQL itself:
 
-    build/tools/vtext_broker --port 9300 --schema bench --mode serve [--param "mode='stem'" ...]
+    build/tools/vfts_broker --port 9300 --schema bench --mode serve [--param "mode='stem'" ...]
     curl -XPOST localhost:9300/enron/_search -u alice:secret -d '{"query": "fraud AND (audit OR sec)"}'
     # {"hits": [{"id": 134348, "score": 5.11062765}, ...]}
 
@@ -620,10 +638,10 @@ sending SQL itself:
 - `--mode sql`: a request goes out at once as a `tsearch` statement when one of the user's
   sessions (`--sessions`, default 4) is idle; while all are busy, requests wait, and the next free
   session sends all of them (up to `--max-batch`) in one statement (parameter `queries`). No fixed
-  wait. Each statement is labeled `vtext_broker`.
+  wait. Each statement is labeled `vfts_broker`.
 - `--mode serve`: each session (`--channels`, default 1) runs one long statement,
 
-      SELECT vtext.tserve(* USING PARAMETERS index='enron', endpoint='/tmp/vtext_broker.9300.sock',
+      SELECT vfts.tserve(* USING PARAMETERS index='enron', endpoint='/tmp/vfts_broker.9300.sock',
                           token='<made by the broker>', k=10, ...) OVER() FROM bench.enron_snap;
 
   which connects to the broker's Unix socket (mode 0600) with a token made for that statement only,
@@ -631,12 +649,12 @@ sending SQL itself:
   statement of its own. `tserve` takes the parameters of `tsearch` plus `workers` (search threads,
   default one per core; each search uses one). It reads the view when it starts, so it answers from
   that snapshot: the broker starts a new statement when one ends; restart it after a refresh. It
-  accepts only an endpoint named `vtext_broker.<name>.sock`.
+  accepts only an endpoint named `vfts_broker.<name>.sock`.
 
 Both modes give the same hits and scores as `tsearch` (tests/sql/test_serve.sh). Searches through
 `tserve` are not rows of `query_requests`: Vertica records the session and the `tserve` statement,
 not each search. A `tserve` statement holds one slot (and its memory) of the user's resource pool
-while it runs, and its search threads are vtext's own, outside the pool's CPU accounting, like
+while it runs, and its search threads are vfts's own, outside the pool's CPU accounting, like
 the threads of `tsearch`. Run the broker on a node of the database, as the database's OS user,
 with its sessions connected to that node (the Unix socket is local); tested on one Enterprise node
 and on a 3-node Eon subcluster (fenced). [Performance](#performance) has the numbers of both modes.
@@ -648,7 +666,7 @@ and on a 3-node Eon subcluster (fenced). [Performance](#performance) has the num
 The parts of a text that match a query, with the matching words marked. A scalar function: pass
 the text (joined from the source table) and the query.
 
-    vtext.tsnippet(body, query [, lang] USING PARAMETERS index='name' [, mode, words, fragments, pre_tag, post_tag, separator])
+    vfts.tsnippet(body, query [, lang] USING PARAMETERS index='name' [, mode, words, fragments, pre_tag, post_tag, separator])
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -667,7 +685,7 @@ under NOT). Call it for the top hits only: it analyzes the text again.
 
 Fuses ranked lists by doc_id: BM25 from `tsearch` and vectors from vvector's `vsearch`.
 
-    SELECT vtext.hybrid(source, doc_id, rank, score USING PARAMETERS [k, method, rrf_k, weights, distance]) OVER()
+    SELECT vfts.hybrid(source, doc_id, rank, score USING PARAMETERS [k, method, rrf_k, weights, distance]) OVER()
     FROM (<list 1> UNION ALL <list 2> ...) u;
 
 | Parameter | Default | Meaning |
@@ -679,7 +697,7 @@ Fuses ranked lists by doc_id: BM25 from `tsearch` and vectors from vvector's `vs
 | distance | | sources whose score is a distance (smaller is better), for `weighted` |
 
 Output: `(doc_id, score, rank, sources)`; sources shows the rank in each list (`text:2 vector:1`).
-Embeddings are computed outside Vertica; vtext includes no model.
+Embeddings are computed outside Vertica; vfts includes no model.
 
 #### tokenize
 
@@ -687,8 +705,8 @@ Embeddings are computed outside Vertica; vtext includes no model.
 
 What the analyzer makes of a text: one row per word.
 
-    SELECT vtext.tokenize(text [, lang] [USING PARAMETERS lang, accent_fold, on_unsupported]) OVER() ...;
-    SELECT doc_id, vtext.tokenize(body, lang) FROM t;      -- beside other columns
+    SELECT vfts.tokenize(text [, lang] [USING PARAMETERS lang, accent_fold, on_unsupported]) OVER() ...;
+    SELECT doc_id, vfts.tokenize(body, lang) FROM t;      -- beside other columns
 
 Output: `(pos, term, stem, lang, start_byte, end_byte)`.
 
@@ -696,7 +714,7 @@ Output: `(pos, term, stem, lang, start_byte, end_byte)`.
 
 [Full example with output](#example-tversion)
 
-    SELECT vtext.tversion() OVER();
+    SELECT vfts.tversion() OVER();
 
 Output: library version, build flags, ICU version, the Snowball stemmers linked in.
 
@@ -727,8 +745,8 @@ COMMIT;
 #### Example: create_index
 
 ```sql
-CALL vtext.create_index('notes', 'ex.notes', 'lang=en journal=ex.notes_journal margin=0');
-   NOTICE 2005:  vtext: index notes created on ex.notes. Search: SELECT * FROM (SELECT vtext.tsearch(* USING PARAMETERS index='notes', query='...', k=10) OVER() FROM ex.notes_live) r;
+CALL vfts.create_index('notes', 'ex.notes', 'lang=en journal=ex.notes_journal margin=0');
+   NOTICE 2005:  vfts: index notes created on ex.notes. Search: SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='...', k=10) OVER() FROM ex.notes_live) r;
     create_index 
    --------------
                0
@@ -738,11 +756,11 @@ CALL vtext.create_index('notes', 'ex.notes', 'lang=en journal=ex.notes_journal m
 #### Example: info
 
 ```sql
-CALL vtext.info('notes');
+CALL vfts.info('notes');
    NOTICE 2005:  index notes: source ex.notes, generation 1, 1 segments, 5 documents (0 deleted), 0.0 MB
    NOTICE 2005:  boundary TIMESTAMPTZ '2026-11-21 18:18:04.487319+00'; live tail 0 rows (ex.notes_live); last refresh: full build: 5 rows into 1 segments, 0 tombstones, 0 journal rows
    NOTICE 2005:  access: open (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)
-   NOTICE 2005:  node caches: 1 of 1 nodes of this subcluster have generation 1 (details: SELECT * FROM (SELECT vtext.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vtext.probe) i;)
+   NOTICE 2005:  node caches: 1 of 1 nodes of this subcluster have generation 1 (details: SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;)
     info 
    ------
        0
@@ -753,7 +771,7 @@ CALL vtext.info('notes');
 
 ```sql
 SELECT r.rank, r.doc_id, ROUND(r.score, 4) AS score, n.body
-FROM (SELECT vtext.tsearch(* USING PARAMETERS index='notes', query='contract AND indemn*', k=10) OVER()
+FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract AND indemn*', k=10) OVER()
       FROM ex.notes_live) r
 JOIN ex.notes n USING (doc_id)
 ORDER BY r.rank;
@@ -768,7 +786,7 @@ ORDER BY r.rank;
 
 ```sql
 SELECT o.owner, COUNT(*) AS hits
-FROM (SELECT vtext.tsearch(* USING PARAMETERS index='notes', query='contract w/5 (indemnify OR indemnity OR market)', k=1000) OVER()
+FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract w/5 (indemnify OR indemnity OR market)', k=1000) OVER()
       FROM ex.notes_live) r
 JOIN ex.owners o USING (doc_id)
 GROUP BY o.owner ORDER BY hits DESC, o.owner;
@@ -783,7 +801,7 @@ GROUP BY o.owner ORDER BY hits DESC, o.owner;
 #### Example: tsearch: a batch of queries in one statement (parameter queries)
 
 ```sql
-SELECT qid, rank, doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='notes', k=2,
+SELECT qid, rank, doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', k=2,
        queries=E'1\tholmes\n2\t"mark to market"\n3\tcontrat') OVER() FROM ex.notes_snap) r
 ORDER BY qid, rank;
     qid | rank | doc_id 
@@ -797,7 +815,7 @@ ORDER BY qid, rank;
 #### Example: tcount
 
 ```sql
-SELECT * FROM (SELECT vtext.tcount(* USING PARAMETERS index='notes', query='contract') OVER() FROM ex.notes_live) c;
+SELECT * FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract') OVER() FROM ex.notes_live) c;
     qid | count 
    -----+-------
       0 |     3
@@ -808,7 +826,7 @@ SELECT * FROM (SELECT vtext.tcount(* USING PARAMETERS index='notes', query='cont
 
 ```sql
 SELECT o.owner, COUNT(*) AS documents
-FROM (SELECT vtext.tmatch(* USING PARAMETERS index='notes', query='contract*') OVER() FROM ex.notes_live) m
+FROM (SELECT vfts.tmatch(* USING PARAMETERS index='notes', query='contract*') OVER() FROM ex.notes_live) m
 JOIN ex.owners o USING (doc_id)
 GROUP BY o.owner ORDER BY o.owner;
      owner  | documents 
@@ -822,7 +840,7 @@ GROUP BY o.owner ORDER BY o.owner;
 #### Example: tsnippet
 
 ```sql
-SELECT doc_id, vtext.tsnippet(body, 'indemnity contract' USING PARAMETERS index='notes', words=8) AS snippet
+SELECT doc_id, vfts.tsnippet(body, 'indemnity contract' USING PARAMETERS index='notes', words=8) AS snippet
 FROM ex.notes WHERE doc_id IN (1, 2) ORDER BY doc_id;
     doc_id |                                     snippet                                      
    --------+----------------------------------------------------------------------------------
@@ -836,20 +854,20 @@ FROM ex.notes WHERE doc_id IN (1, 2) ORDER BY doc_id;
 ```sql
 INSERT INTO ex.notes (doc_id, body) VALUES (6, 'Draft contract with an indemnity cap.'); COMMIT;
    COMMIT
-SELECT 'live' AS view, doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='notes', query='cap') OVER() FROM ex.notes_live) r
+SELECT 'live' AS view, doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='cap') OVER() FROM ex.notes_live) r
 UNION ALL
-SELECT 'snap', doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='notes', query='cap') OVER() FROM ex.notes_snap) r;
+SELECT 'snap', doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='cap') OVER() FROM ex.notes_snap) r;
     view | doc_id 
    ------+--------
     live |      6
    (1 row)
-CALL vtext.refresh_index('notes');
-   NOTICE 2005:  vtext: index notes generation 2: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows (0.3 s)
+CALL vfts.refresh_index('notes');
+   NOTICE 2005:  vfts: index notes generation 2: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows (0.3 s)
     refresh_index 
    ---------------
                 0
    (1 row)
-SELECT 'snap' AS view, doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='notes', query='cap') OVER() FROM ex.notes_snap) r;
+SELECT 'snap' AS view, doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='cap') OVER() FROM ex.notes_snap) r;
     view | doc_id 
    ------+--------
     snap |      6
@@ -859,22 +877,22 @@ SELECT 'snap' AS view, doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS inde
 #### Example: merge into one segment
 
 ```sql
-CALL vtext.merge('notes', 1);
-   NOTICE 2005:  vtext: index notes merged in 1 steps (0.3 s); 1 segments now
+CALL vfts.merge('notes', 1);
+   NOTICE 2005:  vfts: index notes merged in 1 steps (0.3 s); 1 segments now
     merge 
    -------
         0
    (1 row)
-CALL vtext.info('notes');
+CALL vfts.info('notes');
    NOTICE 2005:  index notes: source ex.notes, generation 3, 1 segments, 6 documents (0 deleted), 0.0 MB
    NOTICE 2005:  boundary TIMESTAMPTZ '2026-11-21 18:18:05.071819+00'; live tail 0 rows (ex.notes_live); last refresh: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows
    NOTICE 2005:  access: open (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)
-   NOTICE 2005:  node caches: 1 of 1 nodes of this subcluster have generation 3 (details: SELECT * FROM (SELECT vtext.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vtext.probe) i;)
+   NOTICE 2005:  node caches: 1 of 1 nodes of this subcluster have generation 3 (details: SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;)
     info 
    ------
        0
    (1 row)
-SELECT s.gen, s.n_segments, s.n_docs FROM vtext.index_stats s JOIN vtext.indexes i USING (index_id)
+SELECT s.gen, s.n_segments, s.n_docs FROM vfts.index_stats s JOIN vfts.indexes i USING (index_id)
 WHERE i.index_name = 'notes' ORDER BY s.gen DESC LIMIT 1;
     gen | n_segments | n_docs 
    -----+------------+--------
@@ -885,7 +903,7 @@ WHERE i.index_name = 'notes' ORDER BY s.gen DESC LIMIT 1;
 #### Example: tinfo: the cache of every node
 
 ```sql
-SELECT * FROM (SELECT vtext.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vtext.probe) i;
+SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;
       node_name    | gen | segments | docs | deleted | bytes | problem 
    ----------------+-----+----------+------+---------+-------+---------
     v_vdb_node0001 |   3 |        1 |    6 |       0 |  5288 | 
@@ -895,8 +913,8 @@ SELECT * FROM (SELECT vtext.tinfo(USING PARAMETERS index='notes') OVER(PARTITION
 #### Example: load_all: write missing node caches from the index tables
 
 ```sql
-CALL vtext.load_all('notes');
-   NOTICE 2005:  vtext: index notes generation 3 (1 segments) loaded on the nodes of this subcluster in 0.100000000000000 s
+CALL vfts.load_all('notes');
+   NOTICE 2005:  vfts: index notes generation 3 (1 segments) loaded on the nodes of this subcluster in 0.100000000000000 s
     load_all 
    ----------
            0
@@ -906,13 +924,13 @@ CALL vtext.load_all('notes');
 #### Example: check_access: read the access policies again and make a new key
 
 ```sql
-CALL vtext.check_access('notes');
-   NOTICE 2005:  vtext: index notes access open, new key active
+CALL vfts.check_access('notes');
+   NOTICE 2005:  vfts: index notes access open, new key active
     check_access 
    --------------
                0
    (1 row)
-SELECT index_name, access, reorder FROM vtext.indexes WHERE index_name = 'notes';
+SELECT index_name, access, reorder FROM vfts.indexes WHERE index_name = 'notes';
     index_name | access | reorder 
    ------------+--------+---------
     notes      | open   | t
@@ -922,7 +940,7 @@ SELECT index_name, access, reorder FROM vtext.indexes WHERE index_name = 'notes'
 #### Example: rebuild (recovery only)
 
 ```sql
-CALL vtext.rebuild('notes');
+CALL vfts.rebuild('notes');
     rebuild 
    ---------
           0
@@ -932,7 +950,7 @@ CALL vtext.rebuild('notes');
 #### Example: tokenize: what the analyzer sees
 
 ```sql
-SELECT pos, term, stem, lang FROM (SELECT vtext.tokenize('Holmes'' contracts, Holmes-style' USING PARAMETERS lang='en') OVER()) t ORDER BY pos;
+SELECT pos, term, stem, lang FROM (SELECT vfts.tokenize('Holmes'' contracts, Holmes-style' USING PARAMETERS lang='en') OVER()) t ORDER BY pos;
     pos |   term    |   stem   | lang 
    -----+-----------+----------+------
       0 | holmes    | holm     | en
@@ -946,9 +964,9 @@ SELECT pos, term, stem, lang FROM (SELECT vtext.tokenize('Holmes'' contracts, Ho
 
 ```sql
 SELECT h.rank, h.doc_id, ROUND(h.score, 5) AS score, h.sources
-FROM (SELECT vtext.hybrid(src, doc_id, rank, score USING PARAMETERS k=3) OVER() FROM (
+FROM (SELECT vfts.hybrid(src, doc_id, rank, score USING PARAMETERS k=3) OVER() FROM (
         SELECT 'text' AS src, doc_id, rank, score
-        FROM (SELECT vtext.tsearch(* USING PARAMETERS index='notes', query='indemnity contract', k=10) OVER() FROM ex.notes_live) t
+        FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='indemnity contract', k=10) OVER() FROM ex.notes_live) t
         UNION ALL
         SELECT 'vector', 3, 1, 0.91 UNION ALL SELECT 'vector', 2, 2, 0.88 UNION ALL SELECT 'vector', 6, 3, 0.80) u) h
 ORDER BY h.rank;
@@ -963,17 +981,17 @@ ORDER BY h.rank;
 #### Example: tversion
 
 ```sql
-SELECT version, build, icu FROM (SELECT vtext.tversion() OVER()) v;
+SELECT version, build, icu FROM (SELECT vfts.tversion() OVER()) v;
     version |                       build                        | icu  
    ---------+----------------------------------------------------+------
-    0.2.0   | -O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0 | 79.1
+    0.3.0   | -O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0 | 79.1
    (1 row)
 ```
 
-#### Example: tserve through vtext_broker (mode serve): HTTP in, the user's own Vertica session, one tserve statement
+#### Example: tserve through vfts_broker (mode serve): HTTP in, the user's own Vertica session, one tserve statement
 
 ```
-build/tools/vtext_broker --port 9399 --schema ex --mode serve &
+build/tools/vfts_broker --port 9399 --schema ex --mode serve &
 curl -s -XPOST localhost:9399/notes/_search -d '{"query": "contract AND indemn*"}'
    {"hits": [{"id": 6, "score": 1.21872902}, {"id": 1, "score": 1.18564403}, {"id": 2, "score": 1.18564403}]}
 ```
@@ -981,8 +999,8 @@ curl -s -XPOST localhost:9399/notes/_search -d '{"query": "contract AND indemn*"
 #### Example: drop_index
 
 ```sql
-CALL vtext.drop_index('notes');
-   NOTICE 2005:  vtext: index notes dropped (caches removed on 1 nodes of this subcluster)
+CALL vfts.drop_index('notes');
+   NOTICE 2005:  vfts: index notes dropped (caches removed on 1 nodes of this subcluster)
     drop_index 
    ------------
              0
@@ -1029,38 +1047,38 @@ CALL vtext.drop_index('notes');
 **Join the hits to the table** (the function returns ids and scores; the text stays in your table):
 
     SELECT r.rank, d.doc_id, LEFT(d.body, 80) AS body, r.score
-    FROM (SELECT vtext.tsearch(* USING PARAMETERS index='emails', query='contract w/5 indemnity', k=20) OVER()
+    FROM (SELECT vfts.tsearch(* USING PARAMETERS index='emails', query='contract w/5 indemnity', k=20) OVER()
           FROM app.emails_live) r
     JOIN app.emails d USING (doc_id)
     ORDER BY r.rank;
 
 **Filter by other columns.** Search with a larger k, then filter in SQL; or count first:
 
-    SELECT r.doc_id, r.score FROM (SELECT vtext.tsearch(* USING PARAMETERS index='emails', query='fraud', k=1000) OVER()
+    SELECT r.doc_id, r.score FROM (SELECT vfts.tsearch(* USING PARAMETERS index='emails', query='fraud', k=1000) OVER()
                                    FROM app.emails_live) r
     JOIN app.emails d USING (doc_id) WHERE d.sent > '2001-06-01' ORDER BY r.score DESC LIMIT 10;
 
 **E-discovery review set**: every matching document, no ranking needed (`tcount` for the size,
 `tsearch` with a large k for the ids):
 
-    SELECT * FROM (SELECT vtext.tcount(* USING PARAMETERS index='emails',
+    SELECT * FROM (SELECT vfts.tcount(* USING PARAMETERS index='emails',
                    query='(shred* OR destroy*) w/5 document* AND NOT newsletter') OVER() FROM app.emails_live) c;
 
 **A search box** (users type words, not syntax): `syntax='plain'`, optionally `operator='and'`:
 
-    SELECT * FROM (SELECT vtext.tsearch(* USING PARAMETERS index='kb', query='how do I reset my password?',
+    SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='kb', query='how do I reset my password?',
                    syntax='plain', k=10) OVER() FROM app.kb_live) r;
 
 **Several languages in one table**: give each row its `lang`; give the query its `lang`:
 
-    SELECT * FROM (SELECT vtext.tsearch(* USING PARAMETERS index='news', query='الكتاب', lang='ar', k=10) OVER()
+    SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='news', query='الكتاب', lang='ar', k=10) OVER()
                    FROM app.news_live) r;
 
 **Hybrid: BM25 + vectors** (vvector index `kb_vec` on the same ids):
 
     SELECT h.rank, h.doc_id, h.sources
-    FROM (SELECT vtext.hybrid(src, doc_id, rank, score USING PARAMETERS k=10) OVER() FROM (
-            SELECT 'text' AS src, doc_id, rank, score FROM (SELECT vtext.tsearch(* USING PARAMETERS index='kb',
+    FROM (SELECT vfts.hybrid(src, doc_id, rank, score USING PARAMETERS k=10) OVER() FROM (
+            SELECT 'text' AS src, doc_id, rank, score FROM (SELECT vfts.tsearch(* USING PARAMETERS index='kb',
                    query='reset password', syntax='plain', k=50) OVER() FROM app.kb_live) t
             UNION ALL
             SELECT 'vector', id, rank, score FROM (SELECT vvector.vsearch(qid, qvec, id, vec, del, ver, snapshot_id
@@ -1069,7 +1087,7 @@ CALL vtext.drop_index('notes');
 
 ## Performance
 
-vtext against Elasticsearch 9.5.6 and OpenSearch 3.10.0, on one machine, with the same documents,
+vfts against Elasticsearch 9.5.6 and OpenSearch 3.10.0, on one machine, with the same documents,
 equivalent analyzers and the same queries. Every number below is in `bench/results/` (the full
 tables: [bench/results/summary.md](bench/results/summary.md)), and one script runs it all again
 ([Run the benchmark yourself](#run-the-benchmark-yourself)).
@@ -1077,31 +1095,31 @@ tables: [bench/results/summary.md](bench/results/summary.md)), and one script ru
 **In short.**
 
 - **Throughput, 32 clients, one query per request** (the same native HTTP load generator for all
-  three, median of 3 rounds in alternating order): with `tserve` through `vtext_broker`, vtext
+  three, median of 3 rounds in alternating order): with `tserve` through `vfts_broker`, vfts
   serves 1.1 to 2.0 times the queries per second of the faster of Elasticsearch and OpenSearch on
   every collection: Enron 6,832 against 3,902; PubMed 11,740 against 8,122; MS MARCO 3,218 against
   2,907; Hebrew Wikipedia 20,138 against 10,166; Arabic Wikipedia 17,559 against 10,469.
 - **One SQL statement per query** is the slow way to send many small searches: 928 to 1,313
   queries per second, a third to an eighth of the engines. Any statement that calls a UDx peaks at
-  about 2,000 per second on this machine (`SELECT 1`: 6,000), whatever vtext does inside. Batches
+  about 2,000 per second on this machine (`SELECT 1`: 6,000), whatever vfts does inside. Batches
   of whatever is waiting (`--mode sql`) reach 1,801 to 3,554.
-- **Latency, one client** through the same HTTP client: vtext `tserve` is faster on all five
+- **Latency, one client** through the same HTTP client: vfts `tserve` is faster on all five
   collections (Hebrew Wikipedia 0.58 ms against 1.06 to 1.09; Enron 1.77 against 2.40 and 2.75;
   PubMed 1.01 against 1.07 and 1.30; MS MARCO 2.95 against 3.60 and 3.95). As one SQL statement
-  per query, vtext takes 3.2 to 3.9 ms.
-- **Same answers.** The engines and vtext return the same matches (counts equal for 139 of 140
+  per query, vfts takes 3.2 to 3.9 ms.
+- **Same answers.** The engines and vfts return the same matches (counts equal for 139 of 140
   syntax queries) and, query by query, the same top 10 with the same scores: 97% of the 6,980
   MS MARCO queries and 133 of 140 syntax queries have identical scores at every rank. Relevance on
-  MS MARCO: MRR@10 0.1815 (vtext), 0.1815 (Elasticsearch), 0.1813 (OpenSearch).
+  MS MARCO: MRR@10 0.1815 (vfts), 0.1815 (Elasticsearch), 0.1813 (OpenSearch).
 - **Search next to other data** (Enron, an attribute per document): adding it to all 517,401
   documents takes 0.028 s in Vertica against 223 s and 228 s; changing it for 1% takes 0.015 s
   against 2.8 s and 8.9 s. Filtering or counting matches by it is faster in the engines (1 to 3 ms
   against 17 to 18 ms).
-- **Proximity**: `w/N` over OR groups is where vtext is fastest; `california w/5 (energy OR power OR
+- **Proximity**: `w/N` over OR groups is where vfts is fastest; `california w/5 (energy OR power OR
   electricity)` on Enron: 10.5 ms against 26.3 ms (Elasticsearch) and 34.7 ms (OpenSearch).
-- **Index size**: vtext's node cache is half to two thirds of the engines' store (the engines also
+- **Index size**: vfts's node cache is half to two thirds of the engines' store (the engines also
   keep their copy of the text); the index tables in Vertica are a third of it or less.
-- **Build** (vtext: build + merge into one segment): OpenSearch is the fastest everywhere. vtext is
+- **Build** (vfts: build + merge into one segment): OpenSearch is the fastest everywhere. vfts is
   faster than Elasticsearch on Enron (65 s against 90 s), PubMed (73 against 100) and both
   Wikipedias (154 against 159, 111 against 119), and slower on MS MARCO (377 s against 214 s).
 - **Document order**: renumbering the documents by graph bisection at the merge made Enron and
@@ -1110,7 +1128,7 @@ tables: [bench/results/summary.md](bench/results/summary.md)), and one script ru
 - **Access policies**: a row access policy of the source table applies to every search, with the
   scores of an index of the rows the user sees; it costs a join per statement (Enron: 86 to 320 ms
   instead of 2 ms; `tserve` once per statement) ([Access policies: cost](#access-policies-cost)).
-- **New rows**: searchable in vtext at once, without a refresh (the live tail); a refresh of 1% of
+- **New rows**: searchable in vfts at once, without a refresh (the live tail); a refresh of 1% of
   MS MARCO (88,418 rows) takes 3.1 s against 8.6 s and 8.1 s. But a live tail that large is slow to
   search (2.0 s for one query): refresh often, so that the tail stays small.
 
@@ -1128,9 +1146,9 @@ tables: [bench/results/summary.md](bench/results/summary.md)), and one script ru
 ([tools/httpload.cpp](tools/httpload.cpp): keep-alive HTTP, one thread per client), on the same
 machine as the server. Each round sends at least 20,000 requests (the query set repeated) three
 times; the table shows the median over 3 rounds of each round's best run, and the range. The
-engines and vtext ran in a different order in each round. CPU frequency governor `performance`.
+engines and vfts ran in a different order in each round. CPU frequency governor `performance`.
 
-| Collection | vtext, tserve | vtext, batches | vtext, one statement per query | Elasticsearch | OpenSearch |
+| Collection | vfts, tserve | vfts, batches | vfts, one statement per query | Elasticsearch | OpenSearch |
 |---|---:|---:|---:|---:|---:|
 | Enron | **6,832** (6,810-7,225) | 2,366 | 1,246 | 3,902 (3,684-4,044) | 3,881 (3,782-3,918) |
 | PubMed | **11,740** (11,560-11,905) | 3,029 | 1,269 | 7,964 (7,813-8,339) | 8,122 (8,075-8,290) |
@@ -1138,15 +1156,15 @@ engines and vtext ran in a different order in each round. CPU frequency governor
 | Wikipedia, Hebrew | **20,138** (20,062-20,271) | 3,554 | 1,297 | 10,100 (10,057-10,181) | 10,166 (10,041-10,305) |
 | Wikipedia, Arabic | **17,559** (17,330-17,810) | 3,413 | 1,313 | 10,050 (10,013-10,134) | 10,469 (10,455-10,528) |
 
-The three vtext columns are three ways of sending the same searches through
-[vtext_broker](#tserve-and-vtext_broker-many-clients), all on the snap view:
+The three vfts columns are three ways of sending the same searches through
+[vfts_broker](#tserve-and-vfts_broker-many-clients), all on the snap view:
 
-- **tserve**: one `vtext.tserve` statement per user session; the searches travel over a Unix
+- **tserve**: one `vfts.tserve` statement per user session; the searches travel over a Unix
   socket to that statement, so a search is not a SQL statement of its own.
 - **batches**: `--mode sql --sessions 8`: whatever waits while the 8 sessions are busy goes out as
   one `tsearch` statement (parameter `queries`).
 - **one statement per query**: `--mode sql --sessions 32 --max-batch 1`, what an application
-  that sends `SELECT ... vtext.tsearch(...)` for every search gets.
+  that sends `SELECT ... vfts.tsearch(...)` for every search gets.
 
 Why one statement per query cannot win on this machine: Vertica parses, plans and starts an
 executor for every statement, and statements that call a UDx peak at about 2,000 per second at 8
@@ -1164,7 +1182,7 @@ for all three.
 Through the same native HTTP client, one request at a time; per query the best of 3 runs, then
 the mean (and the 99th percentile), median of the 3 rounds.
 
-| Collection | vtext, tserve | vtext, one statement per query | Elasticsearch | OpenSearch |
+| Collection | vfts, tserve | vfts, one statement per query | Elasticsearch | OpenSearch |
 |---|---:|---:|---:|---:|
 | Enron | **1.77 ms** (p99 18.2) | 3.88 (14.1) | 2.75 (31.4) | 2.40 (28.7) |
 | PubMed | **1.01** (4.9) | 3.36 (5.6) | 1.30 (5.3) | 1.07 (2.8) |
@@ -1182,11 +1200,11 @@ before the engine changes that made phrases and patterns faster) is in
 ### Search next to other data (joins)
 
 Enron, 517,401 emails. Every email gets an attribute, its custodian (150 values, as in an
-e-discovery case); 10 custodians are on legal hold. vtext keeps the attribute in its own table and
+e-discovery case); 10 custodians are on legal hold. vfts keeps the attribute in its own table and
 joins at query time; Elasticsearch and OpenSearch, which have no joins, keep it in every document
 ([bench/join_test.py](bench/join_test.py); the engines work on a clone of their index).
 
-| Test | vtext (Vertica) | Elasticsearch | OpenSearch |
+| Test | vfts (Vertica) | Elasticsearch | OpenSearch |
 |---|---:|---:|---:|
 | J1 add the attribute to every document | **0.028 s** (`CREATE TABLE AS`) | 223 s (`_update_by_query`) | 228 s |
 | J2 move 1% of the documents (5,174) to another custodian | **0.015 s** (`UPDATE`) | 2.8 s | 8.9 s |
@@ -1198,7 +1216,7 @@ joins at query time; Elasticsearch and OpenSearch, which have no joins, keep it 
   document, so every change rewrites and re-analyzes whole documents (and needs a merge afterwards
   for full speed: 21 to 42 s here).
 - **Filtering and aggregating inside the search is where the engines win.** They keep the
-  attribute next to the postings (doc values) and filter or count while they search. vtext hands
+  attribute next to the postings (doc values) and filter or count while they search. vfts hands
   every match to Vertica's join (`tmatch`, `tsearch` with a large k), which costs 17 to 18 ms when
   thousands of documents match.
 - The answers are the same: J4's counts are identical for all 40 queries and 150 custodians; J3's
@@ -1207,7 +1225,7 @@ joins at query time; Elasticsearch and OpenSearch, which have no joins, keep it 
 
 ### Index build and size
 
-| Dataset | vtext build + merge (s) | Elasticsearch (s) | OpenSearch (s) | vtext cache (MB) | vtext tables (MB) | Elasticsearch (MB) | OpenSearch (MB) |
+| Dataset | vfts build + merge (s) | Elasticsearch (s) | OpenSearch (s) | vfts cache (MB) | vfts tables (MB) | Elasticsearch (MB) | OpenSearch (MB) |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | MS MARCO | 376.8 | 214.3 | 207.2 | 2,787 | 1,599 | 4,119 | 4,167 |
 | Enron | 65.3 | 90.1 | 52.8 | 599 | 289 | 1,226 | 1,227 |
@@ -1215,9 +1233,9 @@ joins at query time; Elasticsearch and OpenSearch, which have no joins, keep it 
 | Wikipedia, Hebrew | 154.1 | 159.1 | 66.1 | 1,233 | 745 | 2,279 | 2,275 |
 | Wikipedia, Arabic | 111.1 | 119.0 | 47.3 | 933 | 525 | 1,588 | 1,588 |
 
-vtext: `create_index` (analysis, index tables, node cache) and `merge(name, 1)`; the COPY of the
+vfts: `create_index` (analysis, index tables, node cache) and `merge(name, 1)`; the COPY of the
 text into Vertica is not included (MS MARCO 275 s). The engines: bulk load, refresh and force merge
-into one segment. Without the merge, vtext's MS MARCO build takes 167 s (16 segments); the merge
+into one segment. Without the merge, vfts's MS MARCO build takes 167 s (16 segments); the merge
 is single-threaded (future work). Enron and PubMed are merged with document reordering (a few
 seconds of their merge; [Document order](#document-order-graph-bisection)), which also makes their
 node cache 1 to 5% and their index tables 3 to 16% smaller.
@@ -1228,7 +1246,7 @@ A merge can number the documents by recursive graph bisection (index option `reo
 on; [merge](#merge), docs/design.md "Merge"): documents that share words get nearby docnos. It
 never changes an answer: every hit and score of every benchmark query, k = 10 and k = 100, was
 the same in both orders. Whether it is faster depends on the order the documents already have.
-Engine only (`vtext_cli`, the benchmark's one-segment index of each collection, the benchmark's
+Engine only (`vfts_cli`, the benchmark's one-segment index of each collection, the benchmark's
 queries; `bench/plan_c/reorder_ab.sh`), median of 3 rounds:
 
 | Collection | Postings (MB) | Mean, 1 client (ms) | 32 clients (q/s) | Merge into one segment (s) | Used in the benchmark |
@@ -1274,37 +1292,37 @@ search. For large tables with row policies and many small searches, `tserve` is 
 | Wikipedia, Hebrew | 30 | 29 | 29 / 29 | 29 |
 | Wikipedia, Arabic | 30 | 30 | 26 / 26 | 29 |
 
-Elasticsearch is compared with vtext's `bm25='classic'` (its scale), OpenSearch with the default.
+Elasticsearch is compared with vfts's `bm25='classic'` (its scale), OpenSearch with the default.
 The differences that remain: fuzzy words (the engines blend the statistics of the expansions; one
-query each in Enron and PubMed), and words the analyzers see differently: Snowball 3.2 (vtext)
+query each in Enron and PubMed), and words the analyzers see differently: Snowball 3.2 (vfts)
 against Lucene's older Snowball (`international` stems to `internat` in one and `intern` in the
 other), and a few tokens in mixed or broken text. Ties (documents with the same score) are broken
-by doc_id in vtext and by internal order in the engines.
+by doc_id in vfts and by internal order in the engines.
 
 ### Where Elasticsearch and OpenSearch win, and why
 
 - **Many small searches sent as SQL.** One statement per query: 928 to 1,313 queries per second
   against 2,729 to 10,469. Every Vertica statement is parsed, planned and executed; statements that
   call a UDx peak at about 2,000 per second on this machine. `tserve` exists for this case.
-- **One search as one SQL statement** on a small collection: 3.2 to 3.9 ms through vtext (vsql or
-  the broker in sql mode) against 1.1 to 2.8 ms; vtext's own work for a word query on Enron is
+- **One search as one SQL statement** on a small collection: 3.2 to 3.9 ms through vfts (vsql or
+  the broker in sql mode) against 1.1 to 2.8 ms; vfts's own work for a word query on Enron is
   0.02 ms. On the reordered collections this path got slower (Enron 3.39 to 3.88 ms, PubMed 3.18
   to 3.36): a single `tsearch` cuts the segment into slices for all cores, and on a reordered
   segment proximity queries stop scaling beyond 2 to 4 threads (Enron's `california w/5 (...)`,
   engine only: 4.2 ms on 22 threads in doc_id order, 9.9 ms reordered; on one thread, as `tserve`
   searches, 19.2 and 16.0 ms).
-- **PubMed's 99th percentile with one client**: OpenSearch 2.8 ms against vtext `tserve` 4.9 ms
-  (the mean is lower in vtext: 1.01 against 1.07 ms).
-- **Filtering or aggregating matches by an attribute**: 1.2 to 2.9 ms against vtext's 17 to 18 ms
-  (the engines read the attribute while they search; vtext joins every match in Vertica).
+- **PubMed's 99th percentile with one client**: OpenSearch 2.8 ms against vfts `tserve` 4.9 ms
+  (the mean is lower in vfts: 1.01 against 1.07 ms).
+- **Filtering or aggregating matches by an attribute**: 1.2 to 2.9 ms against vfts's 17 to 18 ms
+  (the engines read the attribute while they search; vfts joins every match in Vertica).
 - **Phrases of very frequent words and single fuzzy words**: Lucene's phrase matching and its
-  Levenshtein automaton are faster for these (vtext's engine: "case report" on PubMed 3.0 ms; fuzzy
+  Levenshtein automaton are faster for these (vfts's engine: "case report" on PubMed 3.0 ms; fuzzy
   words about 1.7 ms against about 1.4 ms in Elasticsearch's profile).
 - **Build of large collections**: the merge into one segment is single-threaded.
 - **The live view** costs about 1 ms more than the snap view per statement (a `UNION ALL` in the
   plan); and a large live tail is analyzed for every query. `tserve` serves the snap view.
 
-### Where vtext wins
+### Where vfts wins
 
 - **Throughput at 32 clients through `tserve`**: 1.1 times (MS MARCO) to 2.0 times (Hebrew
   Wikipedia) the faster engine, on every collection.
@@ -1325,10 +1343,11 @@ by doc_id in vtext and by internal order in the engines.
 ### Method
 
 - Machine: Intel Core Ultra 7 165H (22 logical cores), 61 GB RAM, NVMe disk, Ubuntu 26.04.1.
-  Vertica 26.3.0-2 Enterprise, one node; vtext 0.2.0 (g++ 15.2, -O3), unfenced (fenced: 10.1 ms
-  against 5.0 ms on MS MARCO, live view). Elasticsearch 9.5.6 and OpenSearch 3.10.0 from their
-  tarballs, 16 GB heap, security off, 1 shard, 0 replicas, force-merged into one segment. One
-  engine runs at a time; the clients run on the same machine (127.0.0.1).
+  Vertica 26.3.0-2 Enterprise, one node; vfts 0.2.0 (then named vtext; 0.3.0 changes only the
+  name), g++ 15.2, -O3, unfenced (fenced: 10.1 ms against 5.0 ms on MS MARCO, live view).
+  Elasticsearch 9.5.6 and OpenSearch 3.10.0 from their tarballs, 16 GB heap, security off,
+  1 shard, 0 replicas, force-merged into one segment. One engine runs at a time; the clients run
+  on the same machine (127.0.0.1).
 - Data (`bench/data/fetch.sh`, `prepare.py`): MS MARCO passage ranking (8.8M passages, the 6,980
   dev queries with judgements), Enron email (CMU release), PubMed (every citation with an abstract
   in the first 60 baseline files: 932,746), Hebrew and Arabic Wikipedia (the first 300,000
@@ -1336,16 +1355,16 @@ by doc_id in vtext and by internal order in the engines.
   (`_bulk`).
 - Analyzers: the engines use `icu_tokenizer`, `icu_normalizer` (nfkc_cf), Latin accent folding,
   Lucene's Arabic and Persian normalization, Hebrew points removed, and English Snowball on a
-  stemmed field next to an exact one (`bench/load_engines.py`); vtext's own analyzer does the same
+  stemmed field next to an exact one (`bench/load_engines.py`); vfts's own analyzer does the same
   steps. English sets are searched with stemming, Hebrew and Arabic in exact mode (no equivalent
   stemmer in the engines).
-- Queries: MS MARCO as plain text (a `match` query; vtext `syntax='plain'`); the other sets with 40
-  or 30 syntax queries each (`bench/queries/`), translated from vtext's parsed query into the
+- Queries: MS MARCO as plain text (a `match` query; vfts `syntax='plain'`); the other sets with 40
+  or 30 syntax queries each (`bench/queries/`), translated from vfts's parsed query into the
   engines' query DSL (`bench/run_engines.py`: bool, match_phrase, span_near, span_multi, prefix,
   wildcard, fuzzy). Throughput uses each set repeated 25 times. Top 10, no total hit count.
 - Throughput and one-client latency (the tables above): `bench/run_all.sh throughput`
   (bench/plan_c/stage1.sh, step f1). The same client, [tools/httpload](tools/httpload.cpp), sends
-  the requests to Elasticsearch, OpenSearch and vtext_broker: closed loop, keep-alive, one
+  the requests to Elasticsearch, OpenSearch and vfts_broker: closed loop, keep-alive, one
   connection per client. The engines' requests are the bodies `bench/run_engines.py` sends
   (`_source: false`, `track_total_hits: false`, size 10). Each round: one warm-up run of the
   request file, then 3 measured runs (32 clients: the best q/s; 1 client: the best time per
@@ -1363,21 +1382,21 @@ by doc_id in vtext and by internal order in the engines.
 On a Linux machine with Vertica (one node is enough), 22 cores or more recommended, 32 GB of RAM
 and about 40 GB of free disk:
 
-    # 1. vtext
-    git clone <this repository> && cd vertica-text-udx
+    # 1. vfts
+    git clone <this repository> && cd vfts
     export VSQL_HOST=localhost VSQL_PORT=5433 VSQL_USER=dbadmin VSQL_PASSWORD=... VSQL_DATABASE=...
     ./install.sh
 
-    # 2. data (downloads about 12 GB into ~/vtext_data; check each dataset's license, see fetch.sh)
+    # 2. data (downloads about 12 GB into ~/vfts_data; check each dataset's license, see fetch.sh)
     bench/run_all.sh data
 
-    # 3. Elasticsearch and OpenSearch (tarballs into ~/vtext_bench, ports 9200 and 9201, 127.0.0.1 only)
+    # 3. Elasticsearch and OpenSearch (tarballs into ~/vfts_bench, ports 9200 and 9201, 127.0.0.1 only)
     bench/run_all.sh engines
 
-    # 4. everything else: vtext, fenced, Elasticsearch, OpenSearch, refresh, throughput, report
+    # 4. everything else: vfts, fenced, Elasticsearch, OpenSearch, refresh, throughput, report
     #    (about 3 hours; throughput alone: bench/run_all.sh throughput report, about 70 minutes,
     #    needs passwordless sudo for the CPU governor and the indexes of the steps before it)
-    bench/run_all.sh env vtext fenced es os refresh throughput report
+    bench/run_all.sh env vfts fenced es os refresh throughput report
 
     # 5. optional: batches and the resource pool
     bench/pool_test.sh msmarco enron
@@ -1388,8 +1407,8 @@ and about 40 GB of free disk:
     bench/plan_c/access_cost.sh
 
 The results are appended to `bench/results/*.jsonl`; `python3 -I bench/report.py` writes
-`bench/results/summary.md` and the charts again. `VTEXT_SETS="enron pubmed"` limits the datasets,
-`VTEXT_REPEAT` changes the number of measured runs. Every step is capped in time, so a stalled
+`bench/results/summary.md` and the charts again. `VFTS_SETS="enron pubmed"` limits the datasets,
+`VFTS_REPEAT` changes the number of measured runs. Every step is capped in time, so a stalled
 download or engine never blocks the run.
 
 ## FAQ
@@ -1400,7 +1419,7 @@ positions, no phrases, no fuzzy words, and its tokenizer keeps punctuation (`Hol
 
 **Are the scores those of Elasticsearch and OpenSearch?** With equivalent analyzers, yes: the same
 BM25 (k1 1.2, b 0.75, Lucene's one-byte document lengths, float arithmetic) and the same
-statistics. OpenSearch uses Lucene's BM25, vtext's default; Elasticsearch multiplies every BM25
+statistics. OpenSearch uses Lucene's BM25, vfts's default; Elasticsearch multiplies every BM25
 score by k1 + 1 = 2.2 (its legacy scale), which `bm25='classic'` reproduces. The order of the
 results is the same on both scales. The benchmark compares the top 10 of every query with both
 engines ([Performance](#performance)); the differences that remain come from the analyzers
@@ -1417,11 +1436,11 @@ and OpenSearch give: a document is searchable after a refresh.
 of the new segments on every node. The benchmark measures 1% of MS MARCO.
 
 **How do I schedule refreshes?** With Vertica's scheduler: `CREATE SCHEDULE s USING CRON '*/5 * * * *';
-CREATE TRIGGER t ON SCHEDULE s EXECUTE PROCEDURE vtext.refresh_index('emails') AS DEFINER;`.
+CREATE TRIGGER t ON SCHEDULE s EXECUTE PROCEDURE vfts.refresh_index('emails') AS DEFINER;`.
 On Eon the trigger runs on the primary subcluster; a secondary subcluster needs `load_all` from a
 session there (docs/design.md).
 
-**Is the cache safe to delete?** Yes. It is a copy of the index tables; `CALL vtext.load_all('<index>')`
+**Is the cache safe to delete?** Yes. It is a copy of the index tables; `CALL vfts.load_all('<index>')`
 writes it again. A node without its cache answers with an error that says so.
 
 **Fenced or unfenced?** Unfenced is faster (no process boundary): on MS MARCO 5.0 ms per query
@@ -1436,7 +1455,7 @@ search needs a few MB per query plus the live tail it analyzes.
 One text column per index; index several columns by concatenating them in a view or a table.
 
 **Can I search several indexes at once?** One function call searches one index. Combine results in
-SQL (UNION ALL, `vtext.hybrid` with weights).
+SQL (UNION ALL, `vfts.hybrid` with weights).
 
 ## Restrictions and future work
 
@@ -1506,7 +1525,7 @@ SQL (UNION ALL, `vtext.hybrid` with weights).
 | `tbuild.cpp`, `tload.cpp`, `tmerge.cpp`, `nodes.cpp` | used by the procedures: build, load node caches, merge, node information |
 | `udx_common.h`, `search_options.h`, `view_input.h`, `library.cpp` | parameters and shared code; the views' rows and the access check; `tprobe.cpp`: scalar probes for the statement-cost measurements |
 | **SQL** `sql/` | `install.sql` (schema, tables, functions), `procedures.sql` (create_index, refresh_index, ...), `uninstall.sql` |
-| **Tools** `tools/` | `vtext_broker.cpp` (HTTP front end, `tserve` / batches), `httpload.cpp` (load generator of the benchmark), `vtext_cli.cpp` (the engine without Vertica: build, search, merge, explain) |
+| **Tools** `tools/` | `vfts_broker.cpp` (HTTP front end, `tserve` / batches), `httpload.cpp` (load generator of the benchmark), `vfts_cli.cpp` (the engine without Vertica: build, search, merge, explain) |
 | **Tests** `tests/engine/`, `tests/sql/` | unit tests against brute-force models; SQL tests against plain SQL, freshness, languages, snippets, hybrid, serve, access; `digest.sql` for comparing systems |
 | **Benchmark** `bench/` | `run_all.sh` runs everything; `data/` download and preparation; `engines/` Elasticsearch and OpenSearch install and start; `load_*`, `run_*` loaders and runners; `join_test.py` search next to other data; `report.py` tables and charts; `plan_c/` throughput measurements (also `reorder_ab.sh`: document order, `access_cost.sh`: access policies); `results/` every recorded number |
 | `scripts/` | `deploy.sh` (used by make deploy), `demo.sh` (every function on a small table, one command) |

@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 
-namespace vtext {
+namespace vfts {
 
 void to_code_points(std::string_view s, std::vector<std::uint32_t> &out)
 {
@@ -208,4 +208,4 @@ std::string literal_prefix(std::string_view pattern)
     return std::string(pattern.substr(0, i));
 }
 
-} // namespace vtext
+} // namespace vfts

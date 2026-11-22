@@ -14,11 +14,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-namespace vtext {
+namespace vfts {
 
 namespace {
 
-constexpr char GEN_MAGIC[8] = {'V', 'T', 'E', 'X', 'T', 'G', 'N', '1'};
+constexpr char GEN_MAGIC[8] = {'V', 'F', 'T', 'S', 'G', 'E', 'N', '1'};
 
 [[noreturn]] void sys_fail(const std::string &what) { throw std::runtime_error(what + ": " + std::strerror(errno)); }
 
@@ -45,8 +45,8 @@ std::uint64_t fnv64(const void *p, std::size_t n)
     return h;
 }
 
-std::string seg_name(std::int64_t id) { return "seg_" + std::to_string(id) + ".vts"; }
-std::string gen_name(std::int64_t g) { return "gen_" + std::to_string(g) + ".vtg"; }
+std::string seg_name(std::int64_t id) { return "seg_" + std::to_string(id) + ".vfs"; }
+std::string gen_name(std::int64_t g) { return "gen_" + std::to_string(g) + ".vfg"; }
 
 // Writes a file atomically: temporary name, fsync, rename, fsync of the directory.
 void write_atomic(const std::string &dir, const std::string &name, const void *data, std::size_t n)
@@ -211,7 +211,7 @@ bool decode_gen(const std::string &bytes, GenData &g, std::string &why)
     g.access.clear();
     g.keys.clear();
     if (h.version >= 2) {
-        // access mode and keys (version 1, written by vtext 0.1.0, had none)
+        // access mode and keys (version 1, written by vfts 0.1.0, had none)
         auto str = [&](std::string &out) {
             std::uint32_t n = 0;
             if (at + 4 > bytes.size()) return false;
@@ -304,9 +304,9 @@ std::shared_ptr<const LoadedIndex> load_generation(Registry &r, const std::strin
 {
     std::string bytes, why;
     if (!read_small(dir + "/" + gen_name(gen), bytes))
-        throw std::runtime_error("cache of index " + index + ": generation file " + gen_name(gen) + " is missing: run CALL vtext.load_all('" + index + "')");
+        throw std::runtime_error("cache of index " + index + ": generation file " + gen_name(gen) + " is missing: run CALL vfts.load_all('" + index + "')");
     GenData g;
-    if (!decode_gen(bytes, g, why)) throw std::runtime_error("cache of index " + index + ": " + why + ": run CALL vtext.load_all('" + index + "')");
+    if (!decode_gen(bytes, g, why)) throw std::runtime_error("cache of index " + index + ": " + why + ": run CALL vfts.load_all('" + index + "')");
     auto li = std::make_shared<LoadedIndex>();
     li->gen = g.gen;
     li->options = g.options;
@@ -314,10 +314,10 @@ std::shared_ptr<const LoadedIndex> load_generation(Registry &r, const std::strin
     li->keys = g.keys;
     for (auto &s : g.segs) {
         auto m = shared_mapping(r, dir + "/" + seg_name(s.id));
-        if (!m) throw std::runtime_error("cache of index " + index + ": segment file " + seg_name(s.id) + " is missing: run CALL vtext.load_all('" + index + "')");
+        if (!m) throw std::runtime_error("cache of index " + index + ": segment file " + seg_name(s.id) + " is missing: run CALL vfts.load_all('" + index + "')");
         auto seg = std::make_shared<Segment>(m->p, m->n);
         if (seg->header().checksum != s.checksum)
-            throw std::runtime_error("cache of index " + index + ": segment file " + seg_name(s.id) + " is not the one of generation " + std::to_string(gen) + ": run CALL vtext.load_all('" + index + "')");
+            throw std::runtime_error("cache of index " + index + ": segment file " + seg_name(s.id) + " is not the one of generation " + std::to_string(gen) + ": run CALL vfts.load_all('" + index + "')");
         SegmentRef ref;
         ref.seg = seg.get();
         if (!s.dead.empty()) {
@@ -426,7 +426,7 @@ void CacheWriter::activate(const Generation &g)
     const std::string active = std::to_string(g.gen) + "\n";
     write_atomic(dir_, "ACTIVE", active.data(), active.size());
 
-    // keep the files of this and the previous generation; remove other vtext files
+    // keep the files of this and the previous generation; remove other vfts files
     std::vector<std::string> keep = {"ACTIVE", gen_name(g.gen)};
     for (auto &s : out.segs) keep.push_back(seg_name(s.id));
     if (prev_gen >= 0 && prev_gen != g.gen) {
@@ -437,8 +437,8 @@ void CacheWriter::activate(const Generation &g)
     if (!d) return;
     while (dirent *e = ::readdir(d)) {
         const std::string n = e->d_name;
-        const bool ours = (n.rfind("seg_", 0) == 0 && n.find(".vts") != std::string::npos) ||
-                          (n.rfind("gen_", 0) == 0 && n.find(".vtg") != std::string::npos);
+        const bool ours = (n.rfind("seg_", 0) == 0 && n.find(".vfs") != std::string::npos) ||
+                          (n.rfind("gen_", 0) == 0 && n.find(".vfg") != std::string::npos);
         if (!ours || std::find(keep.begin(), keep.end(), n) != keep.end()) continue;
         ::unlink((dir_ + "/" + n).c_str());
     }
@@ -448,7 +448,7 @@ void CacheWriter::activate(const Generation &g)
 static bool gen_file_id(const std::string &dir, std::int64_t gen, dev_t &dev, ino_t &ino)
 {
     struct stat st;
-    if (::stat((dir + "/gen_" + std::to_string(gen) + ".vtg").c_str(), &st) != 0) return false;
+    if (::stat((dir + "/gen_" + std::to_string(gen) + ".vfg").c_str(), &st) != 0) return false;
     dev = st.st_dev;
     ino = st.st_ino;
     return true;
@@ -466,10 +466,10 @@ std::shared_ptr<const LoadedIndex> open_index(const std::string &cache_dir, cons
         return it->second.idx;
     std::int64_t gen;
     if (!read_active(dir, gen))
-        throw std::runtime_error("no cache for index " + index + " on this node (" + dir + "): run CALL vtext.load_all('" + index + "')");
+        throw std::runtime_error("no cache for index " + index + " on this node (" + dir + "): run CALL vfts.load_all('" + index + "')");
     if (gen < min_gen)
         throw std::runtime_error("cache of index " + index + " is stale on this node (generation " + std::to_string(gen) +
-                                 ", the view needs " + std::to_string(min_gen) + "): run CALL vtext.load_all('" + index + "')");
+                                 ", the view needs " + std::to_string(min_gen) + "): run CALL vfts.load_all('" + index + "')");
     if (exact && gen != min_gen) {
         // a newer generation is active, the view still belongs to the previous one (a refresh is
         // switching): open that one, not kept in the registry
@@ -529,4 +529,4 @@ void drop_cache(const std::string &cache_dir, const std::string &index)
     ::rmdir(dir.c_str());
 }
 
-} // namespace vtext
+} // namespace vfts

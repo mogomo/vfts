@@ -4,7 +4,7 @@
 #include <cstdlib>
 #include <stdexcept>
 
-namespace vtext {
+namespace vfts {
 
 namespace {
 
@@ -487,4 +487,4 @@ std::size_t count_leaves(const QNode &n)
     }
 }
 
-} // namespace vtext
+} // namespace vfts

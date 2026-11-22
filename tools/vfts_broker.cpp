@@ -1,11 +1,11 @@
-// vtext_broker: an HTTP front end that batches concurrent searches into vtext.tsearch statements.
+// vfts_broker: an HTTP front end that batches concurrent searches into vfts.tsearch statements.
 //
-//   vtext_broker --port 9300 --schema bench [--view snap|live] [--k 10] [--param "mode='stem'"] ...
+//   vfts_broker --port 9300 --schema bench [--view snap|live] [--k 10] [--param "mode='stem'"] ...
 //                [--bind 127.0.0.1] [--mode sql|serve]
 //                sql:   [--sessions 4] [--max-batch 32]
-//                serve: [--channels 1] [--workers 0] [--socket /tmp/vtext_broker.<port>.sock]
+//                serve: [--channels 1] [--workers 0] [--socket /tmp/vfts_broker.<port>.sock]
 //
-// Request:  POST /<index>/_search  {"query": "<vtext query>"}   (HTTP/1.1, keep-alive)
+// Request:  POST /<index>/_search  {"query": "<vfts query>"}   (HTTP/1.1, keep-alive)
 // Response: {"took": <ms>, "batch": <queries in the statement>, "hits": [{"id": <doc_id>, "score": <s>}, ...]}
 //
 // Every user gets their own Vertica sessions: the credentials of the request (HTTP Basic) are the
@@ -16,10 +16,10 @@
 // Grouping rule: a request is sent at once when one of the user's sessions for that index is idle.
 // While all of them are busy, requests wait, and the next session that becomes free takes all of
 // them (up to --max-batch) in one statement (the parameter queries). There is no fixed wait.
-// Every statement carries the label vtext_broker.
+// Every statement carries the label vfts_broker.
 //
 // --mode serve: instead of one statement per batch, each of the user's sessions runs one
-// vtext.tserve statement (src/udx/tserve.cpp) that stays open; the broker sends that user's
+// vfts.tserve statement (src/udx/tserve.cpp) that stays open; the broker sends that user's
 // searches over a Unix socket (0600, the database's OS user), which the statement connects to with
 // a token made for it alone. The statement reads the view when it starts: it answers from that
 // snapshot until it ends. Every search is then no SQL statement of its own.
@@ -66,7 +66,7 @@ struct Config {
     int max_batch = 32;
     int k = 10;
     std::vector<std::string> params;
-    bool serve = false;             // --mode serve: one vtext.tserve statement per session, searches over a channel
+    bool serve = false;             // --mode serve: one vfts.tserve statement per session, searches over a channel
     std::string socket_path;        // the channel's Unix socket (serve)
     int channels = 1;               // serve: statements (sessions) per user and index
     int workers = 0;                // serve: search threads per statement (0: one per core)
@@ -222,7 +222,7 @@ public:
     bool run(const std::string &sql, std::vector<std::string> &lines)
     {
         lines.clear();
-        const std::string mark = "@@vtb" + std::to_string(++seq_);
+        const std::string mark = "@@vfb" + std::to_string(++seq_);
         if (std::fputs(sql.c_str(), to_) < 0 || std::fprintf(to_, "\n\\echo %s\n", mark.c_str()) < 0 || std::fflush(to_) != 0) return false;
         char *buf = nullptr;
         std::size_t cap = 0;
@@ -254,7 +254,7 @@ std::string sql_lit(const std::string &s)
     return o + "'";
 }
 
-// --mode sql: statements of vtext.tsearch with the parameter queries
+// --mode sql: statements of vfts.tsearch with the parameter queries
 class SqlLane : public Lane {
     std::string index_, user_, password_;
     std::mutex mu_;
@@ -299,7 +299,7 @@ class SqlLane : public Lane {
                 for (char &c : q) if (c == '\n' || c == '\t' || c == '\r') c = ' ';
                 qs += std::to_string(i) + "\t" + q + "\n";
             }
-            std::string sql = "SELECT /*+LABEL(vtext_broker)*/ qid, doc_id, score FROM (SELECT vtext.tsearch(* USING PARAMETERS index=" + lit(index_) +
+            std::string sql = "SELECT /*+LABEL(vfts_broker)*/ qid, doc_id, score FROM (SELECT vfts.tsearch(* USING PARAMETERS index=" + lit(index_) +
                               ", queries=" + lit(qs) + ", k=" + std::to_string(cfg.k);
             for (const std::string &p : cfg.params) sql += ", " + p;
             sql += ") OVER() FROM " + cfg.schema + "." + index_ + "_" + cfg.view + ") r;";
@@ -398,7 +398,8 @@ private:
         std::string line;
         char ch;
         while (line.size() < 300 && ::recv(c, &ch, 1, 0) == 1 && ch != '\n') line += ch;
-        const std::string tok = line.rfind("VTEXT1 ", 0) == 0 ? line.substr(7) : std::string();
+        static const std::string kHello = "VFTS1 ";   // tserve.cpp sends kHello + token
+        const std::string tok = line.rfind(kHello, 0) == 0 ? line.substr(kHello.size()) : std::string();
         std::lock_guard<std::mutex> l(mu_);
         if (tok.empty() || !expected_.count(tok)) { ::close(c); return; }   // unknown or used token
         expected_.erase(tok);
@@ -486,7 +487,7 @@ class Channel {
             buf.erase(0, at);
         }
         alive_ = false;
-        fail_all("the vtext.tserve statement ended");
+        fail_all("the vfts.tserve statement ended");
     }
 
 public:
@@ -495,7 +496,7 @@ public:
         s_.reset(new Session(user, password));
         const std::string token = random_token();
         acceptor.expect(token);
-        std::string sql = "SELECT /*+LABEL(vtext_broker_serve)*/ served FROM (SELECT vtext.tserve(* USING PARAMETERS index=" + sql_lit(index) +
+        std::string sql = "SELECT /*+LABEL(vfts_broker_serve)*/ served FROM (SELECT vfts.tserve(* USING PARAMETERS index=" + sql_lit(index) +
                           ", endpoint=" + sql_lit(cfg.socket_path) + ", token=" + sql_lit(token) + ", workers=" + std::to_string(cfg.workers) +
                           ", k=" + std::to_string(cfg.k);
         for (const std::string &p : cfg.params) sql += ", " + p;
@@ -507,14 +508,14 @@ public:
             std::string err;
             for (const std::string &l : lines) if (l.find("ERROR") != std::string::npos) { err = l; break; }
             std::lock_guard<std::mutex> l(mu_);
-            if (error_.empty()) error_ = err.empty() ? "the vtext.tserve statement ended" : err;
+            if (error_.empty()) error_ = err.empty() ? "the vfts.tserve statement ended" : err;
         });
         fd_ = acceptor.wait(token, 60);
         if (fd_ < 0) {
             acceptor.forget(token);
             stmt_.detach();
             std::lock_guard<std::mutex> l(mu_);
-            throw std::runtime_error(error_.empty() ? "vtext.tserve did not connect" : error_);
+            throw std::runtime_error(error_.empty() ? "vfts.tserve did not connect" : error_);
         }
         alive_ = true;
         reader_ = std::thread([this] { read_loop(); });
@@ -686,7 +687,7 @@ int main(int argc, char **argv)
     cfg.serve = mode == "serve";
     cfg.channels = std::max(1, std::atoi(opt(argc, argv, "--channels", "1")));
     cfg.workers = std::max(0, std::atoi(opt(argc, argv, "--workers", "0")));
-    cfg.socket_path = opt(argc, argv, "--socket", ("/tmp/vtext_broker." + std::to_string(cfg.port) + ".sock").c_str());
+    cfg.socket_path = opt(argc, argv, "--socket", ("/tmp/vfts_broker." + std::to_string(cfg.port) + ".sock").c_str());
     if (cfg.serve) acceptor.start();
     if (!safe_name(cfg.schema) || (cfg.view != "snap" && cfg.view != "live")) { std::fprintf(stderr, "bad --schema or --view\n"); return 2; }
     const int ls = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -698,10 +699,10 @@ int main(int argc, char **argv)
     ::inet_pton(AF_INET, cfg.bind.c_str(), &a.sin_addr);
     if (::bind(ls, reinterpret_cast<sockaddr *>(&a), sizeof a) != 0 || ::listen(ls, 256) != 0) { std::perror("bind"); return 1; }
     if (cfg.serve)
-        std::fprintf(stderr, "vtext_broker on %s:%d, schema %s, view %s, mode serve: %d tserve statement(s) per user and index, channel %s\n",
+        std::fprintf(stderr, "vfts_broker on %s:%d, schema %s, view %s, mode serve: %d tserve statement(s) per user and index, channel %s\n",
                      cfg.bind.c_str(), cfg.port, cfg.schema.c_str(), cfg.view.c_str(), cfg.channels, cfg.socket_path.c_str());
     else
-        std::fprintf(stderr, "vtext_broker on %s:%d, schema %s, view %s, mode sql: %d sessions per user and index, batches up to %d\n",
+        std::fprintf(stderr, "vfts_broker on %s:%d, schema %s, view %s, mode sql: %d sessions per user and index, batches up to %d\n",
                      cfg.bind.c_str(), cfg.port, cfg.schema.c_str(), cfg.view.c_str(), cfg.sessions, cfg.max_batch);
     for (;;) {
         const int fd = ::accept4(ls, nullptr, nullptr, SOCK_CLOEXEC);

@@ -5,10 +5,10 @@ set -uo pipefail
 cd "$(dirname "$0")"; source ./lib.sh
 echo "$TEST_NAME"
 
-for i in vt_lang vt_plain vt_strict; do q "CALL vtext.drop_index('$i')" > /dev/null 2>&1; done
-q "DROP SCHEMA IF EXISTS vt_lang CASCADE" > /dev/null
-q "CREATE SCHEMA vt_lang; CREATE TABLE vt_lang.docs (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8), ver TIMESTAMPTZ DEFAULT CLOCK_TIMESTAMP())" > /dev/null
-ins() { q "INSERT INTO vt_lang.docs (doc_id, body, lang) VALUES ($1, '$2', $3); COMMIT;" > /dev/null; }
+for i in vf_lang vf_plain vf_strict; do q "CALL vfts.drop_index('$i')" > /dev/null 2>&1; done
+q "DROP SCHEMA IF EXISTS vf_lang CASCADE" > /dev/null
+q "CREATE SCHEMA vf_lang; CREATE TABLE vf_lang.docs (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8), ver TIMESTAMPTZ DEFAULT CLOCK_TIMESTAMP())" > /dev/null
+ins() { q "INSERT INTO vf_lang.docs (doc_id, body, lang) VALUES ($1, '$2', $3); COMMIT;" > /dev/null; }
 # Sherlock Holmes titles with the punctuation the built-in text index did not split
 ins 1  "The Adventures of Sherlock Holmes'' Smarter Brother" NULL
 ins 2  "Sherlock Holmes, the Musical" NULL
@@ -50,9 +50,9 @@ ins 80 "लड़कों ने खेला" "'hi'"
 ins 81 "லண்டன் நகரம்" "'ta'"
 ins 82 "გამარჯობა მსოფლიო" "'ka'"
 
-q "CALL vtext.create_index('vt_lang', 'vt_lang.docs', 'lang=en margin=0')" > /dev/null
+q "CALL vfts.create_index('vf_lang', 'vf_lang.docs', 'lang=en margin=0')" > /dev/null
 ids() {   # query [extra parameters] -> sorted doc ids, space separated
-    q "SELECT LISTAGG(doc_id::VARCHAR USING PARAMETERS separator=' ') FROM (SELECT doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS index='vt_lang', query='$1', k=100 ${2:-}) OVER() FROM vt_lang.vt_lang_live) r ORDER BY doc_id) x"
+    q "SELECT LISTAGG(doc_id::VARCHAR USING PARAMETERS separator=' ') FROM (SELECT doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='vf_lang', query='$1', k=100 ${2:-}) OVER() FROM vf_lang.vf_lang_live) r ORDER BY doc_id) x"
 }
 
 expect "Sherlock Holmes: every punctuation case found" "$(ids holmes)" "1 2 3 4 5 6"
@@ -84,10 +84,10 @@ expect "Georgian (no stemmer)"                  "$(ids გამარჯობ�
 expect "w/N across scripts"                     "$(ids 'contract w/1 العقد' ", lang='ar'")" "66"
 
 # unsupported scripts: an error by default, indexed without stemming with on_unsupported='plain'
-q "CREATE TABLE vt_lang.cjk (doc_id INT NOT NULL, body LONG VARCHAR); INSERT INTO vt_lang.cjk VALUES (1, 'hello 北京欢迎你'); COMMIT;" > /dev/null
-expect_error "unsupported script refused" "CALL vtext.create_index('vt_strict', 'vt_lang.cjk', 'margin=0')" "not supported"
-q "CALL vtext.drop_index('vt_strict')" > /dev/null 2>&1
-q "CALL vtext.create_index('vt_plain', 'vt_lang.cjk', 'on_unsupported=plain margin=0')" > /dev/null
-expect "on_unsupported=plain" "$(q "SELECT COUNT(*) FROM (SELECT vtext.tsearch(* USING PARAMETERS index='vt_plain', query='hello', k=5) OVER() FROM vt_lang.vt_plain_live) r")" "1"
+q "CREATE TABLE vf_lang.cjk (doc_id INT NOT NULL, body LONG VARCHAR); INSERT INTO vf_lang.cjk VALUES (1, 'hello 北京欢迎你'); COMMIT;" > /dev/null
+expect_error "unsupported script refused" "CALL vfts.create_index('vf_strict', 'vf_lang.cjk', 'margin=0')" "not supported"
+q "CALL vfts.drop_index('vf_strict')" > /dev/null 2>&1
+q "CALL vfts.create_index('vf_plain', 'vf_lang.cjk', 'on_unsupported=plain margin=0')" > /dev/null
+expect "on_unsupported=plain" "$(q "SELECT COUNT(*) FROM (SELECT vfts.tsearch(* USING PARAMETERS index='vf_plain', query='hello', k=5) OVER() FROM vf_lang.vf_plain_live) r")" "1"
 
 done_test

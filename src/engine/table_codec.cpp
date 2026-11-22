@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <stdexcept>
 
-namespace vtext {
+namespace vfts {
 
 namespace {
 
@@ -187,4 +187,4 @@ std::string SegmentAssembler::finish(std::int64_t segment_id, std::int64_t max_v
     return w.finish();
 }
 
-} // namespace vtext
+} // namespace vfts

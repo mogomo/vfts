@@ -1,25 +1,25 @@
 // The search parameters shared by tsearch, tcount and tserve.
-#ifndef VTEXT_UDX_SEARCH_OPTIONS_H
-#define VTEXT_UDX_SEARCH_OPTIONS_H
+#ifndef VFTS_UDX_SEARCH_OPTIONS_H
+#define VFTS_UDX_SEARCH_OPTIONS_H
 
 #include "udx_common.h"
 #include "../engine/search.h"
 
 #include <thread>
 
-namespace vtext_udx {
+namespace vfts_udx {
 
-inline vtext::SearchOptions parse_search_options(Settings &s, std::int64_t default_threads = 0)
+inline vfts::SearchOptions parse_search_options(Settings &s, std::int64_t default_threads = 0)
 {
-    vtext::SearchOptions o;
+    vfts::SearchOptions o;
     // mode= is the parameter to use; MATCH is a reserved word in Vertica, so "match"= (quoted)
     // is accepted as well.
     if (s.has("mode") && s.has("match")) fail("give mode or \"match\", not both");
     const std::string match = s.has("mode") ? s.text("mode", "stem") : s.text("match", "stem");
-    if (match == "stem") o.match = vtext::MatchMode::Stem;
-    else if (match == "exact") o.match = vtext::MatchMode::Exact;
+    if (match == "stem") o.match = vfts::MatchMode::Stem;
+    else if (match == "exact") o.match = vfts::MatchMode::Exact;
     else fail("mode must be 'stem' or 'exact', not '" + match + "'");
-    if (s.has("lang")) o.query.lang = vtext::parse_lang(s.text("lang", ""));
+    if (s.has("lang")) o.query.lang = vfts::parse_lang(s.text("lang", ""));
     const std::string op = s.text("operator", "or");
     if (op == "and" || op == "AND") o.query.op_and = true;
     else if (op != "or" && op != "OR") fail("operator must be 'or' or 'and', not '" + op + "'");
@@ -63,6 +63,6 @@ inline void add_search_parameters(Vertica::SizedColumnTypes &p)
     p.addVarchar(1024, "cache_dir");
 }
 
-} // namespace vtext_udx
+} // namespace vfts_udx
 
 #endif

@@ -6,8 +6,8 @@
 // (CREATE OR REPLACE LIBRARY) or dropped; in an unfenced process the threads of the old copy would
 // then run code that is no longer mapped. So the library that holds the pool is pinned in memory
 // (RTLD_NODELETE) when the pool starts: an old copy stays mapped, with its threads asleep.
-#ifndef VTEXT_ENGINE_PARALLEL_H
-#define VTEXT_ENGINE_PARALLEL_H
+#ifndef VFTS_ENGINE_PARALLEL_H
+#define VFTS_ENGINE_PARALLEL_H
 
 #include <atomic>
 #include <condition_variable>
@@ -21,7 +21,7 @@
 #include <thread>
 #include <vector>
 
-namespace vtext {
+namespace vfts {
 
 class Pool {
 public:
@@ -138,6 +138,6 @@ private:
     std::deque<std::shared_ptr<Job>> queue_;
 };
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

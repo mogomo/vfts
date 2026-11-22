@@ -2,7 +2,7 @@
 
 #include <sstream>
 
-namespace vtext {
+namespace vfts {
 
 namespace {
 
@@ -55,4 +55,4 @@ Stopwords::Stopwords(Lang lang, Analyzer &analyzer)
     }
 }
 
-} // namespace vtext
+} // namespace vfts

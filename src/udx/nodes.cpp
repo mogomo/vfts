@@ -1,12 +1,12 @@
-// Functions that run once per node, over vtext.probe with OVER(PARTITION NODES):
-//   vtext.tnode(k)        the smallest probe key stored on the node: lets the procedures pick one
+// Functions that run once per node, over vfts.probe with OVER(PARTITION NODES):
+//   vfts.tnode(k)        the smallest probe key stored on the node: lets the procedures pick one
 //                         probe row per node (sql/procedures.sql)
-//   vtext.tinfo()         the node's cache of an index: generation, segments, documents, bytes
-//   vtext.tdrop()         removes the node's cache of an index
+//   vfts.tinfo()         the node's cache of an index: generation, segments, documents, bytes
+//   vfts.tdrop()         removes the node's cache of an index
 #include "udx_common.h"
 
 using namespace Vertica;
-using namespace vtext_udx;
+using namespace vfts_udx;
 
 namespace {
 
@@ -47,7 +47,7 @@ public:
         try {
             Settings s(srv);
             const std::string index = read_index_name(s);
-            const vtext::CacheInfo ci = vtext::cache_info(resolve_cache_dir(s), index);
+            const vfts::CacheInfo ci = vfts::cache_info(resolve_cache_dir(s), index);
             out.getStringRef(0).copy(srv.getCurrentNodeName());
             if (ci.present) {
                 out.setInt(1, ci.gen);
@@ -91,7 +91,7 @@ public:
     TransformFunction *createTransformFunction(ServerInterface &srv) override { return vt_createFuncObject<TInfo>(srv.allocator); }
 };
 
-// vtext.thave(USING PARAMETERS index, segments='id:checksum,...') OVER(PARTITION NODES) FROM vtext.probe
+// vfts.thave(USING PARAMETERS index, segments='id:checksum,...') OVER(PARTITION NODES) FROM vfts.probe
 // The listed segments that this node's cache holds (node_name, segment_id).
 class THave : public TransformFunction {
 public:
@@ -99,7 +99,7 @@ public:
     {
         try {
             Settings s(srv);
-            vtext::CacheWriter w(resolve_cache_dir(s), read_index_name(s));
+            vfts::CacheWriter w(resolve_cache_dir(s), read_index_name(s));
             const std::string list = s.text("segments", "");
             std::size_t i = 0;
             while (i < list.size()) {
@@ -147,7 +147,7 @@ public:
     {
         try {
             Settings s(srv);
-            vtext::drop_cache(resolve_cache_dir(s), read_index_name(s));
+            vfts::drop_cache(resolve_cache_dir(s), read_index_name(s));
             out.getStringRef(0).copy(srv.getCurrentNodeName());
             out.next();
         } catch (const std::exception &e) {

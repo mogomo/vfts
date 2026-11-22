@@ -1,4 +1,4 @@
-// One index segment in its binary form (format "VTEXTSG1", docs/format.md).
+// One index segment in its binary form (format "VFTSSEG1", docs/format.md).
 //
 // The same bytes are the per-node cache file (mmap'ed, read in place) and the in-memory form of
 // the live tail. They are made by SegmentWriter (segment_writer.h) from a SegmentBuilder (new
@@ -9,8 +9,8 @@
 // puts documents with similar words next to each other (reorder.h: smaller postings, longer runs
 // that MaxScore can skip); such a segment (format 5) has one more section, the docnos in doc_id
 // order, for finding a doc_id. Ties in score are broken by doc_id, never by docno (search.cpp).
-#ifndef VTEXT_ENGINE_SEGMENT_H
-#define VTEXT_ENGINE_SEGMENT_H
+#ifndef VFTS_ENGINE_SEGMENT_H
+#define VFTS_ENGINE_SEGMENT_H
 
 #include <cstdint>
 #include <cstring>
@@ -21,12 +21,12 @@
 #include <vector>
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
-#error "vtext segments are little-endian only"
+#error "vfts segments are little-endian only"
 #endif
 
-namespace vtext {
+namespace vfts {
 
-constexpr char SEGMENT_MAGIC[8] = {'V', 'T', 'E', 'X', 'T', 'S', 'G', '1'};
+constexpr char SEGMENT_MAGIC[8] = {'V', 'F', 'T', 'S', 'S', 'E', 'G', '1'};
 constexpr std::uint32_t SEGMENT_FORMAT = 4;      // 2: impacts; 3: postings of stem groups; 4: level-1 impacts
 constexpr std::uint32_t SEGMENT_FORMAT_ORDERED = 5;  // 4 + docnos in any order, and the doc_order section
 constexpr std::uint32_t BLOCK = 128;                 // documents per postings block
@@ -283,6 +283,6 @@ void pack_bits(std::string &out, const std::uint32_t *v, std::uint32_t n, std::u
 void unpack_bits(const std::uint8_t *p, std::uint32_t n, std::uint32_t bits, std::uint32_t *out);
 inline std::size_t packed_bytes(std::uint32_t n, std::uint32_t bits) { return (static_cast<std::size_t>(n) * bits + 7) / 8; }
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

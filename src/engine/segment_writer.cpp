@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <stdexcept>
 
-namespace vtext {
+namespace vfts {
 
 namespace {
 
@@ -296,4 +296,4 @@ std::string SegmentWriter::assemble(SegmentHeader &h, const std::vector<std::uin
     return out;
 }
 
-} // namespace vtext
+} // namespace vfts

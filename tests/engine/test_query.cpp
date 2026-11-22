@@ -2,7 +2,7 @@
 #include "check.h"
 #include "../../src/engine/query.h"
 
-using namespace vtext;
+using namespace vfts;
 
 static std::string P(const char *q, bool op_and = false, bool stop = false)
 {

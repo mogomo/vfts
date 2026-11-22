@@ -1,11 +1,11 @@
-# vtext storage format
+# vfts storage format
 
 An index lives in Vertica tables (the data, backed up with the database) and, on every node, in a
 cache directory (a copy of the active segments in a form that is read in place). Code:
 `src/engine/segment.h` (segment file), `src/engine/table_codec.h` (rows), `src/engine/cache.h`
 (cache directory), `sql/install.sql` (tables).
 
-## Tables (schema `vtext`)
+## Tables (schema `vfts`)
 
 All index tables are `UNSEGMENTED ALL NODES` (every node holds a copy, so a node loads its cache
 from local data) and partitioned by `index_id` (dropping an index drops partitions).
@@ -45,14 +45,14 @@ from the source table anyway), which keeps the positions table about 40% smaller
 
 ## Segment file (format 4 and 5)
 
-`<cache_dir>/<index>/seg_<segment_id>.vts`. Little-endian, every section 8-byte aligned. Read in
+`<cache_dir>/<index>/seg_<segment_id>.vfs`. Little-endian, every section 8-byte aligned. Read in
 place through `mmap`; nothing is parsed or copied.
 
 ### Header, 512 bytes
 
 | Offset | Type | Field |
 |---:|---|---|
-| 0 | char[8] | magic `VTEXTSG1` |
+| 0 | char[8] | magic `VFTSSEG1` (`VTEXTSG1` up to 0.2.0, when vfts was named vtext) |
 | 8 | uint32 | format: 4 (docnos in doc_id order) or 5 (any order, with the doc_order section) |
 | 12 | uint32 | flags (0) |
 | 16 | int64 | segment_id |
@@ -63,7 +63,7 @@ place through `mmap`; nothing is parsed or copied.
 | 48 | uint64 | total_bytes |
 | 56 | uint32 | n_stems |
 | 60 | uint32 | n_nonempty: documents with at least one token |
-| 64 | int64 | max_ver (0; versions are kept in `vtext.segments`) |
+| 64 | int64 | max_ver (0; versions are kept in `vfts.segments`) |
 | 72 | uint64[14] | section offsets |
 | 184 | uint64[14] | section lengths |
 | 296 | uint64 | format 5: offset of the doc_order section (0 in format 4) |
@@ -89,7 +89,7 @@ place through `mmap`; nothing is parsed or copied.
 | 13 | group_info | TermInfo[n_stems]: the postings of every stem group (summed tf, no positions) |
 | - | doc_order | format 5 only, after section 13: uint32[n_docs], the docnos sorted by doc_id (binary search for a doc_id) |
 
-A segment whose doc ids ascend is always written as format 4 (byte for byte the files of vtext
+A segment whose doc ids ascend is always written as format 4 (byte for byte the files of vfts
 1.0), any other as format 5; tables hold no format, the order of the doc_stats rows decides.
 
 ### Postings of a term
@@ -125,18 +125,18 @@ is left out:
         z = (z ^ (z >> 27)) * 0x94D049BB133111EB
         sum ^= z ^ (z >> 31)
 
-`tload` and `vtext_cli` verify the whole file (checksum, order of ids and terms, every block, every
+`tload` and `vfts_cli` verify the whole file (checksum, order of ids and terms, every block, every
 impact) before it is used. Queries check the header only.
 
 ## Cache directory
 
 | File | Content |
 |---|---|
-| `seg_<id>.vts` | a segment, never changed after it is written |
-| `gen_<g>.vtg` | generation g: header `VTEXTGN1`, version (2; 1 in vtext 0.1.0, without access mode and keys), number of segments, g, an FNV-1a checksum of the rest, size; the index's analyzer options; the access mode and the key(s) (docs/design.md "Access"); per segment: segment_id, the segment file's checksum, its tombstoned docnos, and how the tombstones lower the document frequency of each affected term and stem group |
+| `seg_<id>.vfs` | a segment, never changed after it is written (`.vts` up to 0.2.0) |
+| `gen_<g>.vfg` | generation g (`.vtg` up to 0.2.0): header `VFTSGEN1` (`VTEXTGN1` up to 0.2.0), version (2; 1 in vfts 0.1.0, without access mode and keys), number of segments, g, an FNV-1a checksum of the rest, size; the index's analyzer options; the access mode and the key(s) (docs/design.md "Access"); per segment: segment_id, the segment file's checksum, its tombstoned docnos, and how the tombstones lower the document frequency of each affected term and stem group |
 | `ACTIVE` | the active generation number, as text |
 
 Files are written to a temporary name, synced and renamed; `ACTIVE` is replaced last. The files
 of the active and the previous generation are kept; other `seg_*` and `gen_*` files are removed.
-A missing or damaged file is never a data loss: `CALL vtext.load_all('<index>')` writes it again
+A missing or damaged file is never a data loss: `CALL vfts.load_all('<index>')` writes it again
 from the tables.

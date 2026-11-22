@@ -1,6 +1,6 @@
-// vtext.hybrid(source, doc_id, rank, score USING PARAMETERS method, k, rrf_k, weights, distance) OVER()
+// vfts.hybrid(source, doc_id, rank, score USING PARAMETERS method, k, rrf_k, weights, distance) OVER()
 //
-// Fuses ranked lists by doc_id: typically the result of vtext.tsearch (BM25) and of vvector's
+// Fuses ranked lists by doc_id: typically the result of vfts.tsearch (BM25) and of vvector's
 // vsearch (vectors), UNION ALLed with a source name in front (README "hybrid").
 //   method 'rrf' (default)  Reciprocal Rank Fusion: score = sum over sources of w / (rrf_k + rank)
 //   method 'weighted'       score = sum over sources of w * normalized score, where each source's
@@ -17,7 +17,7 @@
 #include <sstream>
 
 using namespace Vertica;
-using namespace vtext_udx;
+using namespace vfts_udx;
 
 namespace {
 

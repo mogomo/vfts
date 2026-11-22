@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
-"""Search next to other data: vtext (a join in Vertica) against Elasticsearch / OpenSearch (an
+"""Search next to other data: vfts (a join in Vertica) against Elasticsearch / OpenSearch (an
 attribute stored in every document), on Enron.
 
-    python3 -I bench/join_test.py <vtext|es|os> [--dataset enron] [--queries bench/queries/enron.tsv]
+    python3 -I bench/join_test.py <vfts|es|os> [--dataset enron] [--queries bench/queries/enron.tsv]
 
 Every document gets an attribute custodian (150 values: doc_id % 150, like the custodians of an
 e-discovery case); 10 custodians are on legal hold (table / terms list).
 
     J1  add the attribute to every document
-        vtext: CREATE TABLE <ds>_meta AS SELECT doc_id, doc_id % 150 ... (the text index is not touched)
+        vfts: CREATE TABLE <ds>_meta AS SELECT doc_id, doc_id % 150 ... (the text index is not touched)
         engines: _update_by_query with a script on every document (each one is written again)
     J2  move 1% of the documents to another custodian (doc_id % 100 = 7)
-        vtext: UPDATE <ds>_meta ...; engines: _update_by_query on those documents
+        vfts: UPDATE <ds>_meta ...; engines: _update_by_query on those documents
     J3  top 10 of each query among the documents of the custodians on hold
-        vtext: tsearch (every match) JOIN <ds>_meta JOIN hold, ORDER BY score LIMIT 10
+        vfts: tsearch (every match) JOIN <ds>_meta JOIN hold, ORDER BY score LIMIT 10
         engines: bool query with a terms filter on custodian
     J4  number of matches per custodian, for each query
-        vtext: tmatch (every match, no scores) JOIN <ds>_meta GROUP BY custodian; engines: terms aggregation
+        vfts: tmatch (every match, no scores) JOIN <ds>_meta GROUP BY custodian; engines: terms aggregation
 
 The engines work on a clone of the dataset's index (<ds>_j, _clone API: no copy of the data),
 deleted at the end; J3 and J4 are measured after a force merge of the clone into one segment, as
 in the other tests. Times: J1 and J2 once (wall clock, until searchable: COMMIT / refresh);
 J3 and J4 one client, each query 3 times after a warm-up, best time per query, mean over the
 queries. The answers of J3 and J4 are written to bench/out/join_<engine>_*.tsv for comparison.
-Prints one JSON line. Connection: VSQL_* for vtext, ES_PORT / OS_PORT for the engines.
+Prints one JSON line. Connection: VSQL_* for vfts, ES_PORT / OS_PORT for the engines.
 """
 import http.client
 import json
@@ -96,8 +96,8 @@ def queries(path):
     return [tuple(l.rstrip("\n").split("\t", 1)) for l in open(path, encoding="utf-8") if "\t" in l]
 
 
-def run_vtext(ds, qs, out_dir):
-    res = {"engine": "vtext", "dataset": ds}
+def run_vfts(ds, qs, out_dir):
+    res = {"engine": "vfts", "dataset": ds}
     vsql(f"DROP TABLE IF EXISTS bench.{ds}_meta; DROP TABLE IF EXISTS bench.{ds}_hold;")
     _, t = vsql(f"CREATE TABLE bench.{ds}_meta AS SELECT doc_id, (doc_id % {CUSTODIANS})::INT AS custodian FROM bench.{ds} "
                 f"ORDER BY doc_id SEGMENTED BY HASH(doc_id) ALL NODES; COMMIT;")
@@ -108,10 +108,10 @@ def run_vtext(ds, qs, out_dir):
     res["j2_update_1pct_s"] = round(t, 3)
     res["j2_rows"] = int(vsql(f"SELECT COUNT(*) FROM bench.{ds}_meta WHERE doc_id % 100 = 7")[0])
     p = "mode='stem', max_expansions=100000, bm25='classic'"
-    j3 = [f"SELECT r.doc_id, r.score FROM (SELECT vtext.tsearch(* USING PARAMETERS index='{ds}', query={lit(q)}, k=1000000, {p}) OVER() "
+    j3 = [f"SELECT r.doc_id, r.score FROM (SELECT vfts.tsearch(* USING PARAMETERS index='{ds}', query={lit(q)}, k=1000000, {p}) OVER() "
           f"FROM bench.{ds}_snap) r JOIN bench.{ds}_meta m USING (doc_id) JOIN bench.{ds}_hold h USING (custodian) "
           f"ORDER BY r.score DESC, r.doc_id LIMIT 10;" for _, q in qs]
-    j4 = [f"SELECT m.custodian, COUNT(*) FROM (SELECT vtext.tmatch(* USING PARAMETERS index='{ds}', query={lit(q)}, {p}) OVER() "
+    j4 = [f"SELECT m.custodian, COUNT(*) FROM (SELECT vfts.tmatch(* USING PARAMETERS index='{ds}', query={lit(q)}, {p}) OVER() "
           f"FROM bench.{ds}_snap) r JOIN bench.{ds}_meta m USING (doc_id) GROUP BY m.custodian ORDER BY m.custodian;" for _, q in qs]
     for name, stmts in (("j3", j3), ("j4", j4)):
         best, outs = [1e18] * len(stmts), None
@@ -121,7 +121,7 @@ def run_vtext(ds, qs, out_dir):
             outs = outs or o
             best = [min(b, m) if m is not None else b for b, m in zip(best, ms)]
         res[f"{name}_mean_ms"] = round(sum(best) / len(best), 2)
-        with open(os.path.join(out_dir, f"join_vtext_{ds}_{name}.tsv"), "w") as f:
+        with open(os.path.join(out_dir, f"join_vfts_{ds}_{name}.tsv"), "w") as f:
             for (qid, _), rows in zip(qs, outs):
                 for r in rows:
                     a = r.split("\t")
@@ -195,7 +195,7 @@ def main():
     out_dir = os.path.join(HERE, "out")
     os.makedirs(out_dir, exist_ok=True)
     qs = queries(qpath)
-    res = run_vtext(ds, qs, out_dir) if engine == "vtext" else run_engine(engine, ds, qpath, qs, out_dir)
+    res = run_vfts(ds, qs, out_dir) if engine == "vfts" else run_engine(engine, ds, qpath, qs, out_dir)
     res["queries"] = len(qs)
     print(json.dumps(res))
 

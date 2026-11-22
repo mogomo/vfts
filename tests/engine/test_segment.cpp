@@ -12,7 +12,7 @@
 #include <map>
 #include <set>
 
-using namespace vtext;
+using namespace vfts;
 
 static void norms()
 {

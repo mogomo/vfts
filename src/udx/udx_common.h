@@ -1,9 +1,9 @@
-// Helpers shared by the vtext UDx adapters. The adapters are thin: they read rows and parameters,
+// Helpers shared by the vfts UDx adapters. The adapters are thin: they read rows and parameters,
 // call the engine and write rows. Errors: the adapters throw std::runtime_error and report it
 // once, in their catch block, as "<function>: <cause>" (vt_report_error throws through a function
 // pointer of the server; its exception type is not visible to the library).
-#ifndef VTEXT_UDX_COMMON_H
-#define VTEXT_UDX_COMMON_H
+#ifndef VFTS_UDX_COMMON_H
+#define VFTS_UDX_COMMON_H
 
 #include "Vertica.h"
 #include "../engine/analyzer.h"
@@ -18,7 +18,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace vtext_udx {
+namespace vfts_udx {
 
 using Vertica::vint;
 
@@ -31,8 +31,8 @@ inline bool one_of(const std::string &v, std::initializer_list<const char *> all
 }
 
 // Values with the precedence: function parameter, then session parameter, then the built-in
-// default. Session parameters: ALTER SESSION SET UDPARAMETER FOR vtext.vtext <name> = '...' (needs
-// USAGE on the library: the index owner), or ALTER SESSION SET UDPARAMETER vtext_<name> = '...'
+// default. Session parameters: ALTER SESSION SET UDPARAMETER FOR vfts.vfts <name> = '...' (needs
+// USAGE on the library: the index owner), or ALTER SESSION SET UDPARAMETER vfts_<name> = '...'
 // (any user). They arrive as strings whatever they look like.
 class Settings {
 public:
@@ -85,7 +85,7 @@ private:
     bool sess(const char *name, std::string &out)
     {
         if (session_.containsParameter(name)) { out = session_.getStringRef(name).str(); return true; }
-        const std::string pub = std::string("vtext_") + name;
+        const std::string pub = std::string("vfts_") + name;
         if (public_.containsParameter(pub)) { out = public_.getStringRef(pub).str(); return true; }
         return false;
     }
@@ -93,14 +93,14 @@ private:
 };
 
 // Analyzer options from the parameters lang, accent_fold and on_unsupported.
-inline vtext::AnalyzerOptions analyzer_options(Settings &s, const std::string &default_lang = "en")
+inline vfts::AnalyzerOptions analyzer_options(Settings &s, const std::string &default_lang = "en")
 {
-    vtext::AnalyzerOptions o;
-    o.default_lang = vtext::parse_lang(s.text("lang", default_lang));
+    vfts::AnalyzerOptions o;
+    o.default_lang = vfts::parse_lang(s.text("lang", default_lang));
     const std::string fold = s.text("accent_fold", "latin");
-    if (fold == "latin") o.fold = vtext::AccentFold::Latin;
-    else if (fold == "none") o.fold = vtext::AccentFold::None;
-    else if (fold == "all") o.fold = vtext::AccentFold::All;
+    if (fold == "latin") o.fold = vfts::AccentFold::Latin;
+    else if (fold == "none") o.fold = vfts::AccentFold::None;
+    else if (fold == "all") o.fold = vfts::AccentFold::All;
     else fail("accent_fold must be 'latin', 'none' or 'all', not '" + fold + "'");
     const std::string un = s.text("on_unsupported", "error");
     if (un == "plain") o.unsupported_plain = true;
@@ -117,10 +117,10 @@ inline void add_analyzer_parameters(Vertica::SizedColumnTypes &p)
 
 // The analyzer options of an index as stored in its generation file:
 // "lang=en;accent_fold=latin;on_unsupported=error".
-inline vtext::AnalyzerOptions parse_index_options(const std::string &s)
+inline vfts::AnalyzerOptions parse_index_options(const std::string &s)
 {
-    vtext::AnalyzerOptions o;
-    o.default_lang = vtext::parse_lang("en");
+    vfts::AnalyzerOptions o;
+    o.default_lang = vfts::parse_lang("en");
     std::size_t i = 0;
     while (i < s.size()) {
         std::size_t j = s.find(';', i);
@@ -129,8 +129,8 @@ inline vtext::AnalyzerOptions parse_index_options(const std::string &s)
         const std::size_t eq = kv.find('=');
         if (eq != std::string::npos) {
             const std::string k = kv.substr(0, eq), v = kv.substr(eq + 1);
-            if (k == "lang") o.default_lang = vtext::parse_lang(v);
-            else if (k == "accent_fold") o.fold = v == "none" ? vtext::AccentFold::None : v == "all" ? vtext::AccentFold::All : vtext::AccentFold::Latin;
+            if (k == "lang") o.default_lang = vfts::parse_lang(v);
+            else if (k == "accent_fold") o.fold = v == "none" ? vfts::AccentFold::None : v == "all" ? vfts::AccentFold::All : vfts::AccentFold::Latin;
             else if (k == "on_unsupported") o.unsupported_plain = v == "plain";
         }
         i = j + 1;
@@ -138,21 +138,21 @@ inline vtext::AnalyzerOptions parse_index_options(const std::string &s)
     return o;
 }
 
-inline std::string index_options_string(const vtext::AnalyzerOptions &o)
+inline std::string index_options_string(const vfts::AnalyzerOptions &o)
 {
-    return std::string("lang=") + vtext::lang_info(o.default_lang).code + ";accent_fold=" +
-           (o.fold == vtext::AccentFold::None ? "none" : o.fold == vtext::AccentFold::All ? "all" : "latin") +
+    return std::string("lang=") + vfts::lang_info(o.default_lang).code + ";accent_fold=" +
+           (o.fold == vfts::AccentFold::None ? "none" : o.fold == vfts::AccentFold::All ? "all" : "latin") +
            ";on_unsupported=" + (o.unsupported_plain ? "plain" : "error");
 }
 
-// cache_dir: function parameter, then session parameter, then /tmp/vtext.
-inline std::string resolve_cache_dir(Settings &s) { return s.text("cache_dir", vtext::DEFAULT_CACHE_DIR); }
+// cache_dir: function parameter, then session parameter, then /tmp/vfts.
+inline std::string resolve_cache_dir(Settings &s) { return s.text("cache_dir", vfts::DEFAULT_CACHE_DIR); }
 
 inline std::string read_index_name(Settings &s)
 {
     const std::string name = s.text("index", "");
     if (name.empty()) fail("parameter index is required");
-    if (!vtext::valid_index_name(name)) fail("index name '" + name + "' is not valid: use letters, digits and underscore");
+    if (!vfts::valid_index_name(name)) fail("index name '" + name + "' is not valid: use letters, digits and underscore");
     return name;
 }
 
@@ -169,7 +169,7 @@ inline void add_index_row_types(Vertica::ColumnTypes &t)
 
 // Declared widths matter: Vertica sizes buffers by them (a LONG VARBINARY(32000000) column made the
 // build 20 times slower than LONG VARBINARY(65000), docs/VERTICA_NOTES.md). Terms are at most 255
-// bytes; payloads are cut into parts of vtext::PART_BYTES.
+// bytes; payloads are cut into parts of vfts::PART_BYTES.
 inline void add_index_row_columns(Vertica::SizedColumnTypes &t, std::int64_t bin_bytes = 65000)
 {
     t.addVarchar(1, "kind");
@@ -197,17 +197,17 @@ inline void begin_index_row(Vertica::PartitionWriter &out, const char *kind, std
 // Writes one segment as index rows: D, T, P, Q rows and the S summary row (calling thread only).
 inline void write_segment_rows(Vertica::PartitionWriter &out, const std::string &bytes)
 {
-    const vtext::Segment seg(bytes.data(), bytes.size());
+    const vfts::Segment seg(bytes.data(), bytes.size());
     const std::int64_t sid = seg.id();
-    vtext::RowSink sink;
-    sink.doc = [&](const vtext::DocRow &r) {
+    vfts::RowSink sink;
+    sink.doc = [&](const vfts::DocRow &r) {
         begin_index_row(out, "D", sid);
         out.setInt(IC_DOCNO, r.docno);
         out.setInt(IC_DOC_ID, r.doc_id);
         out.setInt(IC_N, r.length);
         out.next();
     };
-    sink.term = [&](const vtext::TermDictRow &r) {
+    sink.term = [&](const vfts::TermDictRow &r) {
         begin_index_row(out, "T", sid);
         out.setInt(IC_TERM_ID, r.term_id);
         out.setInt(IC_N, r.doc_freq);
@@ -216,14 +216,14 @@ inline void write_segment_rows(Vertica::PartitionWriter &out, const std::string 
         out.getStringRef(IC_LANG).copy(r.lang.data(), r.lang.size());
         out.next();
     };
-    sink.posting = [&](const vtext::PostingRow &r) {
+    sink.posting = [&](const vfts::PostingRow &r) {
         begin_index_row(out, "P", sid);
         out.setInt(IC_TERM_ID, r.term_id);
         out.setInt(IC_CHUNK, r.chunk_id);
         out.getStringRef(IC_BIN).copy(r.docs.data(), r.docs.size());
         out.next();
-        for (std::size_t at = 0, part = 0; at < r.payload.size() || part == 0; at += vtext::PART_BYTES, ++part) {
-            const std::size_t n = std::min(vtext::PART_BYTES, r.payload.size() - at);
+        for (std::size_t at = 0, part = 0; at < r.payload.size() || part == 0; at += vfts::PART_BYTES, ++part) {
+            const std::size_t n = std::min(vfts::PART_BYTES, r.payload.size() - at);
             begin_index_row(out, "Q", sid);
             out.setInt(IC_TERM_ID, r.term_id);
             out.setInt(IC_CHUNK, r.chunk_id);
@@ -232,8 +232,8 @@ inline void write_segment_rows(Vertica::PartitionWriter &out, const std::string 
             out.next();
         }
     };
-    vtext::segment_to_rows(seg, sink);
-    const vtext::SegmentHeader &h = seg.header();
+    vfts::segment_to_rows(seg, sink);
+    const vfts::SegmentHeader &h = seg.header();
     begin_index_row(out, "S", sid);
     out.setInt(IC_N, h.n_docs);
     out.setInt(IC_TERM_ID, h.n_terms);
@@ -243,6 +243,6 @@ inline void write_segment_rows(Vertica::PartitionWriter &out, const std::string 
     out.next();
 }
 
-} // namespace vtext_udx
+} // namespace vfts_udx
 
 #endif

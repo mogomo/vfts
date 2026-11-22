@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install or remove the vtext library, functions and procedures.
+# Install or remove the vfts library, functions and procedures.
 #
 #   scripts/deploy.sh [--fenced=yes|no] [--undeploy [--drop]] [--echo_only]
 #
@@ -7,7 +7,7 @@
 #                   the library is a crash of the node)
 #   --fenced=yes    every function runs in a separate fenced process (about 10% slower, safer)
 #   --undeploy      remove the library, its functions and procedures; --drop also drops every
-#                   index (its views and node caches) and then the schema vtext
+#                   index (its views and node caches) and then the schema vfts
 #
 # Connection: vsql reads VSQL_HOST, VSQL_PORT, VSQL_USER, VSQL_PASSWORD and VSQL_DATABASE from
 # the environment. Nothing is stored here. Run it on a Vertica node: CREATE LIBRARY reads the
@@ -31,12 +31,12 @@ for arg in "$@"; do
     esac
 done
 
-LIBFILE="$PWD/build/libvtext.so"
+LIBFILE="$PWD/build/libvfts.so"
 FENCED_SQL="NOT FENCED"
 [ "$FENCED" = yes ] && FENCED_SQL="FENCED"
 
 # the database's OS user must be able to read the library: a copy under /tmp, readable by all
-SHARED="/tmp/vtext-deploy-$$.so"
+SHARED="/tmp/vfts-deploy-$$.so"
 if [ "$UNDEPLOY" = yes ]; then
     CMD=(vsql -X -v ON_ERROR_STOP=1 -f sql/uninstall.sql)
 else
@@ -50,12 +50,12 @@ if [ "$UNDEPLOY" = no ]; then
 fi
 if [ "$UNDEPLOY" = yes ] && [ "$DROP" = yes ]; then
     # every index first: its partitions, views (in the source table's schema) and node caches
-    for nm in $(vsql -X -A -t -q -c "SELECT index_name FROM vtext.indexes" 2> /dev/null); do
-        vsql -X -q -c "CALL vtext.drop_index('$nm');" > /dev/null || echo "deploy.sh: drop_index('$nm') failed" >&2
+    for nm in $(vsql -X -A -t -q -c "SELECT index_name FROM vfts.indexes" 2> /dev/null); do
+        vsql -X -q -c "CALL vfts.drop_index('$nm');" > /dev/null || echo "deploy.sh: drop_index('$nm') failed" >&2
     done
 fi
 "${CMD[@]}"
-if [ "$UNDEPLOY" = yes ] && [ "$DROP" = yes ]; then vsql -X -c "DROP SCHEMA IF EXISTS vtext CASCADE;"; fi
+if [ "$UNDEPLOY" = yes ] && [ "$DROP" = yes ]; then vsql -X -c "DROP SCHEMA IF EXISTS vfts CASCADE;"; fi
 if [ "$UNDEPLOY" = no ]; then
-    vsql -X -c "SELECT vtext.tversion() OVER();"
+    vsql -X -c "SELECT vfts.tversion() OVER();"
 fi

@@ -12,9 +12,9 @@ import statistics
 import sys
 
 SETS = ["enron", "pubmed", "msmarco", "wiki_he", "wiki_ar"]
-ENGINES = [("vtext_serve", "vtext, tserve (one statement per session)"),
-           ("vtext_batch", "vtext, batches (8 sessions, idle-else-queue)"),
-           ("vtext_single", "vtext, one statement per query (32 sessions)"),
+ENGINES = [("vfts_serve", "vfts, tserve (one statement per session)"),
+           ("vfts_batch", "vfts, batches (8 sessions, idle-else-queue)"),
+           ("vfts_single", "vfts, one statement per query (32 sessions)"),
            ("es_native", "Elasticsearch"),
            ("os_native", "OpenSearch")]
 
@@ -27,7 +27,7 @@ for line in open(sys.argv[1], encoding="utf-8"):
     t = d.get("test", "")
     if not (t.startswith("f1_r") or t.startswith("f1l_r")):
         continue
-    kind, r, rest = t.split("_", 2)                  # f1|f1l, r1, vtext_serve_enron | es_native_enron
+    kind, r, rest = t.split("_", 2)                  # f1|f1l, r1, vfts_serve_enron | es_native_enron
     ds = next((s for s in SETS if rest.endswith("_" + s)), None)
     if not ds:
         continue
@@ -76,9 +76,9 @@ for eng, name in ENGINES:
         print(f"| {name} | " + " | ".join(cells) + " |")
 
 print()
-print("vtext serve / best of Elasticsearch and OpenSearch (median q/s):")
+print("vfts serve / best of Elasticsearch and OpenSearch (median q/s):")
 for ds in SETS:
-    v = out.get("vtext_serve", {}).get(ds)
+    v = out.get("vfts_serve", {}).get(ds)
     e = [out.get(k, {}).get(ds) for k in ("es_native", "os_native")]
     e = [x["qps_median"] for x in e if x]
     if v and e:

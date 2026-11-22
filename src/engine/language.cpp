@@ -3,7 +3,7 @@
 #include <cctype>
 #include <stdexcept>
 
-namespace vtext {
+namespace vfts {
 
 namespace {
 
@@ -150,4 +150,4 @@ const char *script_name(Script s)
     }
 }
 
-} // namespace vtext
+} // namespace vfts

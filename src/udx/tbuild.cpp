@@ -1,4 +1,4 @@
-// vtext.tbuild(part, doc_id, body, lang, ver USING PARAMETERS seg_base, lang, accent_fold,
+// vfts.tbuild(part, doc_id, body, lang, ver USING PARAMETERS seg_base, lang, accent_fold,
 //              on_unsupported, threads, max_segment_mb) OVER(PARTITION BEST)
 //
 // Builds segments from documents and returns them as index rows (udx_common.h), which the
@@ -20,19 +20,19 @@
 #include <thread>
 
 using namespace Vertica;
-using namespace vtext_udx;
+using namespace vfts_udx;
 
 namespace {
 
 struct DocIn {
     std::int64_t doc_id;
     std::string text;
-    vtext::Lang lang;
+    vfts::Lang lang;
     std::int64_t ver;
 };
 
 class TBuild : public TransformFunction {
-    vtext::AnalyzerOptions aopts_;
+    vfts::AnalyzerOptions aopts_;
     std::int64_t seg_base_ = 0;
     int threads_ = 4;
     std::size_t max_bytes_ = 0;
@@ -71,7 +71,7 @@ private:
     void to_cache(const std::string &seg)
     {
         if (index_.empty()) return;
-        vtext::CacheWriter w(cache_dir_, index_);
+        vfts::CacheWriter w(cache_dir_, index_);
         w.write_segment(seg);
     }
 
@@ -93,7 +93,7 @@ private:
         };
         auto worker = [&]() {
             try {
-                vtext::SegmentBuilder b(aopts_);
+                vfts::SegmentBuilder b(aopts_);
                 for (;;) {
                     std::vector<DocIn> batch;
                     {
@@ -107,7 +107,7 @@ private:
                     cv_room.notify_one();
                     for (DocIn &d : batch) {
                         try {
-                            b.add(d.doc_id, d.text, d.lang, 0);     // versions are kept in vtext.segments, not in the file
+                            b.add(d.doc_id, d.text, d.lang, 0);     // versions are kept in vfts.segments, not in the file
                         } catch (const std::exception &e) {
                             throw std::runtime_error("doc_id " + std::to_string(d.doc_id) + ": " + e.what());
                         }
@@ -157,7 +157,7 @@ private:
                 DocIn d;
                 d.doc_id = in.getIntRef(1);
                 if (!in.isNull(2)) { const VString &v = in.getStringRef(2); d.text.assign(v.data(), v.length()); }
-                d.lang = in.isNull(3) ? vtext::LANG_NONE : vtext::parse_lang(in.getStringRef(3).str());
+                d.lang = in.isNull(3) ? vfts::LANG_NONE : vfts::parse_lang(in.getStringRef(3).str());
                 d.ver = in.isNull(4) ? 0 : in.getIntRef(4);
                 batch_bytes += d.text.size() + 64;
                 batch.push_back(std::move(d));

@@ -10,8 +10,8 @@
 //
 // segment_to_rows(seg) followed by SegmentAssembler on those rows gives the same bytes again
 // (tests/engine/test_segment.cpp). That is what makes the per-node cache file only a copy.
-#ifndef VTEXT_ENGINE_TABLE_CODEC_H
-#define VTEXT_ENGINE_TABLE_CODEC_H
+#ifndef VFTS_ENGINE_TABLE_CODEC_H
+#define VFTS_ENGINE_TABLE_CODEC_H
 
 #include "segment.h"
 
@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace vtext {
+namespace vfts {
 
 constexpr std::uint32_t CHUNK_BITS = 16;            // 65,536 docnos per postings row
 constexpr std::size_t PART_BYTES = 65000;           // a positions payload is split into rows of at most this
@@ -58,6 +58,6 @@ private:
     std::size_t memory_ = 0;
 };
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

@@ -1,3 +1,3 @@
 {"engine": "es", "dataset": "enron", "j1_add_attribute_s": 223.016, "j1_updated": 517401, "j2_update_1pct_s": 2.777, "j2_rows": 5174, "merge_after_updates_s": 20.6, "j3_mean_ms": 2.92, "j4_mean_ms": 1.37, "queries": 40}
 {"engine": "os", "dataset": "enron", "j1_add_attribute_s": 228.425, "j1_updated": 517401, "j2_update_1pct_s": 8.909, "j2_rows": 5174, "merge_after_updates_s": 42.3, "j3_mean_ms": 2.74, "j4_mean_ms": 1.23, "queries": 40}
-{"engine": "vtext", "dataset": "enron", "j1_add_attribute_s": 0.028, "j2_update_1pct_s": 0.015, "j2_rows": 5174, "j3_mean_ms": 16.81, "j4_mean_ms": 18.74, "queries": 40}
+{"engine": "vfts", "dataset": "enron", "j1_add_attribute_s": 0.028, "j2_update_1pct_s": 0.015, "j2_rows": 5174, "j3_mean_ms": 16.81, "j4_mean_ms": 18.74, "queries": 40}

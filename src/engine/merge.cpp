@@ -6,7 +6,7 @@
 #include <queue>
 #include <stdexcept>
 
-namespace vtext {
+namespace vfts {
 
 std::string merge_segments(const std::vector<SegmentRef> &in, std::int64_t new_id, const MergeOptions &o)
 {
@@ -154,4 +154,4 @@ std::string merge_segments(const std::vector<SegmentRef> &in, std::int64_t new_i
     return w.finish();
 }
 
-} // namespace vtext
+} // namespace vfts

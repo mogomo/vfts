@@ -9,8 +9,8 @@
 //   morphological analyser.
 //
 // A Stemmer is not thread safe: use one per thread.
-#ifndef VTEXT_ENGINE_STEMMER_H
-#define VTEXT_ENGINE_STEMMER_H
+#ifndef VFTS_ENGINE_STEMMER_H
+#define VFTS_ENGINE_STEMMER_H
 
 #include "language.h"
 
@@ -20,7 +20,7 @@
 
 struct sb_stemmer;
 
-namespace vtext {
+namespace vfts {
 
 class Stemmer {
 public:
@@ -48,6 +48,6 @@ std::string hebrew_prefix_strip(std::string_view term);
 // Names of the Snowball algorithms linked in (sb_stemmer_list()).
 std::vector<std::string> snowball_algorithms();
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

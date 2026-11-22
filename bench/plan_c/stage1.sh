@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Plan-C stage 1: measurements for 32-client throughput (one query per request). Nothing in the
-# database or in vtext changes, except a resource pool that C6 creates and drops again.
+# database or in vfts changes, except a resource pool that C6 creates and drops again.
 #
 #   bench/plan_c/stage1.sh [step ...]      steps: c0 c1 c2 c4 c5 c6 c3 c12 (default: all, this order)
 #
 # Every result is one JSON line in bench/out/plan_c/results.jsonl, with the CPU used (cpuwrap.py).
-# Datasets and query files as in bench/run_all.sh (indexes loaded by its step vtext).
+# Datasets and query files as in bench/run_all.sh (indexes loaded by its step vfts).
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 O=bench/out/plan_c
 mkdir -p "$O/q"
 RES=$O/results.jsonl
-DATA=${VTEXT_DATA:-$HOME/vtext_data}
-PYV=${VTEXT_VENV_PY:-$HOME/vtext_venv/bin/python}       # python with vertica_python (C5)
+DATA=${VFTS_DATA:-$HOME/vfts_data}
+PYV=${VFTS_VENV_PY:-$HOME/vfts_venv/bin/python}       # python with vertica_python (C5)
 STEPS=${*:-c0 c1 c2 c4 c5 c6 c3 c12}
 log() { echo "$(date +%T) $*"; }
 W() { local t=$1; shift; timeout 3600 python3 -I bench/plan_c/cpuwrap.py "$RES" "$t" -- "$@"; }
@@ -20,26 +20,26 @@ W() { local t=$1; shift; timeout 3600 python3 -I bench/plan_c/cpuwrap.py "$RES" 
 qfile() { case $1 in msmarco) echo "$DATA/msmarco/queries.dev.small.tsv" ;; *) echo "bench/queries/$1_x25.tsv" ;; esac; }
 lfile() { case $1 in msmarco) echo "$DATA/msmarco/queries.dev.small.tsv" ;; *) echo "bench/queries/$1.tsv" ;; esac; }   # one-client sets
 qextra() { case $1 in msmarco) echo "--plain" ;; *) echo "" ;; esac; }
-VT() {   # test dataset view clients [run_vertica options...]
+VF() {   # test dataset view clients [run_vertica options...]
     local t=$1 ds=$2 view=$3 c=$4; shift 4
     W "$t" python3 -I bench/run_vertica.py "$ds" bench "$(qfile "$ds")" --clients "$c" --view "$view" --mode stem \
         --param max_expansions=100000 $(qextra "$ds") "$@"
 }
 # one-word tsearch on Enron, through the snap view or with the view's text inline
-TS_SNAP="SELECT /*+LABEL({label})*/ doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS query='fraud', index='enron', mode='stem', k=10) OVER() FROM bench.enron_snap) r"
-TS_LIVE="SELECT /*+LABEL({label})*/ doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS query='fraud', index='enron', mode='stem', k=10) OVER() FROM bench.enron_live) r"
-UDX0="SELECT /*+LABEL({label})*/ version FROM (SELECT vtext.tversion() OVER()) v"
+TS_SNAP="SELECT /*+LABEL({label})*/ doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS query='fraud', index='enron', mode='stem', k=10) OVER() FROM bench.enron_snap) r"
+TS_LIVE="SELECT /*+LABEL({label})*/ doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS query='fraud', index='enron', mode='stem', k=10) OVER() FROM bench.enron_live) r"
+UDX0="SELECT /*+LABEL({label})*/ version FROM (SELECT vfts.tversion() OVER()) v"
 SEL1="SELECT /*+LABEL({label})*/ 1"
 inline_snap() {
     local def
     def=$(vsql -X -A -t -c "SELECT view_definition FROM v_catalog.views WHERE table_schema='bench' AND table_name='enron_snap'")
-    echo "SELECT /*+LABEL({label})*/ doc_id FROM (SELECT vtext.tsearch(* USING PARAMETERS query='fraud', index='enron', mode='stem', k=10) OVER() FROM ($def) v) r"
+    echo "SELECT /*+LABEL({label})*/ doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS query='fraud', index='enron', mode='stem', k=10) OVER() FROM ($def) v) r"
 }
 SQ() { local t=$1 c=$2 sql=$3; shift 3; W "$t" python3 -I bench/plan_c/sqlload.py --sql "$sql" --clients "$c" --n $(( c * 600 > 3000 ? c * 600 : 3000 )) "$@"; }
 label_of() { tail -1 "$RES" | python3 -c "import json,sys; print(json.load(sys.stdin).get('label',''))"; }
 
 step_c0() {   # baseline still valid: the 32-client runs of run_all.sh
-    for ds in enron msmarco; do for view in snap live; do VT "c0_${ds}_$view" "$ds" "$view" 32 --repeat 3; done; done
+    for ds in enron msmarco; do for view in snap live; do VF "c0_${ds}_$view" "$ds" "$view" 32 --repeat 3; done; done
 }
 
 step_c1() {   # SQL ceiling: SELECT 1, a trivial UDx, a one-word tsearch, at 1..64 sessions
@@ -74,13 +74,13 @@ step_c2() {   # where a statement's time goes: data collector steps at 1 and 32 
     log "c2 perf: $O/c2_perf_dso.txt $O/c2_perf_sym.txt $O/c2_sched.txt"
 }
 
-step_c4() {   # engine-only ceiling: vtext_cli with C concurrent searchers on the node cache
+step_c4() {   # engine-only ceiling: vfts_cli with C concurrent searchers on the node cache
     for ds in enron pubmed msmarco; do
         for c in 1 4 8 16 32 64; do
-            W "c4_${ds}_c${c}_t1" build/tools/vtext_cli search /tmp/vtext "$ds" "$(qfile "$ds")" --clients "$c" --threads 1 \
+            W "c4_${ds}_c${c}_t1" build/tools/vfts_cli search /tmp/vfts "$ds" "$(qfile "$ds")" --clients "$c" --threads 1 \
                 --mode stem --max-expansions 100000 --repeat 3 $(qextra "$ds")
         done
-        W "c4_${ds}_c32_t$(nproc)" build/tools/vtext_cli search /tmp/vtext "$ds" "$(qfile "$ds")" --clients 32 --threads "$(nproc)" \
+        W "c4_${ds}_c32_t$(nproc)" build/tools/vfts_cli search /tmp/vfts "$ds" "$(qfile "$ds")" --clients 32 --threads "$(nproc)" \
             --mode stem --max-expansions 100000 --repeat 3 $(qextra "$ds")
     done
 }
@@ -109,21 +109,21 @@ step_c5() {   # client and session cost
 
 step_c6() {   # sessions, threads parameter, resource pool
     for ds in enron msmarco; do
-        VT "c6_${ds}_snap_c64" "$ds" snap 64 --repeat 3
-        for th in 1 2 4; do VT "c6_${ds}_snap_c32_threads$th" "$ds" snap 32 --repeat 3 --param "threads=$th"; done
+        VF "c6_${ds}_snap_c64" "$ds" snap 64 --repeat 3
+        for th in 1 2 4; do VF "c6_${ds}_snap_c32_threads$th" "$ds" snap 32 --repeat 3 --param "threads=$th"; done
     done
     local me; me=$(vsql -X -A -t -c "SELECT CURRENT_USER()")
     for par in 1 4 AUTO; do
-        vsql -X -A -t -q -c "DROP RESOURCE POOL vtext_c6" > /dev/null 2>&1
-        vsql -X -A -t -q -c "CREATE RESOURCE POOL vtext_c6 MEMORYSIZE '4G' MAXMEMORYSIZE NONE PLANNEDCONCURRENCY 64 MAXCONCURRENCY NONE
+        vsql -X -A -t -q -c "DROP RESOURCE POOL vfts_c6" > /dev/null 2>&1
+        vsql -X -A -t -q -c "CREATE RESOURCE POOL vfts_c6 MEMORYSIZE '4G' MAXMEMORYSIZE NONE PLANNEDCONCURRENCY 64 MAXCONCURRENCY NONE
             EXECUTIONPARALLELISM $par QUEUETIMEOUT 600 RUNTIMEPRIORITY HIGH" || continue
-        vsql -X -A -t -q -c "GRANT USAGE ON RESOURCE POOL vtext_c6 TO $me" > /dev/null 2>&1
+        vsql -X -A -t -q -c "GRANT USAGE ON RESOURCE POOL vfts_c6 TO $me" > /dev/null 2>&1
         for ds in enron msmarco; do
-            VT "c6_${ds}_snap_c32_pool_par$par" "$ds" snap 32 --repeat 3 --session "SET SESSION RESOURCE_POOL = vtext_c6"
+            VF "c6_${ds}_snap_c32_pool_par$par" "$ds" snap 32 --repeat 3 --session "SET SESSION RESOURCE_POOL = vfts_c6"
         done
-        SQ "c6_tsearch1_c32_pool_par$par" 32 "$TS_SNAP" --session "SET SESSION RESOURCE_POOL = vtext_c6"
+        SQ "c6_tsearch1_c32_pool_par$par" 32 "$TS_SNAP" --session "SET SESSION RESOURCE_POOL = vfts_c6"
     done
-    vsql -X -A -t -q -c "DROP RESOURCE POOL vtext_c6" > /dev/null 2>&1
+    vsql -X -A -t -q -c "DROP RESOURCE POOL vfts_c6" > /dev/null 2>&1
 }
 
 repeat_file() {   # base-file lines -> file with at least N lines (the base cycled)
@@ -192,14 +192,14 @@ step_e1() {   # Elasticsearch / OpenSearch at 32 clients: native client (tools/h
 cycle() {   # file N out: the lines of file repeated until there are at least N
     python3 -I -c "import sys; l=open(sys.argv[1]).readlines(); n=max(int(sys.argv[2]), len(l)); open(sys.argv[3],'w').writelines(l[i % len(l)] for i in range(n))" "$1" "$2" "$3"
 }
-broker_params() {   # dataset -> --param options of vtext_broker
+broker_params() {   # dataset -> --param options of vfts_broker
     local ds=$1
     echo "--param mode='$(modeof "$ds")' --param max_expansions=100000"
     [ "$ds" = msmarco ] && echo "--param syntax='plain'"
     case $ds in wiki_*) echo "--param lang='$(langof "$ds")'" ;; esac
 }
 MINREQ=${MINREQ:-20000}
-step_v1() {   # vtext through tools/vtext_broker (serve and sql modes) at 32 clients, native client
+step_v1() {   # vfts through tools/vfts_broker (serve and sql modes) at 32 clients, native client
     timeout 900 make tools > /dev/null || return 1
     bench/engines/engines.sh stop all > /dev/null 2>&1
     local tag=${V1_TAG:-v1}
@@ -207,9 +207,9 @@ step_v1() {   # vtext through tools/vtext_broker (serve and sql modes) at 32 cli
         python3 -I bench/plan_c/mkreq.py "$ds" "$(qfile "$ds")" "$O/v1_$ds.req" --min "$MINREQ"
         for m in ${V1_MODES:-serve sql}; do
             local extra="--mode serve"; [ "$m" = sql ] && extra="--mode sql --sessions ${V1_SESSIONS:-8} --max-batch 32"
-            pkill -f "vtext_broker --port 9300" 2> /dev/null; sleep 0.5
+            pkill -f "vfts_broker --port 9300" 2> /dev/null; sleep 0.5
             # shellcheck disable=SC2046
-            build/tools/vtext_broker --port 9300 --schema bench $extra $(broker_params "$ds") > "$O/${tag}_broker_${ds}_$m.log" 2>&1 &
+            build/tools/vfts_broker --port 9300 --schema bench $extra $(broker_params "$ds") > "$O/${tag}_broker_${ds}_$m.log" 2>&1 &
             local bp=$!
             sleep 1
             kill -0 $bp 2> /dev/null || { log "v1: broker did not start: $(cat "$O/${tag}_broker_${ds}_$m.log")"; continue; }
@@ -239,7 +239,7 @@ governor() {   # set the CPU frequency governor of every CPU (performance for th
     for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo "$1" | sudo -n tee "$g" > /dev/null 2>&1 || { log "governor: no passwordless sudo, left as it is"; break; }; done
     log "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
 }
-f1_vtext() {   # round: vtext through the broker in three modes, every dataset
+f1_vfts() {   # round: vfts through the broker in three modes, every dataset
     local r=$1
     bench/engines/engines.sh stop all > /dev/null 2>&1
     for ds in $F1_SETS; do
@@ -252,16 +252,16 @@ f1_vtext() {   # round: vtext through the broker in three modes, every dataset
                 batch)  extra="--mode sql --sessions 8 --max-batch 32" ;;      # batches of whatever waits
                 single) extra="--mode sql --sessions 32 --max-batch 1" ;;      # one statement per query
             esac
-            pkill -x vtext_broker 2> /dev/null; sleep 0.5
+            pkill -x vfts_broker 2> /dev/null; sleep 0.5
             # shellcheck disable=SC2046
-            build/tools/vtext_broker --port 9300 --schema bench $extra $(broker_params "$ds") > "$O/f1_broker.log" 2>&1 &
+            build/tools/vfts_broker --port 9300 --schema bench $extra $(broker_params "$ds") > "$O/f1_broker.log" 2>&1 &
             local bp=$!
             sleep 1
             kill -0 $bp 2> /dev/null || { log "f1: broker did not start: $(cat "$O/f1_broker.log")"; continue; }
-            W "f1_r${r}_vtext_${m}_$ds" timeout 900 build/tools/httpload 9300 "$O/v1_$ds.req" --clients 32 --repeat 3
+            W "f1_r${r}_vfts_${m}_$ds" timeout 900 build/tools/httpload 9300 "$O/v1_$ds.req" --clients 32 --repeat 3
             # one client: latency (the set once, not cycled; best time per query over 3 runs)
-            [ "$m" != batch ] && W "f1l_r${r}_vtext_${m}_$ds" timeout 900 build/tools/httpload 9300 "$O/l1_$ds.req" --clients 1 --repeat 3 \
-                --times "$O/f1l_r${r}_vtext_${m}_$ds.times"
+            [ "$m" != batch ] && W "f1l_r${r}_vfts_${m}_$ds" timeout 900 build/tools/httpload 9300 "$O/l1_$ds.req" --clients 1 --repeat 3 \
+                --times "$O/f1l_r${r}_vfts_${m}_$ds.times"
             kill $bp 2> /dev/null; wait $bp 2> /dev/null
         done
     done
@@ -288,36 +288,36 @@ step_f1() {   # final 32-client comparison: 3 rounds, engines in a different ord
     timeout 900 make tools > /dev/null || return 1
     local old; old=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2> /dev/null || echo none)
     governor performance
-    f1_engine 1 es; f1_engine 1 os; f1_vtext 1
-    f1_vtext 2; f1_engine 2 os; f1_engine 2 es
-    f1_engine 3 os; f1_vtext 3; f1_engine 3 es
+    f1_engine 1 es; f1_engine 1 os; f1_vfts 1
+    f1_vfts 2; f1_engine 2 os; f1_engine 2 es
+    f1_engine 3 os; f1_vfts 3; f1_engine 3 es
     governor "$old"
 }
 
-step_f1v() {   # vtext rounds of f1 only (after a change to vtext; the engines' rounds stay as they are)
+step_f1v() {   # vfts rounds of f1 only (after a change to vfts; the engines' rounds stay as they are)
     F1_SETS=${F1_SETS:-enron pubmed msmarco wiki_he wiki_ar}
     timeout 900 make tools > /dev/null || return 1
     local old; old=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2> /dev/null || echo none)
     governor performance
-    f1_vtext 1; f1_vtext 2; f1_vtext 3
+    f1_vfts 1; f1_vfts 2; f1_vfts 3
     governor "$old"
 }
 
 step_s1() {   # statement shapes: which part of a UDx statement costs (scalar vs transform, volatility)
-    local F=${VTEXT_FENCED_SQL:-NOT FENCED}
-    vsql -X -A -t -q -c "CREATE OR REPLACE FUNCTION vtext.tprobe_v AS LANGUAGE 'C++' NAME 'TProbeVolatileFactory' LIBRARY vtext.vtext $F;
-        CREATE OR REPLACE FUNCTION vtext.tprobe_s AS LANGUAGE 'C++' NAME 'TProbeStableFactory' LIBRARY vtext.vtext $F;
-        CREATE OR REPLACE FUNCTION vtext.tprobe_i AS LANGUAGE 'C++' NAME 'TProbeImmutableFactory' LIBRARY vtext.vtext $F;" || return 1
-    vsql -X -c "EXPLAIN SELECT vtext.tprobe_s(1)" > "$O/s1_explain_stable.txt" 2>&1
-    vsql -X -c "EXPLAIN SELECT vtext.tprobe_v(1)" > "$O/s1_explain_volatile.txt" 2>&1
+    local F=${VFTS_FENCED_SQL:-NOT FENCED}
+    vsql -X -A -t -q -c "CREATE OR REPLACE FUNCTION vfts.tprobe_v AS LANGUAGE 'C++' NAME 'TProbeVolatileFactory' LIBRARY vfts.vfts $F;
+        CREATE OR REPLACE FUNCTION vfts.tprobe_s AS LANGUAGE 'C++' NAME 'TProbeStableFactory' LIBRARY vfts.vfts $F;
+        CREATE OR REPLACE FUNCTION vfts.tprobe_i AS LANGUAGE 'C++' NAME 'TProbeImmutableFactory' LIBRARY vfts.vfts $F;" || return 1
+    vsql -X -c "EXPLAIN SELECT vfts.tprobe_s(1)" > "$O/s1_explain_stable.txt" 2>&1
+    vsql -X -c "EXPLAIN SELECT vfts.tprobe_v(1)" > "$O/s1_explain_volatile.txt" 2>&1
     local shapes=(
         "select1|$SEL1"
         "analytic|SELECT /*+LABEL({label})*/ ROW_NUMBER() OVER() FROM dual"
-        "scalar_volatile|SELECT /*+LABEL({label})*/ vtext.tprobe_v(1)"
-        "scalar_stable|SELECT /*+LABEL({label})*/ vtext.tprobe_s(1)"
-        "scalar_immutable|SELECT /*+LABEL({label})*/ vtext.tprobe_i(1)"
+        "scalar_volatile|SELECT /*+LABEL({label})*/ vfts.tprobe_v(1)"
+        "scalar_stable|SELECT /*+LABEL({label})*/ vfts.tprobe_s(1)"
+        "scalar_immutable|SELECT /*+LABEL({label})*/ vfts.tprobe_i(1)"
         "transform|$UDX0"
-        "transform_dual|SELECT /*+LABEL({label})*/ version FROM (SELECT vtext.tversion() OVER() FROM dual) v"
+        "transform_dual|SELECT /*+LABEL({label})*/ version FROM (SELECT vfts.tversion() OVER() FROM dual) v"
     )
     for c in 1 8 32; do
         for sh in "${shapes[@]}"; do
@@ -353,7 +353,7 @@ step_c12() {   # fuzzy and phrase gaps: the engine alone (no SQL) against Elasti
     local C12SETS="enron pubmed wiki_he wiki_ar"
     timeout 900 make tools > /dev/null || return 1
     for ds in $C12SETS; do
-        timeout 1800 build/tools/vtext_cli search /tmp/vtext "$ds" "bench/queries/$ds.tsv" --threads 1 --repeat 5 --stats \
+        timeout 1800 build/tools/vfts_cli search /tmp/vfts "$ds" "bench/queries/$ds.tsv" --threads 1 --repeat 5 --stats \
             --mode "$(modeof "$ds")" --max-expansions 100000 --times "$O/c12_cli_$ds.tsv" | tail -2
     done
     bench/engines/engines.sh stop all > /dev/null 2>&1

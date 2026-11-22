@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan-C test C12 summary: per kind of query, vtext's engine (vtext_cli, no SQL) against the
+"""Plan-C test C12 summary: per kind of query, vfts's engine (vfts_cli, no SQL) against the
 Elasticsearch profile split, from the files of stage1.sh step c12. Prints a Markdown table and one
 JSON line per kind (appended to results.jsonl by the caller).
 
@@ -37,7 +37,7 @@ for ds in sets:
             v["es_rewrite_ms"] += float(e[1]) / 1e6
             v["es_query_ms"] += float(e[2]) / 1e6      # matching and scoring (the query tree)
             v["es_collect_ms"] += float(e[3]) / 1e6    # the collectors' own time
-print("| Kind | Queries | vtext engine ms | of it plan (expansion) | of it execute | ES profiled: rewrite ms | ES profiled: query ms | ES profiled: collect ms | ES took ms |")
+print("| Kind | Queries | vfts engine ms | of it plan (expansion) | of it execute | ES profiled: rewrite ms | ES profiled: query ms | ES profiled: collect ms | ES took ms |")
 print("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
 for k, v in kinds.items():
     n, en = max(v["n"], 1), max(v["es_n"], 1)

@@ -8,7 +8,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-using namespace vtext;
+using namespace vfts;
 
 static std::string make_seg(std::int64_t id, int first, int n)
 {
@@ -23,7 +23,7 @@ static bool exists(const std::string &p) { struct stat st; return ::stat(p.c_str
 
 int main()
 {
-    char tmpl[] = "/tmp/vtext_test_cache_XXXXXX";
+    char tmpl[] = "/tmp/vfts_test_cache_XXXXXX";
     const std::string root = ::mkdtemp(tmpl);
     const std::string dir = root + "/idx";
 
@@ -76,19 +76,19 @@ int main()
         CHECK_EQ(li->refs[0].dead_counts->term(static_cast<std::uint32_t>(h1.find_term("indemnity"))), 3u);
         CHECK_EQ(s.stats().n_docs, 146ull);
     }
-    CHECK(exists(dir + "/gen_1.vtg") && exists(dir + "/gen_2.vtg"));
+    CHECK(exists(dir + "/gen_1.vfg") && exists(dir + "/gen_2.vfg"));
 
     // generation 3 drops segment 1: generation 1 and its files that gen 2 does not use go away
     Generation g3;
     g3.gen = 3;
     g3.segs.push_back({2, h2.header().checksum, {}});
     w.activate(g3);
-    CHECK(!exists(dir + "/gen_1.vtg"));
-    CHECK(exists(dir + "/gen_2.vtg") && exists(dir + "/seg_1.vts"));   // kept for queries on gen 2
+    CHECK(!exists(dir + "/gen_1.vfg"));
+    CHECK(exists(dir + "/gen_2.vfg") && exists(dir + "/seg_1.vfs"));   // kept for queries on gen 2
     Generation g4 = g3;
     g4.gen = 4;
     w.activate(g4);
-    CHECK(!exists(dir + "/seg_1.vts") && !exists(dir + "/gen_2.vtg"));
+    CHECK(!exists(dir + "/seg_1.vfs") && !exists(dir + "/gen_2.vfg"));
     // the process cache trusts ACTIVE for a moment; a newer min_gen forces a read
     li = open_index(root, "idx", 4);
     CHECK_EQ(li->gen, std::int64_t(4));

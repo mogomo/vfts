@@ -7,7 +7,7 @@
 
 #include <algorithm>
 
-using namespace vtext;
+using namespace vfts;
 using V = std::vector<std::string>;
 
 static Lang L(const char *code) { return parse_lang(code); }

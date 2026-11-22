@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Request file for tools/httpload from a query file (qid<TAB>query), for tools/vtext_broker.
+"""Request file for tools/httpload from a query file (qid<TAB>query), for tools/vfts_broker.
 
     python3 -I bench/plan_c/mkreq.py <index> <queries.tsv> <out.req> [--min N]
 

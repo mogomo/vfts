@@ -6,7 +6,7 @@
 #include <numeric>
 #include <stdexcept>
 
-namespace vtext {
+namespace vfts {
 
 std::uint64_t term_hash(std::string_view s)
 {
@@ -157,4 +157,4 @@ std::string SegmentBuilder::finish(std::int64_t segment_id)
     return out;
 }
 
-} // namespace vtext
+} // namespace vfts

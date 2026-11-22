@@ -17,7 +17,7 @@
 #include <thread>
 #include <unordered_map>
 
-namespace vtext {
+namespace vfts {
 
 // ---------------------------------------------------------------- dead counts
 
@@ -1111,7 +1111,7 @@ struct Searcher::Impl {
         }
         if (m.empty()) return;
         std::sort(m.begin(), m.end(), [](const MLeaf &a, const MLeaf &b) { return a.ub < b.ub; });
-        if (std::getenv("VTEXT_DEBUG")) {
+        if (std::getenv("VFTS_DEBUG")) {
             for (const MLeaf &x : m) std::fprintf(stderr, "  list clause %d df %u w %.3f ub %.3f\n", x.clause, x.its[0].df(), x.w, x.ub);
         }
         const std::size_t n = m.size();
@@ -1560,7 +1560,7 @@ std::vector<Hit> Searcher::run_search(const QNode &q, const SearchOptions &opts_
         }
         per[ti] = std::move(top.heap);
     });
-    if (std::getenv("VTEXT_DEBUG")) std::fprintf(stderr, "  threshold at the end: %.3f\n", shared.load());
+    if (std::getenv("VFTS_DEBUG")) std::fprintf(stderr, "  threshold at the end: %.3f\n", shared.load());
     if (opts.stats) opts.stats->exec_us += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t_exec).count();
     TopK all(opts.k);
     for (auto &v : per) for (const Cand &c : v) all.offer(c.score, c.doc_id);
@@ -1735,4 +1735,4 @@ std::string Searcher::explain(const std::string &query, const SearchOptions &opt
     return to_string(parse_query(query, *analyzer_, opts.query));
 }
 
-} // namespace vtext
+} // namespace vfts

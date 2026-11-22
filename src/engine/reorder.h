@@ -9,13 +9,13 @@
 // half's size); then both halves are cut again, down to min_partition documents. The result only
 // changes how documents are numbered inside a segment: search results are the same (ties are
 // broken by doc_id), checked by the engine tests and by comparing every hit of the benchmarks.
-#ifndef VTEXT_ENGINE_REORDER_H
-#define VTEXT_ENGINE_REORDER_H
+#ifndef VFTS_ENGINE_REORDER_H
+#define VFTS_ENGINE_REORDER_H
 
 #include <cstdint>
 #include <vector>
 
-namespace vtext {
+namespace vfts {
 
 struct ForwardIndex {
     std::uint32_t n_docs = 0;
@@ -49,6 +49,6 @@ inline std::uint32_t reorder_min_df(std::uint64_t n_docs)
     return static_cast<std::uint32_t>(v < 2 ? 2 : v > 4096 ? 4096 : v);
 }
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

@@ -1,6 +1,6 @@
 // Small helpers shared by the engine unit tests (same style as vertica-vector-db).
-#ifndef VTEXT_TESTS_CHECK_H
-#define VTEXT_TESTS_CHECK_H
+#ifndef VFTS_TESTS_CHECK_H
+#define VFTS_TESTS_CHECK_H
 
 #include <cstdint>
 #include <cstdio>

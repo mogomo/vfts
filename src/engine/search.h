@@ -9,8 +9,8 @@
 // same float arithmetic, with Lucene's one-byte length norms (segment.h). With classic = true the
 // weights are multiplied by (1 + k1), the classic BM25 formula and the scores of Elasticsearch
 // (its LegacyBM25Similarity). The order of the hits is the same. docs/design.md "Scoring".
-#ifndef VTEXT_ENGINE_SEARCH_H
-#define VTEXT_ENGINE_SEARCH_H
+#ifndef VFTS_ENGINE_SEARCH_H
+#define VFTS_ENGINE_SEARCH_H
 
 #include "analyzer.h"
 #include "query.h"
@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace vtext {
+namespace vfts {
 
 enum class MatchMode : std::uint8_t { Stem, Exact };
 
@@ -127,6 +127,6 @@ private:
     std::unique_ptr<Analyzer> analyzer_;
 };
 
-} // namespace vtext
+} // namespace vfts
 
 #endif

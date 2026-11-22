@@ -1,5 +1,5 @@
 {
- "vtext_serve": {
+ "vfts_serve": {
   "enron": {
    "qps_median": 6832.0,
    "qps_rounds": [
@@ -56,7 +56,7 @@
    "errors": 0
   }
  },
- "vtext_batch": {
+ "vfts_batch": {
   "enron": {
    "qps_median": 2365.9,
    "qps_rounds": [
@@ -113,7 +113,7 @@
    "errors": 0
   }
  },
- "vtext_single": {
+ "vfts_single": {
   "enron": {
    "qps_median": 1245.6,
    "qps_rounds": [
@@ -284,7 +284,7 @@
    "errors": 0
   }
  },
- "vtext_serve_1client": {
+ "vfts_serve_1client": {
   "enron": {
    "ms_mean": 1.769,
    "ms_p99": 18.19
@@ -306,7 +306,7 @@
    "ms_p99": 5.225
   }
  },
- "vtext_single_1client": {
+ "vfts_single_1client": {
   "enron": {
    "ms_mean": 3.881,
    "ms_p99": 14.092
