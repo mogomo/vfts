@@ -4,7 +4,7 @@ set -uo pipefail
 cd "$(dirname "$0")"; source ./lib.sh
 echo "$TEST_NAME"
 
-expect "tversion" "$(q "SELECT version FROM (SELECT vfts.tversion() OVER()) v")" "0.3.0"
+expect "tversion" "$(q "SELECT version FROM (SELECT vfts.tversion() OVER()) v")" "0.3.1"
 expect "snowball list has arabic and yiddish" \
        "$(q "SELECT (snowball LIKE '%arabic%' AND snowball LIKE '%yiddish%')::INT FROM (SELECT vfts.tversion() OVER()) v")" "1"
 
@@ -21,6 +21,9 @@ expect "stem column" "$(q "SELECT stem FROM (SELECT vfts.tokenize('running') OVE
 expect "hebrew acronym gershayim" \
        "$(q "SELECT LISTAGG(term USING PARAMETERS separator=' ') FROM (SELECT vfts.tokenize('צה״ל צה\"ל') OVER()) t")" \
        'צה"ל צה"ל'
+expect "hebrew geresh as quotation mark, offsets of the text" \
+       "$(q "SELECT LISTAGG(term || ':' || start_byte || '-' || end_byte USING PARAMETERS separator=' ') FROM (SELECT vfts.tokenize('׳תיאטרון מסך׳') OVER()) t")" \
+       "תיאטרון:2-16 מסך':17-25"
 expect "hebrew niqqud and prefix stem" \
        "$(q "SELECT term || '/' || stem || '/' || lang FROM (SELECT vfts.tokenize('הַבַּיִת' USING PARAMETERS lang='he') OVER()) t")" \
        "הבית/בית/he"

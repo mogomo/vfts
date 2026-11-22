@@ -36,7 +36,9 @@ One pipeline for documents and queries (`src/engine/analyzer.cpp`):
 3. Per script: Latin accents removed (NFD, non-spacing marks dropped, NFC; option `accent_fold`);
    Arabic and Persian: Lucene's ArabicNormalizer and PersianNormalizer (tashkeel, tatweel, alef
    forms, alef maksura, teh marbuta, keheh, Farsi yeh); Hebrew: U+0591..U+05C7 removed, geresh
-   and gershayim unified with ' and ". Curly apostrophes become '.
+   and gershayim unified with ' and ". Curly apostrophes become '. These quote characters are
+   unified before the word boundaries are found (UAX #29 counts the geresh, the gershayim and ʼ
+   as letters: a geresh used as a quotation mark would otherwise stay on the word).
 4. Words of more than 255 bytes are skipped. Chinese, Japanese, Korean, Thai, Lao, Khmer and
    Myanmar text is refused, or kept without stemming with `on_unsupported='plain'`.
 

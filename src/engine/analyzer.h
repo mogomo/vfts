@@ -1,6 +1,8 @@
 // The analyzer: text in, normalized terms with positions and byte offsets out.
 //
 // Index time and query time use this same code (docs/design.md, "Analysis"):
+//   0. The quote characters ’ ʼ ＇ ׳ ״ unified with ' and " (a geresh used as a quotation mark,
+//      ׳תיאטרון מסך׳, is then cut off as an ASCII apostrophe is; offsets stay those of the text).
 //   1. ICU word boundaries (UAX #29). Segments that are not words (spaces, punctuation) are
 //      dropped. "Holmes'", "Holmes," and "Holmes-style" all give the token "holmes"; Hebrew
 //      acronyms with gershayim (צה"ל, צה״ל) stay one token.

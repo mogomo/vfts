@@ -218,7 +218,7 @@ Vertica 26.3.0-2 only.
 the analyzer (how words are found, normalized and stemmed, for example a new Snowball release) or
 the file format. Such a version says so under [Upgrade and uninstall](#upgrade-and-uninstall), and
 the index is built again, so that old and new rows are analyzed the same way. 0.3.0 is one: it
-renamed vtext to vfts.
+renamed vtext to vfts. 0.3.1 is one for text with typographic quote characters (see below).
 BM25 statistics (number of documents, average length, document frequencies) are computed over all
 segments, the live tail and all nodes, minus tombstones: scores do not depend on how rows are split
 into segments or nodes.
@@ -330,6 +330,12 @@ vfts was named vtext up to version 0.2.0 (version numbers before 0.3.0 in these 
 vtext's). vfts 0.3.0 only renames it: the schema, the library, the tools, the session parameters,
 the cache file names and the file formats' magic bytes. It does not read vtext's indexes: remove
 vtext with its own `./install.sh --uninstall --drop`, install vfts, and create the indexes again.
+
+vfts 0.3.1 fixes the analyzer for typographic quote characters: ’ ʼ ＇ ׳ ״ are now unified with
+' and " before the word boundaries are found, as they always were meant to be. Before, a Hebrew
+geresh used as a quotation mark stayed on the word: in ׳תיאטרון מסך׳ the word was ׳תיאטרון,
+which a search for תיאטרון did not find. An index whose text has these characters: run
+`CALL vfts.rebuild(index)` after the upgrade.
 
     ./install.sh --uninstall             # removes library, functions and procedures; indexes stay
     ./install.sh --uninstall --drop      # also drops every index (views, node caches) and the schema vfts
@@ -985,7 +991,7 @@ ORDER BY h.rank;
 SELECT version, build, icu FROM (SELECT vfts.tversion() OVER()) v;
     version |                       build                        | icu  
    ---------+----------------------------------------------------+------
-    0.3.0   | -O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0 | 79.1
+    0.3.1   | -O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0 | 79.1
    (1 row)
 ```
 
@@ -1108,7 +1114,7 @@ tables: [bench/results/summary.md](bench/results/summary.md)), and one script ru
   collections (Hebrew Wikipedia 0.58 ms against 1.06 to 1.09; Enron 1.77 against 2.40 and 2.75;
   PubMed 1.01 against 1.07 and 1.30; MS MARCO 2.95 against 3.60 and 3.95). As one SQL statement
   per query, vfts takes 3.2 to 3.9 ms.
-- **Same answers.** The engines and vfts return the same matches (counts equal for 139 of 140
+- **Same answers.** The engines and vfts return the same matches (counts equal for all 140
   syntax queries) and, query by query, the same top 10 with the same scores: 97% of the 6,980
   MS MARCO queries and 133 of 140 syntax queries have identical scores at every rank. Relevance on
   MS MARCO: MRR@10 0.1815 (vfts), 0.1815 (Elasticsearch), 0.1813 (OpenSearch).
@@ -1290,11 +1296,14 @@ search. For large tables with row policies and many small searches, `tserve` is 
 | MS MARCO | 6,980 | - | 6,786 / 6,786 | 6,920 |
 | Enron | 40 | 40 | 39 / 39 | 39 |
 | PubMed | 40 | 40 | 39 / 39 | 40 |
-| Wikipedia, Hebrew | 30 | 29 | 29 / 29 | 29 |
+| Wikipedia, Hebrew | 30 | 30 | 29 / 29 | 29 |
 | Wikipedia, Arabic | 30 | 30 | 26 / 26 | 29 |
 
 Elasticsearch is compared with vfts's `bm25='classic'` (its scale), OpenSearch with the default.
-The differences that remain: fuzzy words (the engines blend the statistics of the expansions; one
+The Hebrew and Arabic answers were measured again with vfts 0.3.1, which reads a geresh used as a
+quotation mark as the engines do (with 0.3.0, one Hebrew query counted 9,853 matches against
+9,854). Only the answers: 0.3.1 changes nothing else, and the Hebrew index build took 149 s with
+it against 151 s with 0.3.0 on the same machine. The differences that remain: fuzzy words (the engines blend the statistics of the expansions; one
 query each in Enron and PubMed), and words the analyzers see differently: Snowball 3.2 (vfts)
 against Lucene's older Snowball (`international` stems to `internat` in one and `intern` in the
 other), and a few tokens in mixed or broken text. Ties (documents with the same score) are broken

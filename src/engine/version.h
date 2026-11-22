@@ -3,7 +3,7 @@
 #define VFTS_ENGINE_VERSION_H
 
 namespace vfts {
-constexpr const char *LIBRARY_VERSION = "0.3.0";
+constexpr const char *LIBRARY_VERSION = "0.3.1";
 }
 
 #ifndef VFTS_BUILD_FLAGS

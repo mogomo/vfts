@@ -201,12 +201,36 @@ bool script_runs(std::string_view w, std::vector<std::pair<std::size_t, std::siz
     return true;
 }
 
+// Quote characters unified with the ASCII apostrophe and quote before the word boundaries are
+// found: UAX #29 gives the geresh, the gershayim and the modifier letter apostrophe the word
+// break class of a letter, so a geresh used as a quotation mark (׳תיאטרון מסך׳) would stay on the
+// word, where an ASCII apostrophe is cut off; U+2019 and U+FF07 behave as the ASCII apostrophe
+// except after a Hebrew letter. The ASCII character for the UTF-8 sequence at p, its length in
+// len; 0 if there is none.
+char quote_at(const unsigned char *p, std::size_t left, std::size_t &len)
+{
+    if (left >= 2) {
+        if (p[0] == 0xD7 && p[1] == 0xB3) { len = 2; return '\''; }     // U+05F3 geresh
+        if (p[0] == 0xD7 && p[1] == 0xB4) { len = 2; return '"'; }      // U+05F4 gershayim
+        if (p[0] == 0xCA && p[1] == 0xBC) { len = 2; return '\''; }     // U+02BC modifier letter apostrophe
+    }
+    if (left >= 3) {
+        if (p[0] == 0xE2 && p[1] == 0x80 && p[2] == 0x99) { len = 3; return '\''; }   // U+2019
+        if (p[0] == 0xEF && p[1] == 0xBC && p[2] == 0x87) { len = 3; return '\''; }   // U+FF07
+    }
+    return 0;
+}
+
+bool quote_lead(unsigned char ch) { return ch == 0xD7 || ch == 0xCA || ch == 0xE2 || ch == 0xEF; }
+
 } // namespace
 
 struct Analyzer::Impl {
     std::unique_ptr<icu::BreakIterator> bi, sub;    // sub: words inside a script run of a mixed word
     UText *ut = nullptr, *sub_ut = nullptr;
     std::string scratch;
+    std::string mapped;                             // the text with its quote characters unified
+    std::vector<std::uint32_t> omap;                // byte of mapped -> byte of the text (one more at the end)
     std::vector<std::pair<std::size_t, std::size_t>> runs;
     Impl() : bi(prototype().clone()) { if (!bi) throw std::runtime_error("ICU break iterator clone failed"); }
     ~Impl()
@@ -278,8 +302,39 @@ void Analyzer::analyze(std::string_view text, Lang doc_lang)
                               "' is not supported (written without spaces between words, or needs a morphological "
                               "analyser); create the index with on_unsupported='plain' to index such text without stemming");
 
+    // the quote characters unified first (quote_at); token offsets stay those of the text
+    std::string_view src = text;
+    std::vector<std::uint32_t> &omap = impl_->omap;
+    omap.clear();
+    {
+        const auto *p = reinterpret_cast<const unsigned char *>(text.data());
+        const std::size_t n = text.size();
+        std::size_t i = 0, len = 0;
+        while (i < n && !(quote_lead(p[i]) && quote_at(p + i, n - i, len))) ++i;
+        if (i < n) {
+            std::string &m = impl_->mapped;
+            m.assign(text.data(), i);
+            omap.resize(i);
+            for (std::size_t k = 0; k < i; ++k) omap[k] = static_cast<std::uint32_t>(k);
+            while (i < n) {
+                const char c = quote_lead(p[i]) ? quote_at(p + i, n - i, len) : 0;
+                omap.push_back(static_cast<std::uint32_t>(i));
+                if (c) {
+                    m.push_back(c);
+                    i += len;
+                } else {
+                    m.push_back(text[i]);
+                    ++i;
+                }
+            }
+            omap.push_back(static_cast<std::uint32_t>(n));
+            src = m;
+        }
+    }
+    auto orig = [&](std::size_t at) { return static_cast<std::uint32_t>(omap.empty() ? at : omap[at]); };
+
     UErrorCode st = U_ZERO_ERROR;
-    impl_->ut = utext_openUTF8(impl_->ut, text.data(), static_cast<int64_t>(text.size()), &st);
+    impl_->ut = utext_openUTF8(impl_->ut, src.data(), static_cast<int64_t>(src.size()), &st);
     if (U_FAILURE(st)) throw std::runtime_error(std::string("ICU utext_openUTF8 failed: ") + u_errorName(st));
     icu::BreakIterator &bi = *impl_->bi;
     bi.setText(impl_->ut, st);
@@ -312,10 +367,10 @@ void Analyzer::analyze(std::string_view text, Lang doc_lang)
     };
     int32_t start = bi.first();
     for (int32_t end = bi.next(); end != icu::BreakIterator::DONE; start = end, end = bi.next()) {
-        const std::string_view word = text.substr(static_cast<std::size_t>(start), static_cast<std::size_t>(end - start));
+        const std::string_view word = src.substr(static_cast<std::size_t>(start), static_cast<std::size_t>(end - start));
         if (bi.getRuleStatus() < UBRK_WORD_NONE_LIMIT && !is_emoji(word)) continue;      // spaces, punctuation
         if (!script_runs(word, impl_->runs)) {
-            emit(word, static_cast<std::uint32_t>(start), static_cast<std::uint32_t>(end));
+            emit(word, orig(static_cast<std::size_t>(start)), orig(static_cast<std::size_t>(end)));
             continue;
         }
         // a word across scripts: the words of each script run
@@ -334,8 +389,8 @@ void Analyzer::analyze(std::string_view text, Lang doc_lang)
             for (int32_t e0 = sb.next(); e0 != icu::BreakIterator::DONE; s0 = e0, e0 = sb.next()) {
                 const std::string_view w = run.substr(static_cast<std::size_t>(s0), static_cast<std::size_t>(e0 - s0));
                 if (sb.getRuleStatus() < UBRK_WORD_NONE_LIMIT && !is_emoji(w)) continue;
-                const auto base = static_cast<std::uint32_t>(start) + static_cast<std::uint32_t>(r.first);
-                emit(w, base + static_cast<std::uint32_t>(s0), base + static_cast<std::uint32_t>(e0));
+                const std::size_t base = static_cast<std::size_t>(start) + r.first;
+                emit(w, orig(base + static_cast<std::size_t>(s0)), orig(base + static_cast<std::size_t>(e0)));
             }
         }
     }

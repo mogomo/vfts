@@ -134,8 +134,8 @@ Many queries in one request: vfts's parameter `queries` (one statement), the eng
 | Enron | OpenSearch | 40 of 40 |
 | PubMed | Elasticsearch | 40 of 40 |
 | PubMed | OpenSearch | 40 of 40 |
-| Wikipedia he | Elasticsearch | 29 of 30 |
-| Wikipedia he | OpenSearch | 29 of 30 |
+| Wikipedia he | Elasticsearch | 30 of 30 |
+| Wikipedia he | OpenSearch | 30 of 30 |
 | Wikipedia ar | Elasticsearch | 30 of 30 |
 | Wikipedia ar | OpenSearch | 30 of 30 |
 
@@ -151,8 +151,8 @@ Elasticsearch against vfts with `bm25='classic'` (the scale of Elasticsearch), O
 | Enron | OpenSearch | 40 | 39 | 39 | 0.0e+00 | 1.3e-01 |
 | PubMed | Elasticsearch | 40 | 39 | 40 | 1.3e-08 | 1.1e-01 |
 | PubMed | OpenSearch | 40 | 39 | 40 | 0.0e+00 | 1.1e-01 |
-| Wikipedia he | Elasticsearch | 30 | 29 | 29 | 1.0e-05 | 8.6e-05 |
-| Wikipedia he | OpenSearch | 30 | 29 | 29 | 1.0e-05 | 8.6e-05 |
+| Wikipedia he | Elasticsearch | 30 | 29 | 29 | 9.9e-06 | 8.6e-05 |
+| Wikipedia he | OpenSearch | 30 | 29 | 29 | 9.6e-06 | 8.6e-05 |
 | Wikipedia ar | Elasticsearch | 30 | 26 | 29 | 1.3e-05 | 1.3e-03 |
 | Wikipedia ar | OpenSearch | 30 | 26 | 29 | 1.3e-05 | 1.3e-03 |
 

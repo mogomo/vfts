@@ -179,6 +179,25 @@ static void hebrew()
     CHECK_EQ(terms("צה\"ל"), V({"צה\"ל"}));
     CHECK_EQ(terms("צה״ל"), V({"צה\"ל"}));
     CHECK_EQ(terms("דו\"ח של צה״ל"), V({"דו\"ח", "של", "צה\"ל"}));
+    // A geresh or gershayim used as a quotation mark is cut off as the ASCII character is (UAX #29
+    // gives them the class of a letter, so they are unified before the word boundaries); inside a
+    // word it stays, and so does a geresh after the last Hebrew letter, as an ASCII apostrophe
+    CHECK_EQ(terms("׳תיאטרון מסך׳"), V({"תיאטרון", "מסך'"}));
+    CHECK_EQ(terms("'תיאטרון מסך'"), V({"תיאטרון", "מסך'"}));
+    CHECK_EQ(terms("״שלום״ ו\"שלום\""), V({"שלום", "ו\"שלום"}));
+    CHECK_EQ(terms("ג׳ירפה"), V({"ג'ירפה"}));
+    CHECK_EQ(terms("מסך’"), V({"מסך'"}));
+    CHECK_EQ(terms("ʼokina ’tis"), V({"okina", "tis"}));
+    {
+        Analyzer q;                                     // offsets are those of the text, not of the unified copy
+        q.analyze("א ׳תיאטרון מסך", L("he"));          // א 0-2, space, ׳ 3-5, תיאטרון 5-19, space, מסך 20-26
+        CHECK(q.size() == 3);
+        if (q.size() == 3) {
+            CHECK_EQ(std::string(q.term(1)), std::string("תיאטרון"));
+            CHECK(q.token(1).start == 5 && q.token(1).end == 19);
+            CHECK(q.token(2).start == 20 && q.token(2).end == 26);
+        }
+    }
     // Points (niqqud) and cantillation removed
     CHECK_EQ(terms("שָׁלוֹם"), V({"שלום"}));
     CHECK_EQ(terms("בְּרֵאשִׁ֖ית"), V({"בראשית"}));

@@ -90,7 +90,7 @@ equal plain SQL; BM25 scores equal the formula within 1e-4), tests/sql/test_fres
 - [x] Eon retest after the M8 changes: engine tests, 105 SQL checks, digest identical on Enterprise
       (1 node), the Eon primary subcluster (3 nodes) and the secondary subcluster (2 nodes)
 
-Result: bench/results/summary.md. Same matches for 139 of 140 syntax queries; same top 10 and scores
+Result: bench/results/summary.md. Same matches for 139 of 140 syntax queries (140 of 140 with 0.3.1: a Hebrew geresh used as a quotation mark); same top 10 and scores
 for 97% of MS MARCO and 133 of 140 syntax queries; MRR@10 0.1815 / 0.1815 / 0.1813. Latency on MS
 MARCO between OpenSearch and Elasticsearch (snap view), p99 half of theirs; slower on small
 collections and on single-query throughput (Vertica's statement cost, about 2 ms); faster on
