@@ -3,7 +3,8 @@
 //   <cache_dir>/<index>/seg_<segment_id>.vts     one file per segment (segment.h), never changed
 //   <cache_dir>/<index>/gen_<generation>.vtg     the active segments of a generation, their
 //                                                tombstones and the tombstones' effect on document
-//                                                frequencies (computed once, here)
+//                                                frequencies (computed once, here), the access
+//                                                mode and keys (mode 0600, like every file here)
 //   <cache_dir>/<index>/ACTIVE                   the active generation number
 //
 // The cache is only a copy of the index tables: a missing or damaged file is never a data loss
@@ -43,6 +44,11 @@ struct Generation {
     std::int64_t gen = 0;
     std::string options;                    // the index's analyzer options, "lang=en;accent_fold=latin;..."
     std::vector<GenSegment> segs;
+    // Who may search (docs/design.md "Access"): the access mode ("open", "rows" or
+    // "masked:<column>") and the index's keys (the current one, during a key change also the
+    // previous one). The views prove with a token made from a key that they are the input.
+    std::string access;
+    std::vector<std::string> keys;
 };
 
 class CacheWriter {
@@ -67,14 +73,19 @@ private:
 struct LoadedIndex {
     std::int64_t gen = 0;
     std::string options;                    // as given to CacheWriter::activate
+    std::string access;                     // as given to CacheWriter::activate ("" in files of vtext 0.1.0)
+    std::vector<std::string> keys;
     std::vector<SegmentRef> refs;
     std::uint64_t bytes = 0, docs = 0, dead = 0;
     std::vector<std::shared_ptr<const void>> keep;      // mappings the refs point into
 };
 
 // Opens the active generation (cached in the process). min_gen: the generation the caller's view
-// belongs to; a cache that is older is stale and an error names the node's problem.
-std::shared_ptr<const LoadedIndex> open_index(const std::string &cache_dir, const std::string &index, std::int64_t min_gen);
+// belongs to; a cache that is older is stale and an error names the node's problem. exact: open
+// generation min_gen itself, also while a newer one is active (its files are kept until the next
+// generation): for views whose rows belong to that generation (access mode "rows").
+std::shared_ptr<const LoadedIndex> open_index(const std::string &cache_dir, const std::string &index, std::int64_t min_gen,
+                                              bool exact = false);
 
 struct CacheInfo {
     bool present = false;

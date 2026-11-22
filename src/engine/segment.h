@@ -4,8 +4,11 @@
 // the live tail. They are made by SegmentWriter (segment_writer.h) from a SegmentBuilder (new
 // documents), from the rows of the index tables (tload), or from other segments (merge).
 //
-// Inside a segment documents are numbered 0 .. n_docs-1 ("docno") in doc_id order, so a docno
-// comparison is a doc_id comparison and ties in score are broken the same way in every segment.
+// Inside a segment documents are numbered 0 .. n_docs-1 ("docno"). A segment made from new
+// documents numbers them in doc_id order (format 4). A merge may number them in another order, which
+// puts documents with similar words next to each other (reorder.h: smaller postings, longer runs
+// that MaxScore can skip); such a segment (format 5) has one more section, the docnos in doc_id
+// order, for finding a doc_id. Ties in score are broken by doc_id, never by docno (search.cpp).
 #ifndef VTEXT_ENGINE_SEGMENT_H
 #define VTEXT_ENGINE_SEGMENT_H
 
@@ -25,13 +28,14 @@ namespace vtext {
 
 constexpr char SEGMENT_MAGIC[8] = {'V', 'T', 'E', 'X', 'T', 'S', 'G', '1'};
 constexpr std::uint32_t SEGMENT_FORMAT = 4;      // 2: impacts; 3: postings of stem groups; 4: level-1 impacts
+constexpr std::uint32_t SEGMENT_FORMAT_ORDERED = 5;  // 4 + docnos in any order, and the doc_order section
 constexpr std::uint32_t BLOCK = 128;                 // documents per postings block
 constexpr std::size_t HEADER_BYTES = 512;
 constexpr std::size_t TAIL_PAD = 16;                 // zero bytes after the postings for unaligned 8-byte reads
 
 // Section order in the file; header.off[] holds their byte offsets.
 enum Section {
-    S_DOC_IDS = 0,      // int64[n_docs], ascending, unique
+    S_DOC_IDS = 0,      // int64[n_docs], unique; ascending in format 4
     S_DOC_LEN,          // uint32[n_docs], tokens per document
     S_NORMS,            // uint8[n_docs], Lucene's one-byte length (SmallFloat.intToByte4)
     S_TERM_OFF,         // uint32[n_terms + 1], offsets into S_TERM_POOL
@@ -65,7 +69,9 @@ struct SegmentHeader {
     std::int64_t max_ver;           // newest source version in the segment (microseconds), informational
     std::uint64_t off[S_COUNT];     // byte offset of each section
     std::uint64_t len[S_COUNT];     // byte length of each section
-    std::uint8_t reserved[HEADER_BYTES - 72 - 16 * S_COUNT];
+    std::uint64_t order_off;        // format 5: the doc_order section, uint32[n_docs]: the docnos
+    std::uint64_t order_len;        // sorted by doc_id (0 in format 4)
+    std::uint8_t reserved[HEADER_BYTES - 72 - 16 * S_COUNT - 16];
 };
 static_assert(sizeof(SegmentHeader) == HEADER_BYTES, "header size");
 
@@ -178,12 +184,17 @@ public:
     std::size_t bytes() const { return size_; }
 
     std::int64_t doc_id(std::uint32_t docno) const { return doc_ids_[docno]; }
+    // True when docnos follow doc_id order (format 4).
+    bool in_doc_id_order() const { return order_ == nullptr; }
     const std::int64_t *doc_ids() const { return doc_ids_; }
     std::uint32_t doc_len(std::uint32_t docno) const { return doc_len_[docno]; }
     std::uint8_t norm(std::uint32_t docno) const { return norms_[docno]; }
     const std::uint8_t *norms() const { return norms_; }
     // The docno of a doc_id, or -1.
     std::int64_t find_doc(std::int64_t doc_id) const;
+    // The docnos of many doc ids (ascending, unique), appended to out; ids not in the segment are
+    // skipped. One pass over the segment's doc ids when there are many (no random lookups).
+    void find_docs(const std::int64_t *ids, std::size_t n, std::vector<std::uint32_t> &out) const;
 
     std::string_view term(std::uint32_t t) const
     {
@@ -220,6 +231,7 @@ private:
     std::size_t size_ = 0;
     const SegmentHeader *h_ = nullptr;
     const std::int64_t *doc_ids_ = nullptr;
+    const std::uint32_t *order_ = nullptr;      // format 5: docnos by doc_id
     const std::uint32_t *doc_len_ = nullptr;
     const std::uint8_t *norms_ = nullptr;
     const std::uint32_t *term_off_ = nullptr;

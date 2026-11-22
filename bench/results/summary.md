@@ -24,9 +24,9 @@ vtext: `CALL vtext.create_index` (analysis, index tables, node cache) + `CALL vt
 | Dataset | Documents | vtext index (s) | Vertica COPY (s) | Elasticsearch (s) | OpenSearch (s) | vtext cache (MB) | vtext tables (MB) | Elasticsearch (MB) | OpenSearch (MB) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | MS MARCO | 8,841,823 | 376.8 | 275.3 | 214.3 | 207.2 | 2,787 | 1,599 | 4,119 | 4,167 |
-| Enron | 517,401 | 62.0 | 17.4 | 90.1 | 52.8 | 627 | 343 | 1,226 | 1,227 |
-| PubMed | 932,746 | 63.8 | 27.9 | 100.0 | 51.3 | 637 | 406 | 1,190 | 1,190 |
-| Wikipedia he | 300,000 | 153.6 | 16.4 | 159.1 | 66.1 | 1,233 | 745 | 2,279 | 2,275 |
+| Enron | 517,401 | 65.3 | 17.4 | 90.1 | 52.8 | 599 | 289 | 1,226 | 1,227 |
+| PubMed | 932,746 | 73.4 | 27.9 | 100.0 | 51.3 | 630 | 395 | 1,190 | 1,190 |
+| Wikipedia he | 300,000 | 154.1 | 16.4 | 159.1 | 66.1 | 1,233 | 745 | 2,279 | 2,275 |
 | Wikipedia ar | 300,000 | 111.1 | 13.5 | 119.0 | 47.3 | 933 | 525 | 1,588 | 1,588 |
 
 ## Latency, 1 client (vtext through vsql, one statement per query)
@@ -203,21 +203,21 @@ Queries where an engine is faster than vtext snap, the largest differences first
 
 | Dataset | vtext, tserve | vtext, batches | vtext, 1 statement per query | Elasticsearch | OpenSearch |
 |---|---:|---:|---:|---:|---:|
-| MS MARCO | 3,227 | 1,812 | 934 | 2,729 | 2,907 |
-| Enron | 5,785 | 2,344 | 1,166 | 3,902 | 3,881 |
-| PubMed | 9,891 | 3,024 | 1,241 | 7,964 | 8,122 |
-| Wikipedia he | 20,526 | 3,607 | 1,308 | 10,100 | 10,166 |
-| Wikipedia ar | 17,588 | 3,473 | 1,327 | 10,050 | 10,469 |
+| MS MARCO | 3,218 | 1,801 | 928 | 2,729 | 2,907 |
+| Enron | 6,832 | 2,366 | 1,246 | 3,902 | 3,881 |
+| PubMed | 11,740 | 3,029 | 1,269 | 7,964 | 8,122 |
+| Wikipedia he | 20,138 | 3,554 | 1,297 | 10,100 | 10,166 |
+| Wikipedia ar | 17,559 | 3,413 | 1,313 | 10,050 | 10,469 |
 
 One client, mean ms per query (best of 3 runs per query, median of the rounds):
 
 | Dataset | vtext, tserve | vtext, 1 statement per query | Elasticsearch | OpenSearch |
 |---|---:|---:|---:|---:|
-| MS MARCO | 2.94 | 3.83 | 3.95 | 3.60 |
-| Enron | 2.12 | 3.39 | 2.75 | 2.40 |
-| PubMed | 1.19 | 3.18 | 1.30 | 1.07 |
-| Wikipedia he | 0.55 | 3.12 | 1.09 | 1.06 |
-| Wikipedia ar | 0.63 | 3.12 | 1.07 | 1.09 |
+| MS MARCO | 2.95 | 3.93 | 3.95 | 3.60 |
+| Enron | 1.77 | 3.88 | 2.75 | 2.40 |
+| PubMed | 1.01 | 3.36 | 1.30 | 1.07 |
+| Wikipedia he | 0.58 | 3.17 | 1.09 | 1.06 |
+| Wikipedia ar | 0.66 | 3.22 | 1.07 | 1.09 |
 
 ## Search next to other data (Enron, bench/join_test.py)
 

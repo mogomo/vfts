@@ -198,14 +198,86 @@ hold rows that are also in the (old, wider) tail, so results stay exact, and the
 ## Merge
 
 `vtext.merge(index [, max_segments])` merges segments from the node cache (`tmerge`, no text is
-analyzed again): live documents in doc_id order, postings and positions merged term by term,
-tombstoned documents dropped, stem groups carried over. Then the same steps 4 to 8 as a refresh.
+analyzed again): live documents, postings and positions merged term by term, tombstoned documents
+dropped, stem groups carried over. Then the same steps 4 to 8 as a refresh.
+
+**Document order.** A merge numbers the documents by recursive graph bisection
+(`src/engine/reorder.cpp`; Dhulipala et al., KDD 2016; Lucene's `BPIndexReorderer`, PISA), unless
+the index was made with `reorder=false`. Documents that share words get nearby docnos, so
+postings have smaller gaps (fewer bits per document) and the documents that score high for a word
+fall into fewer blocks, which MaxScore's block bounds then skip. The documents (the terms of each
+document that occur in at least n / 2,048 documents, at most 4,096) are cut in two halves;
+documents are swapped between the halves while that lowers the log-gap cost
+`sum over terms of d * log2(n / (d + 1))` per half (d: documents of the half that contain the
+term, n: the half's size), at most 20 rounds; then each half is cut again, down to 32 documents.
+All halves of one level are independent and run in parallel. The order changes only the docnos:
+hits, scores and counts are the same (ties are broken by doc_id, never by docno; the engine tests
+compare every query on both orders, and the benchmark compares every hit). A reordered segment is
+format 5: format 4 plus the docnos sorted by doc_id, for finding a doc_id (masks, tombstones);
+a segment in doc_id order stays format 4, byte for byte as before, so existing indexes load
+unchanged. Measured: [Performance](../README.md#performance) and the table below.
 
 Tiered policy (`max_segments = 0`, also run at the end of every refresh): segments are grouped in
 tiers by size (tier t holds 1 MB * merge_factor^t up to the next), and a tier with merge_factor
 segments (default 10) has its merge_factor smallest merged into one; segments with 30% or more
 deleted documents are merged too. `max_segments = N` merges the smallest segments until N are left.
 Searches keep running on the previous generation while a merge runs.
+
+## Access
+
+Who may search an index, and what the access policies of the source table do to a search
+(`src/udx/view_input.h`, `sql/procedures.sql`: `make_views`, `detect_access`, `check_access`).
+
+- **Functions.** Users get the search functions (`tsearch`, `tcount`, `tmatch`, `tserve`,
+  `tsnippet`, `hybrid`, `tokenize`, `tversion`, `tinfo`, `tnode`) and the procedure `info`. The
+  functions that write node caches (`tbuild`, `tmerge`, `tload`, `thave`, `tdrop`) and the
+  procedures that manage indexes are for the index owner (a superuser).
+- **The views are the only way in.** A search function reads the index from the node cache;
+  what it is allowed to see must come with its input. Every index has a secret key (128 bits from
+  `/dev/urandom` through `UUID_GENERATE`) in `vtext.index_keys`, which no user can read, and on
+  every node in the generation file (mode 0600, written from rows of that table, so the key never
+  appears in the text of a statement). The sentinel row of the views carries a token made from it;
+  the functions recompute the token and refuse input without the right one. A statement that makes
+  its own input (`FROM dual` with a generation number) is refused, so a search needs SELECT on the
+  views: Vertica's own grants decide who searches.
+- **Access mode**, read from `v_catalog.access_policy` when the index is created, refreshed or
+  merged, and by `vtext.check_access(index)` (only a superuser or the table's owner sees the
+  policies, so only they run these):
+  - `open` (no policy): the token is `md5(key:gen:key)`, a literal in the views; whoever may read
+    the views may know it.
+  - `rows` (an enabled row access policy, or `access=rows`): the views also return the documents
+    of the generation's segments that are not visible in the source table, as `H` rows of 2,500
+    comma-separated doc_ids each (one row per document would cost the declared width of the views'
+    columns per row: 1.36 s for 258,701 rows against 0.04 s, docs/VERTICA_NOTES.md). Rows changed
+    since the last refresh (a newer version, a journal row) are hidden too: the segments hold an
+    older version, and the policy can only judge the current one (a row redacted and given to a
+    user must not be found by the words of its old text); the live view searches the current
+    version through its tail, the snap view leaves it out until the next refresh. A table without
+    a version column cannot tell which rows changed: an updated row's old text stays searchable
+    for the users who may see its new version until the refresh. The
+    policy applies to the user who queries the view (tested: `CURRENT_USER()` inside a view is the
+    caller, and the view reads the source with the policy of the caller), so each user gets the
+    documents they cannot see. The functions mask them like deleted rows, so **scores are those of
+    an index of the rows the user sees**: N, average length and every df leave the hidden
+    documents out (in Lucene the term statistics come from the whole index, so a filter such as Elasticsearch's document level security does not change them; not measured here). The token is
+    `md5(key:gen:user:n:s1:s2:key)`, computed by the view per statement with the key read from
+    `vtext.index_keys` (the view owner's privilege): n hidden documents, s1 and s2 the sums of the first
+    and second 32 bits of `md5(key:doc_id)` over them. Leaving out a hidden doc_id, adding one, or using
+    the input of another user gives a wrong token; the user cannot compute one, the key is not in
+    the view's text. The function opens exactly the generation the H rows were computed for
+    (the previous generation's files stay on the node during a refresh).
+  - `masked:<column>` (an enabled column access policy on the id, text, language or version
+    column): every search is refused. A masked text would otherwise be searchable through the
+    index (a hit reveals that the hidden text contains the word); searching the masked text
+    instead would mean reading and analyzing the whole column per query.
+- **Changes.** Policies created after the last check are not seen until the next refresh, merge
+  or `check_access`; `access=rows` applies the row filter from the start. `check_access` also makes
+  a new key: a token that someone copied before (for example a user whose SELECT was revoked) stops
+  working. The nodes accept the old and the new key while the views are replaced, then the new one
+  only.
+- **Cost.** `open`: one MD5 per statement. `rows`: the view joins the index's doc_ids with the
+  source table per statement and computes one MD5 per hidden document (in SQL and in the
+  function); measured in [Performance](../README.md#performance).
 
 ## Node cache
 

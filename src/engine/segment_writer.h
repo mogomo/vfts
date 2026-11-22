@@ -18,7 +18,8 @@ class SegmentWriter {
 public:
     SegmentWriter(std::int64_t segment_id, std::int64_t max_ver);
 
-    // The documents, by docno: doc ids ascending and unique, and their token counts.
+    // The documents, by docno: doc ids (unique, in any order) and their token counts. Doc ids in
+    // ascending order give a format 4 segment, any other order format 5 (segment.h).
     void set_docs(std::vector<std::int64_t> doc_ids, std::vector<std::uint32_t> doc_len);
 
     void begin_term(std::string_view term);
@@ -45,6 +46,7 @@ private:
 
     std::int64_t segment_id_, max_ver_;
     std::vector<std::int64_t> doc_ids_;
+    std::vector<std::uint32_t> order_;          // docnos by doc_id; empty when doc ids ascend
     std::vector<std::uint32_t> doc_len_;
     std::string pool_;
     std::vector<std::uint32_t> term_off_;

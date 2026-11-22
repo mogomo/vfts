@@ -1444,13 +1444,17 @@ Searcher::~Searcher() = default;
 void Searcher::mask(const std::vector<std::int64_t> &doc_ids)
 {
     if (prepared_) throw std::runtime_error("searcher: mask after the first search");
+    std::vector<std::int64_t> ids(doc_ids);
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    std::vector<std::uint32_t> found;
     for (std::size_t si = 0; si < segs_.size(); ++si) {
         const Segment &seg = *segs_[si].seg;
-        for (std::int64_t id : doc_ids) {
-            const std::int64_t d = seg.find_doc(id);
-            if (d < 0) continue;
-            if (segs_[si].dead && segs_[si].dead->test(static_cast<std::uint32_t>(d))) continue;
-            masked_[si].push_back(static_cast<std::uint32_t>(d));
+        found.clear();
+        seg.find_docs(ids.data(), ids.size(), found);
+        for (std::uint32_t d : found) {
+            if (segs_[si].dead && segs_[si].dead->test(d)) continue;
+            masked_[si].push_back(d);
         }
         std::sort(masked_[si].begin(), masked_[si].end());
         masked_[si].erase(std::unique(masked_[si].begin(), masked_[si].end()), masked_[si].end());

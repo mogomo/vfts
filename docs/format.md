@@ -12,7 +12,8 @@ from local data) and partitioned by `index_id` (dropping an index drops partitio
 
 | Table | Columns | One row per |
 |---|---|---|
-| `indexes` | index_id, index_name, source_table, id_col, text_col, lang_col, ver_col, journal_table, lang, accent_fold, on_unsupported, margin_s, threads, max_segment_mb, merge_factor, cache_dir, view_schema, gen, boundary, boundary_lit, created_at, refreshed_at, refresh_seconds, refresh_note, refresh_started_at, refresh_started_by | index (the manifest) |
+| `indexes` | index_id, index_name, source_table, id_col, text_col, lang_col, ver_col, journal_table, lang, accent_fold, on_unsupported, margin_s, threads, max_segment_mb, merge_factor, cache_dir, view_schema, gen, boundary, boundary_lit, created_at, refreshed_at, refresh_seconds, refresh_note, refresh_started_at, refresh_started_by, access_opt, access, reorder | index (the manifest) |
+| `index_keys` | index_id, secret, prev_secret | index: its key (docs/design.md "Access"); no grant to users |
 | `segments` | index_id, segment_id, state, gen_added, gen_removed, n_docs, n_terms, sum_len, bytes, checksum, min_ver, max_ver, created | segment; active while `gen_removed IS NULL` |
 | `term_dict` | index_id, segment_id, term_id, term, stem, lang, doc_freq | term and stemming language |
 | `postings` | index_id, segment_id, term_id, chunk_id, docs `VARBINARY(65000)` | term and chunk of 65,536 docnos |
@@ -22,7 +23,8 @@ from local data) and partitioned by `index_id` (dropping an index drops partitio
 | `index_stats` | index_id, gen, n_docs, sum_len, avg_length, n_segments, n_terms, bytes, created | generation |
 | `probe` | k | 1,024 rows, segmented: makes `OVER(PARTITION NODES)` reach every node |
 
-- **docno**: inside a segment, documents are numbered 0 .. n-1 in doc_id order.
+- **docno**: inside a segment, documents are numbered 0 .. n-1: in doc_id order in a new segment,
+  in the order of recursive graph bisection in a merged one (docs/design.md "Merge").
 - **term_id**: the rank of the term in byte order inside its segment (term ids are consecutive from 0).
 - **term_dict**: `term` is normalized and not stemmed; `stem` is its stem in the language `lang`
   (the stemming language chosen for the words of that term, `''` for none). A term seen in
@@ -41,7 +43,7 @@ from local data) and partitioned by `index_id` (dropping an index drops partitio
 Byte offsets of words are not stored: `tsnippet` analyzes the text it is given again (it is joined
 from the source table anyway), which keeps the positions table about 40% smaller.
 
-## Segment file (format 4)
+## Segment file (format 4 and 5)
 
 `<cache_dir>/<index>/seg_<segment_id>.vts`. Little-endian, every section 8-byte aligned. Read in
 place through `mmap`; nothing is parsed or copied.
@@ -51,7 +53,7 @@ place through `mmap`; nothing is parsed or copied.
 | Offset | Type | Field |
 |---:|---|---|
 | 0 | char[8] | magic `VTEXTSG1` |
-| 8 | uint32 | format (4) |
+| 8 | uint32 | format: 4 (docnos in doc_id order) or 5 (any order, with the doc_order section) |
 | 12 | uint32 | flags (0) |
 | 16 | int64 | segment_id |
 | 24 | uint32 | n_docs |
@@ -64,12 +66,14 @@ place through `mmap`; nothing is parsed or copied.
 | 64 | int64 | max_ver (0; versions are kept in `vtext.segments`) |
 | 72 | uint64[14] | section offsets |
 | 184 | uint64[14] | section lengths |
+| 296 | uint64 | format 5: offset of the doc_order section (0 in format 4) |
+| 304 | uint64 | format 5: its length, 4 * n_docs (0 in format 4) |
 
 ### Sections
 
 | # | Section | Content |
 |---:|---|---|
-| 0 | doc_ids | int64[n_docs], ascending, unique |
+| 0 | doc_ids | int64[n_docs], unique; ascending in format 4 |
 | 1 | doc_len | uint32[n_docs], tokens per document |
 | 2 | norms | uint8[n_docs]: the length as Lucene encodes it (`SmallFloat.intToByte4`; exact below 24) |
 | 3 | term_off | uint32[n_terms + 1]: offsets into term_pool |
@@ -83,6 +87,10 @@ place through `mmap`; nothing is parsed or copied.
 | 11 | bitmap_dir | BitmapEntry[] (24 bytes): term, reserved, off, len; for terms with df >= 2,048 |
 | 12 | bitmaps | CRoaring portable bitmaps of docnos |
 | 13 | group_info | TermInfo[n_stems]: the postings of every stem group (summed tf, no positions) |
+| - | doc_order | format 5 only, after section 13: uint32[n_docs], the docnos sorted by doc_id (binary search for a doc_id) |
+
+A segment whose doc ids ascend is always written as format 4 (byte for byte the files of vtext
+1.0), any other as format 5; tables hold no format, the order of the doc_stats rows decides.
 
 ### Postings of a term
 
@@ -125,7 +133,7 @@ impact) before it is used. Queries check the header only.
 | File | Content |
 |---|---|
 | `seg_<id>.vts` | a segment, never changed after it is written |
-| `gen_<g>.vtg` | generation g: header `VTEXTGN1`, version, number of segments, g, an FNV-1a checksum of the rest, size; the index's analyzer options; per segment: segment_id, the segment file's checksum, its tombstoned docnos, and how the tombstones lower the document frequency of each affected term and stem group |
+| `gen_<g>.vtg` | generation g: header `VTEXTGN1`, version (2; 1 in vtext 0.1.0, without access mode and keys), number of segments, g, an FNV-1a checksum of the rest, size; the index's analyzer options; the access mode and the key(s) (docs/design.md "Access"); per segment: segment_id, the segment file's checksum, its tombstoned docnos, and how the tombstones lower the document frequency of each affected term and stem group |
 | `ACTIVE` | the active generation number, as text |
 
 Files are written to a temporary name, synced and renamed; `ACTIVE` is replaced last. The files

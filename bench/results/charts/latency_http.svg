@@ -19,46 +19,46 @@ text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}
 <rect class="os" x="500.80000000000007" y="52" width="10" height="10" rx="2"/>
 <text class="t2" x="514.8000000000001" y="61" font-size="12">OpenSearch</text>
 <text class="t1" x="110" y="118.0" font-size="12" text-anchor="end">MS MARCO</text>
-<path class="vtext" d="M120,80 h375.62503166962256 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-375.62503166962256 z"><title>vtext: 2.938</title></path>
-<text class="t2" x="505.62503166962256" y="91" font-size="11">2.9</text>
-<path class="vtext_s" d="M120,97 h491.01140106409935 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-491.01140106409935 z"><title>vtext_s: 3.831</title></path>
-<text class="t2" x="621.0114010640993" y="108" font-size="11">3.8</text>
+<path class="vtext" d="M120,80 h376.6587281479605 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-376.6587281479605 z"><title>vtext: 2.946</title></path>
+<text class="t2" x="506.6587281479605" y="91" font-size="11">2.9</text>
+<path class="vtext_s" d="M120,97 h503.6741829237396 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-503.6741829237396 z"><title>vtext_s: 3.929</title></path>
+<text class="t2" x="633.6741829237396" y="108" font-size="11">3.9</text>
 <path class="es" d="M120,114 h506.00000000000006 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-506.00000000000006 z"><title>es: 3.947</title></path>
 <text class="t2" x="636.0" y="125" font-size="11">3.9</text>
 <path class="os" d="M120,131 h461.8094755510515 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-461.8094755510515 z"><title>os: 3.605</title></path>
 <text class="t2" x="591.8094755510515" y="142" font-size="11">3.6</text>
 <text class="t1" x="110" y="204.0" font-size="12" text-anchor="end">Enron</text>
-<path class="vtext" d="M120,166 h269.800354699772 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-269.800354699772 z"><title>vtext: 2.119</title></path>
-<text class="t2" x="399.800354699772" y="177" font-size="11">2.1</text>
-<path class="vtext_s" d="M120,183 h433.89967063592604 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-433.89967063592604 z"><title>vtext_s: 3.389</title></path>
-<text class="t2" x="563.899670635926" y="194" font-size="11">3.4</text>
+<path class="vtext" d="M120,166 h224.57613377248543 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-224.57613377248543 z"><title>vtext: 1.769</title></path>
+<text class="t2" x="354.57613377248543" y="177" font-size="11">1.8</text>
+<path class="vtext_s" d="M120,183 h497.4720040537117 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-497.4720040537117 z"><title>vtext_s: 3.881</title></path>
+<text class="t2" x="627.4720040537118" y="194" font-size="11">3.9</text>
 <path class="es" d="M120,200 h351.85001266784906 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-351.85001266784906 z"><title>es: 2.754</title></path>
 <text class="t2" x="481.85001266784906" y="211" font-size="11">2.8</text>
 <path class="os" d="M120,217 h306.10894350139347 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-306.10894350139347 z"><title>os: 2.4</title></path>
 <text class="t2" x="436.10894350139347" y="228" font-size="11">2.4</text>
 <text class="t1" x="110" y="290.0" font-size="12" text-anchor="end">PubMed</text>
-<path class="vtext" d="M120,252 h149.63313909298202 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-149.63313909298202 z"><title>vtext: 1.189</title></path>
-<text class="t2" x="279.633139092982" y="263" font-size="11">1.2</text>
-<path class="vtext_s" d="M120,269 h407.2819863187231 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-407.2819863187231 z"><title>vtext_s: 3.183</title></path>
-<text class="t2" x="537.281986318723" y="280" font-size="11">3.2</text>
+<path class="vtext" d="M120,252 h126.76260450975425 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-126.76260450975425 z"><title>vtext: 1.012</title></path>
+<text class="t2" x="256.7626045097543" y="263" font-size="11">1.0</text>
+<path class="vtext_s" d="M120,269 h429.6356726627819 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-429.6356726627819 z"><title>vtext_s: 3.356</title></path>
+<text class="t2" x="559.6356726627819" y="280" font-size="11">3.4</text>
 <path class="es" d="M120,286 h164.10488978971372 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-164.10488978971372 z"><title>es: 1.301</title></path>
 <text class="t2" x="294.10488978971375" y="297" font-size="11">1.3</text>
 <path class="os" d="M120,303 h133.9984798581201 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-133.9984798581201 z"><title>os: 1.068</title></path>
 <text class="t2" x="263.9984798581201" y="314" font-size="11">1.1</text>
 <text class="t1" x="110" y="376.0" font-size="12" text-anchor="end">Wikipedia he</text>
-<path class="vtext" d="M120,338 h66.42057258677478 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-66.42057258677478 z"><title>vtext: 0.545</title></path>
-<text class="t2" x="196.42057258677477" y="349" font-size="11">0.5</text>
-<path class="vtext_s" d="M120,355 h398.4955662528503 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-398.4955662528503 z"><title>vtext_s: 3.115</title></path>
-<text class="t2" x="528.4955662528503" y="366" font-size="11">3.1</text>
+<path class="vtext" d="M120,338 h71.33063085888017 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-71.33063085888017 z"><title>vtext: 0.583</title></path>
+<text class="t2" x="201.33063085888017" y="349" font-size="11">0.6</text>
+<path class="vtext_s" d="M120,355 h406.1190777805929 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-406.1190777805929 z"><title>vtext_s: 3.174</title></path>
+<text class="t2" x="536.1190777805929" y="366" font-size="11">3.2</text>
 <path class="es" d="M120,372 h137.48720547251077 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-137.48720547251077 z"><title>es: 1.095</title></path>
 <text class="t2" x="267.48720547251077" y="383" font-size="11">1.1</text>
 <path class="os" d="M120,389 h132.83557131998987 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-132.83557131998987 z"><title>os: 1.059</title></path>
 <text class="t2" x="262.83557131998987" y="400" font-size="11">1.1</text>
 <text class="t1" x="110" y="462.0" font-size="12" text-anchor="end">Wikipedia ar</text>
-<path class="vtext" d="M120,424 h77.53280972890803 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-77.53280972890803 z"><title>vtext: 0.631</title></path>
-<text class="t2" x="207.53280972890803" y="435" font-size="11">0.6</text>
-<path class="vtext_s" d="M120,441 h399.5292627311883 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-399.5292627311883 z"><title>vtext_s: 3.123</title></path>
-<text class="t2" x="529.5292627311883" y="452" font-size="11">3.1</text>
+<path class="vtext" d="M120,424 h81.5383835824677 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-81.5383835824677 z"><title>vtext: 0.662</title></path>
+<text class="t2" x="211.5383835824677" y="435" font-size="11">0.7</text>
+<path class="vtext_s" d="M120,441 h412.0628325310363 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-412.0628325310363 z"><title>vtext_s: 3.22</title></path>
+<text class="t2" x="542.0628325310363" y="452" font-size="11">3.2</text>
 <path class="es" d="M120,458 h133.9984798581201 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-133.9984798581201 z"><title>es: 1.068</title></path>
 <text class="t2" x="263.9984798581201" y="469" font-size="11">1.1</text>
 <path class="os" d="M120,475 h136.58272105396506 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-136.58272105396506 z"><title>os: 1.088</title></path>

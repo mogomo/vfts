@@ -29,10 +29,19 @@ void SegmentWriter::set_docs(std::vector<std::int64_t> doc_ids, std::vector<std:
 {
     if (doc_ids.size() != doc_len.size()) throw std::runtime_error("segment writer: doc ids and lengths differ in count");
     if (doc_ids.size() >= NO_DOC) throw std::runtime_error("segment writer: too many documents for one segment");
-    for (std::size_t i = 1; i < doc_ids.size(); ++i)
-        if (doc_ids[i - 1] >= doc_ids[i])
-            throw std::runtime_error(doc_ids[i - 1] == doc_ids[i] ? "duplicate doc_id " + std::to_string(doc_ids[i])
-                                                                  : std::string("segment writer: doc ids not ascending"));
+    bool ascending = true;
+    for (std::size_t i = 1; i < doc_ids.size() && ascending; ++i) {
+        if (doc_ids[i - 1] == doc_ids[i]) throw std::runtime_error("duplicate doc_id " + std::to_string(doc_ids[i]));
+        ascending = doc_ids[i - 1] < doc_ids[i];
+    }
+    order_.clear();
+    if (!ascending) {
+        order_.resize(doc_ids.size());
+        for (std::uint32_t i = 0; i < order_.size(); ++i) order_[i] = i;
+        std::sort(order_.begin(), order_.end(), [&](std::uint32_t a, std::uint32_t b) { return doc_ids[a] < doc_ids[b]; });
+        for (std::size_t i = 1; i < order_.size(); ++i)
+            if (doc_ids[order_[i - 1]] == doc_ids[order_[i]]) throw std::runtime_error("duplicate doc_id " + std::to_string(doc_ids[order_[i]]));
+    }
     doc_ids_ = std::move(doc_ids);
     doc_len_ = std::move(doc_len);
 }
@@ -204,7 +213,7 @@ std::string SegmentWriter::finish()
     }
     SegmentHeader h{};
     std::memcpy(h.magic, SEGMENT_MAGIC, 8);
-    h.format = SEGMENT_FORMAT;
+    h.format = order_.empty() ? SEGMENT_FORMAT : SEGMENT_FORMAT_ORDERED;
     h.segment_id = segment_id_;
     h.n_docs = n_docs;
     h.n_terms = n_terms;
@@ -274,6 +283,12 @@ std::string SegmentWriter::assemble(SegmentHeader &h, const std::vector<std::uin
     section(S_BITMAP_DIR, bitmap_dir_.empty() ? &empty : static_cast<const void *>(bitmap_dir_.data()), sizeof(BitmapEntry) * bitmap_dir_.size());
     section(S_BITMAPS, bitmaps_.data(), bitmaps_.size());
     section(S_GROUP_INFO, groups.empty() ? &empty : static_cast<const void *>(groups.data()), sizeof(TermInfo) * groups.size());
+    if (!order_.empty()) {
+        align8(out);
+        h.order_off = out.size();
+        h.order_len = 4ull * order_.size();
+        out.append(reinterpret_cast<const char *>(order_.data()), 4 * order_.size());
+    }
     align8(out);
     h.total_bytes = out.size();
     h.checksum = 0;

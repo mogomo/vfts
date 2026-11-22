@@ -3,7 +3,7 @@
 #define VTEXT_ENGINE_VERSION_H
 
 namespace vtext {
-constexpr const char *LIBRARY_VERSION = "0.1.0";
+constexpr const char *LIBRARY_VERSION = "0.2.0";
 }
 
 #ifndef VTEXT_BUILD_FLAGS

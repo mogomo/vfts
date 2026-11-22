@@ -4,7 +4,7 @@ set -uo pipefail
 cd "$(dirname "$0")"; source ./lib.sh
 echo "$TEST_NAME"
 
-expect "tversion" "$(q "SELECT version FROM (SELECT vtext.tversion() OVER()) v")" "0.1.0"
+expect "tversion" "$(q "SELECT version FROM (SELECT vtext.tversion() OVER()) v")" "0.2.0"
 expect "snowball list has arabic and yiddish" \
        "$(q "SELECT (snowball LIKE '%arabic%' AND snowball LIKE '%yiddish%')::INT FROM (SELECT vtext.tversion() OVER()) v")" "1"
 

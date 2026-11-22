@@ -5,8 +5,11 @@
 //   without gen: D, T, P, Q and S rows of one or more segments -> the segment files. Each file is
 //                assembled from the rows, its checksum compared with the S row, verified and
 //                written atomically. A segment that is already in the cache is not written again.
-//   with gen:    G rows (active segments and their checksums) and X rows (tombstones) -> the
-//                generation file, then ACTIVE. Every G segment must be in the cache.
+//   with gen:    G rows (active segments and their checksums), X rows (tombstones) and K rows
+//                (term: the access mode, stem: a key; segment_id 0 the current key, 1 the previous
+//                one during a key change) -> the generation file, then ACTIVE. Every G segment
+//                must be in the cache. The procedures read K rows from vtext.index_keys, so a
+//                key never appears in a statement's text.
 // Returns one row per node: node_name, status ('loaded' or 'activated'), segments, bytes.
 #include "udx_common.h"
 #include "../engine/table_codec.h"
@@ -56,6 +59,15 @@ private:
                 gs.segment_id = sid;
                 gs.checksum = static_cast<std::uint64_t>(in.getIntRef(IC_DOC_ID));
                 g.segs.push_back(gs);
+            } else if (kind == "K") {
+                if (in.isNull(IC_TERM) || in.isNull(IC_STEM)) fail("K row without access mode or key");
+                const std::string mode = in.getStringRef(IC_TERM).str();
+                if (!g.access.empty() && g.access != mode) fail("K rows with different access modes");
+                g.access = mode;
+                const std::string key = in.getStringRef(IC_STEM).str();
+                if (key.size() < 32 || key.size() > 64) fail("access key must have 32 to 64 characters");
+                if (sid == 0) g.keys.insert(g.keys.begin(), key);
+                else g.keys.push_back(key);
             } else if (kind == "X") {
                 dead[sid].push_back(static_cast<std::uint32_t>(in.getIntRef(IC_DOCNO)));
             } else if (kind == "S") {
@@ -91,6 +103,7 @@ private:
         if (activate) {
             if (!asm_.empty()) fail("segment rows and gen together: load segments first, then activate");
             g.gen = s.integer("gen", 0);
+            if (g.access.empty() || g.keys.empty()) fail("activation without a K row (access mode and key)");
             g.options = s.text("options", "");
             for (auto &gs : g.segs) {
                 auto it = dead.find(gs.segment_id);

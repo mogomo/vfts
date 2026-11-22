@@ -1,7 +1,8 @@
-// vtext.tmerge(USING PARAMETERS index, gen, segments, new_id [, cache_dir]) OVER()
+// vtext.tmerge(USING PARAMETERS index, gen, segments, new_id [, reorder, cache_dir]) OVER()
 //
 // Merges segments of the active generation (from this node's cache) into one new segment and
-// returns it as index rows (udx_common.h). Tombstoned documents are dropped. Called by
+// returns it as index rows (udx_common.h). Tombstoned documents are dropped. reorder (default
+// true): number the documents by recursive graph bisection (src/engine/reorder.h). Called by
 // vtext.merge (sql/procedures.sql) on the initiator node.
 #include "udx_common.h"
 #include "../engine/merge.h"
@@ -31,7 +32,9 @@ public:
             std::vector<vtext::SegmentRef> inputs;
             for (const vtext::SegmentRef &r : li->refs) if (want.count(r.seg->id())) inputs.push_back(r);
             if (inputs.size() != want.size()) fail("some of the segments " + s.text("segments", "") + " are not in the active generation");
-            const std::string merged = vtext::merge_segments(inputs, s.integer("new_id", 0));
+            vtext::MergeOptions mo;
+            mo.reorder = s.boolean("reorder", true);
+            const std::string merged = vtext::merge_segments(inputs, s.integer("new_id", 0), mo);
             vtext::CacheWriter(resolve_cache_dir(s), index).write_segment(merged);     // this node has it now
             write_segment_rows(out, merged);
         } catch (const std::exception &e) {
@@ -51,6 +54,7 @@ public:
         p.addInt("gen");
         p.addVarchar(65000, "segments");
         p.addInt("new_id");
+        p.addBool("reorder");
     }
     TransformFunction *createTransformFunction(ServerInterface &srv) override { return vt_createFuncObject<TMerge>(srv.allocator); }
 };

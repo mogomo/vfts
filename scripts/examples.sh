@@ -112,6 +112,8 @@ ex "tinfo: the cache of every node" \
 "SELECT * FROM (SELECT vtext.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vtext.probe) i;"
 
 ex "load_all: write missing node caches from the index tables" "CALL vtext.load_all('notes');"
+ex "check_access: read the access policies again and make a new key" "CALL vtext.check_access('notes');" \
+"SELECT index_name, access, reorder FROM vtext.indexes WHERE index_name = 'notes';"
 
 ex "rebuild (recovery only)" "CALL vtext.rebuild('notes');"
 

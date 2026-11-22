@@ -24,15 +24,15 @@ text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}
 <path class="os" d="M120,114 h506.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-506.0 z"><title>os: 4167</title></path>
 <text class="t2" x="636.0" y="125" font-size="11">4,167</text>
 <text class="t1" x="110" y="178.5" font-size="12" text-anchor="end">Enron</text>
-<path class="vtext" d="M120,149 h72.73866090712743 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-72.73866090712743 z"><title>vtext: 627</title></path>
-<text class="t2" x="202.73866090712744" y="160" font-size="11">627</text>
+<path class="vtext" d="M120,149 h69.3117350611951 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-69.3117350611951 z"><title>vtext: 599</title></path>
+<text class="t2" x="199.3117350611951" y="160" font-size="11">599</text>
 <path class="es" d="M120,166 h146.05039596832253 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-146.05039596832253 z"><title>es: 1226</title></path>
 <text class="t2" x="276.0503959683225" y="177" font-size="11">1,226</text>
 <path class="os" d="M120,183 h146.17278617710582 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-146.17278617710582 z"><title>os: 1227</title></path>
 <text class="t2" x="276.1727861771058" y="194" font-size="11">1,227</text>
 <text class="t1" x="110" y="247.5" font-size="12" text-anchor="end">PubMed</text>
-<path class="vtext" d="M120,218 h73.9625629949604 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-73.9625629949604 z"><title>vtext: 637</title></path>
-<text class="t2" x="203.9625629949604" y="229" font-size="11">637</text>
+<path class="vtext" d="M120,218 h73.10583153347731 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-73.10583153347731 z"><title>vtext: 630</title></path>
+<text class="t2" x="203.10583153347733" y="229" font-size="11">630</text>
 <path class="es" d="M120,235 h141.64434845212384 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-141.64434845212384 z"><title>es: 1190</title></path>
 <text class="t2" x="271.64434845212384" y="246" font-size="11">1,190</text>
 <path class="os" d="M120,252 h141.64434845212384 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-141.64434845212384 z"><title>os: 1190</title></path>

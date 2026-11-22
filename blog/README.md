@@ -16,12 +16,12 @@ Elasticsearch 9.5 and OpenSearch 3.10 on the same machine, with the same data an
 
 **The results, in one paragraph.** With 32 clients sending one query each, vtext answers 1.1 to
 2.0 times as many queries per second as the faster of Elasticsearch and OpenSearch on all five
-collections (Enron 5,785 against 3,902; MS MARCO 3,227 against 2,907; Hebrew Wikipedia 20,526
+collections (Enron 6,832 against 3,902; MS MARCO 3,218 against 2,907; Hebrew Wikipedia 20,138
 against 10,166), when the searches reach it through `vtext.tserve`: one long statement per user
 session that answers searches over a local channel. Sent as one SQL statement each, the same
-searches top out at 934 to 1,327 per second, because every Vertica statement that calls an extension
+searches top out at 928 to 1,313 per second, because every Vertica statement that calls an extension
 costs about 2 ms of parsing, planning and set-up. With a single client, vtext through `tserve` is
-faster on four of the five collections; OpenSearch is faster on PubMed. vtext returns the same
+faster on all five collections. Row access policies of the table apply to every search. vtext returns the same
 documents with the same BM25 scores for 97% of the MS MARCO queries, the same relevance (MRR@10
 0.1815), and its index is half to two thirds the size. Every number here was measured, with the same
 load generator for all three, and one script runs it all again.
@@ -39,11 +39,12 @@ load generator for all three, and one script runs it all again.
 7. [The benchmark](#the-benchmark)
 8. [Results](#results)
 9. [Search next to other data](#search-next-to-other-data)
-10. [Where Elasticsearch and OpenSearch win](#where-elasticsearch-and-opensearch-win)
-11. [Install it in your Vertica](#install-it-in-your-vertica)
-12. [What is in the repository](#what-is-in-the-repository)
-13. [Run it yourself](#run-it-yourself)
-14. [Conclusion](#conclusion)
+10. [Who may search what](#who-may-search-what)
+11. [Where Elasticsearch and OpenSearch win](#where-elasticsearch-and-opensearch-win)
+12. [Install it in your Vertica](#install-it-in-your-vertica)
+13. [What is in the repository](#what-is-in-the-repository)
+14. [Run it yourself](#run-it-yourself)
+15. [Conclusion](#conclusion)
 
 ## Full-text search, and why it is hard
 
@@ -67,7 +68,7 @@ database that already holds the text.
 | An attribute changes | rewrite and re-analyze each affected document | `UPDATE` one table; the text index is untouched |
 | Consistency | searchable after a refresh, no transactions | ACID: committed rows are searchable at once |
 | Copies of the text | two, plus a sync pipeline | one; the index is half to two thirds the engines' size |
-| Security, backup | a second system | Vertica logins, grants, resource pools, backups |
+| Security, backup | a second system (Lucene's term statistics include the documents a security filter hides) | Vertica logins, grants, resource pools, backups; row access policies of the table apply to every search, with scores computed over the rows the user may see |
 
 ## What vtext is
 
@@ -329,11 +330,11 @@ same client with one connection. The first run (latency through vsql, on both of
 
 | Collection | vtext, tserve | vtext, batches | vtext, one statement per query | Elasticsearch | OpenSearch |
 |---|---:|---:|---:|---:|---:|
-| Enron | **5,785** | 2,344 | 1,166 | 3,902 | 3,881 |
-| PubMed | **9,891** | 3,024 | 1,241 | 7,964 | 8,122 |
-| MS MARCO | **3,227** | 1,812 | 934 | 2,729 | 2,907 |
-| Hebrew Wikipedia | **20,526** | 3,607 | 1,308 | 10,100 | 10,166 |
-| Arabic Wikipedia | **17,588** | 3,473 | 1,327 | 10,050 | 10,469 |
+| Enron | **6,832** | 2,366 | 1,246 | 3,902 | 3,881 |
+| PubMed | **11,740** | 3,029 | 1,269 | 7,964 | 8,122 |
+| MS MARCO | **3,218** | 1,801 | 928 | 2,729 | 2,907 |
+| Hebrew Wikipedia | **20,138** | 3,554 | 1,297 | 10,100 | 10,166 |
+| Arabic Wikipedia | **17,559** | 3,413 | 1,313 | 10,050 | 10,469 |
 
 The three vtext columns send the same searches three ways. **One statement per query** is what
 an application gets when it runs `SELECT ... vtext.tsearch(...)` for each search: Vertica parses,
@@ -355,11 +356,11 @@ a native client on the same requests). All numbers here use the native client fo
 
 | Collection | vtext, tserve | vtext, one statement | Elasticsearch | OpenSearch |
 |---|---:|---:|---:|---:|
-| Enron | **2.12** | 3.39 | 2.75 | 2.40 |
-| PubMed | 1.19 | 3.18 | 1.30 | **1.07** |
-| MS MARCO | **2.94** | 3.83 | 3.95 | 3.60 |
-| Hebrew Wikipedia | **0.55** | 3.12 | 1.09 | 1.06 |
-| Arabic Wikipedia | **0.63** | 3.12 | 1.07 | 1.09 |
+| Enron | **1.77** | 3.88 | 2.75 | 2.40 |
+| PubMed | **1.01** | 3.36 | 1.30 | 1.07 |
+| MS MARCO | **2.95** | 3.93 | 3.95 | 3.60 |
+| Hebrew Wikipedia | **0.58** | 3.17 | 1.09 | 1.06 |
+| Arabic Wikipedia | **0.66** | 3.22 | 1.07 | 1.09 |
 
 **By kind of query** (vtext's engine against Elasticsearch's profile, one thread): words and
 boolean queries cost about the same; `w/N` is faster in vtext (proximity over OR groups is its
@@ -375,9 +376,18 @@ in one and `intern` in the other), and ties broken in a different order.
 ![Index size](charts/size.svg)
 
 **Size and build.** vtext's node cache is half to two thirds of the engines' store; the index tables
-in Vertica are a third of it or less. Building (and merging into one segment) takes 62 s for Enron
+in Vertica are a third of it or less. Building (and merging into one segment) takes 65 s for Enron
 (Elasticsearch 90 s, OpenSearch 53 s) and 377 s for MS MARCO (214 s and 207 s): the merge is still
 single-threaded.
+
+**Document order.** A merge can renumber the documents so that documents with similar words sit
+next to each other (recursive graph bisection, as Lucene's `BPIndexReorderer` does). The answers
+stay the same, hit for hit. It made Enron and PubMed 17 to 19% faster at 32 clients (engine only)
+and their postings smaller, but MS MARCO and the Arabic Wikipedia were faster in their own order
+(both store their best documents early: MS MARCO groups passages by the search they came from),
+and a single SQL statement that splits one search over all cores got slower on the reordered
+collections (Enron 3.39 to 3.88 ms). So it is an index option, on for Enron and PubMed in this
+benchmark, and the README has the whole comparison.
 
 ![Build time](charts/build.svg)
 
@@ -407,15 +417,28 @@ of magnitude apart. Filtering and counting by an attribute during the search is 
 engines, which keep it next to their postings; vtext passes every match to Vertica's join, which
 costs 17 to 18 ms when thousands of documents match. The answers are the same on both sides.
 
+## Who may search what
+
+Search engines bring their own security model; vtext uses Vertica's. A search needs `SELECT` on the
+index's views (a statement that makes its own input is refused), and a row access policy on the
+source table applies to every search: each user gets the documents they can see in the table, with
+the BM25 scores of an index of exactly those rows (in Lucene, a security filter hides the hits but
+the term statistics still count the hidden documents). A column mask on the indexed
+text makes vtext refuse to search, since a hit would reveal words of the masked text. The price of
+a row policy is a join per statement: on Enron 86 ms with nothing hidden and 320 ms with half of the
+517,401 documents hidden, instead of 2 ms; through `tserve` that is paid once per session, not per
+search.
+
 ## Where Elasticsearch and OpenSearch win
 
 Honestly, and with the reasons:
 
 - **Many small searches sent as SQL statements.** One statement per query reaches a third to an
-  eighth of the engines' throughput, and a single search as a statement takes about 3 ms on a small
-  collection against 1 to 3 ms. `tserve` is the answer for that traffic; plain SQL stays the
+  eighth of the engines' throughput, and a single search as a statement takes 3.2 to 3.9 ms against
+  1 to 4 ms. `tserve` is the answer for that traffic; plain SQL stays the
   answer for searches joined with other data.
-- **PubMed with one client**: OpenSearch 1.07 ms against 1.19 ms, with a lower 99th percentile.
+- **PubMed's 99th percentile with one client**: OpenSearch 2.8 ms against 4.9 ms (vtext's mean is
+  lower: 1.01 against 1.07 ms).
 - **Filtering or counting matches by an attribute** during the search: 1 to 3 ms against 17 to
   18 ms ([Search next to other data](#search-next-to-other-data)).
 - **Phrases of very frequent words and single fuzzy words**: Lucene's phrase matching and its
@@ -471,7 +494,8 @@ the repository.
 vtext puts a real search engine where the data already is. It returns the answers Elasticsearch
 and OpenSearch return, with the same scores, from SQL, on rows committed a moment ago. Through
 `tserve`, many clients get more searches per second from it than from either engine on every
-collection measured here, as the user they logged in as. Sent one SQL statement at a time, small
+collection measured here, as the user they logged in as and within the table's row access
+policies. Sent one SQL statement at a time, small
 searches cost what a database statement costs, and a dedicated search engine is faster.
 
 If your text lives in Vertica and you search it with SQL next to your other data - e-discovery

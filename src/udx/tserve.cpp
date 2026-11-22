@@ -6,7 +6,8 @@
 // Vertica checks the login, the grants on the view and the resource pool), runs this statement in
 // it, and then sends that user's searches over the channel.
 //
-// The statement reads its view like tsearch (generation check, journal masks, the live tail as of
+// The statement reads its view like tsearch (access token, generation check, journal and policy
+// masks, the live tail as of
 // the start of the statement: what it serves is a snapshot), connects to the Unix socket
 // `endpoint`, presents `token` (made by the broker for this statement only), and answers frames
 // until the broker closes the socket or the statement is canceled. Output: one row, the number of
@@ -20,9 +21,8 @@
 // joins before it ends; each search uses one thread. They run engine code only, never the SDK.
 #include "udx_common.h"
 #include "search_options.h"
+#include "view_input.h"
 #include "../engine/analyzer.h"
-#include "../engine/builder.h"
-#include "../engine/search.h"
 
 #include <poll.h>
 #include <sys/socket.h>
@@ -42,8 +42,6 @@ using namespace Vertica;
 using namespace vtext_udx;
 
 namespace {
-
-enum InCol { C_QID = 0, C_QUERY, C_DOC_ID, C_BODY, C_LANG, C_OP, C_GEN };
 
 struct Job {
     std::uint32_t id;
@@ -96,36 +94,12 @@ private:
         if (workers == 0) workers = std::max<std::int64_t>(1, std::thread::hardware_concurrency());
         const vtext::SearchOptions o = parse_search_options(s, 1);
 
-        std::vector<std::int64_t> mask;
-        struct TailDoc { std::int64_t doc_id; std::string text; vtext::Lang lang; };
-        std::vector<TailDoc> tail;
-        std::set<std::int64_t> in_tail;
-        std::int64_t gen = 0;
-        do {
-            if (!in.isNull(C_GEN)) gen = std::max<std::int64_t>(gen, in.getIntRef(C_GEN));
-            if (in.isNull(C_DOC_ID)) continue;
-            const std::int64_t id = in.getIntRef(C_DOC_ID);
-            mask.push_back(id);
-            const bool del = !in.isNull(C_OP) && in.getStringRef(C_OP).str() == "D";
-            if (del || !in_tail.insert(id).second) continue;
-            TailDoc d{id, std::string(), vtext::LANG_NONE};
-            if (!in.isNull(C_BODY)) { const VString &b = in.getStringRef(C_BODY); d.text.assign(b.data(), b.length()); }
-            if (!in.isNull(C_LANG) && !vtext::find_lang(in.getStringRef(C_LANG).str(), d.lang)) d.lang = vtext::LANG_NONE;
-            tail.push_back(std::move(d));
-        } while (in.next());
-
-        auto li = vtext::open_index(resolve_cache_dir(s), index, gen);
+        ViewInput v;
+        v.read(in, false);
+        auto li = v.open(resolve_cache_dir(s), index, srv.getUserName());
         const vtext::AnalyzerOptions aopts = parse_index_options(li->options);
-        vtext::Searcher searcher(aopts, li->refs);
-        if (!mask.empty()) searcher.mask(mask);
-        if (!tail.empty()) {
-            vtext::SegmentBuilder b(aopts);
-            for (TailDoc &d : tail) {
-                try { b.add(d.doc_id, d.text, d.lang); }
-                catch (const std::exception &e) { fail("live tail, doc_id " + std::to_string(d.doc_id) + ": " + e.what()); }
-            }
-            searcher.add_tail(std::make_shared<const std::string>(b.finish(-1)));
-        }
+        std::unique_ptr<vtext::Searcher> sp = v.searcher(*li);
+        vtext::Searcher &searcher = *sp;
         searcher.ready();
 
         const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);

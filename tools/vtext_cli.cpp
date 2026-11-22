@@ -1,7 +1,8 @@
 // vtext_cli: the engine without Vertica, for measurements and debugging.
 //
 //   vtext_cli build  <docs.dat> <cache_dir> <index> [--threads N] [--lang en] [--max-segment-mb M]
-//   vtext_cli merge  <cache_dir> <index> <max_segments>
+//   vtext_cli merge  <cache_dir> <index> <max_segments> [--no-reorder] [--force]   --force: rewrite even
+//                    when there are max_segments or fewer (one segment: reorder it)
 //   vtext_cli explain <queries.tsv> [--lang en] [--plain]   the parsed queries as JSON lines (for the
 //                    Elasticsearch / OpenSearch translation in bench/run_engines.py)
 //   vtext_cli search <cache_dir> <index> <queries.tsv> [--k 10] [--threads N] [--mode stem|exact]
@@ -127,13 +128,21 @@ static int merge(int argc, char **argv)
     auto li = open_index(cache, index, 0);
     std::vector<SegmentRef> refs = li->refs;
     std::sort(refs.begin(), refs.end(), [](const SegmentRef &a, const SegmentRef &b) { return a.seg->bytes() < b.seg->bytes(); });
-    if (refs.size() <= want) { std::printf("%zu segments, nothing to merge\n", refs.size()); return 0; }
+    const bool force = flag(argc, argv, "--force");
+    if (refs.size() <= want && !force) { std::printf("%zu segments, nothing to merge\n", refs.size()); return 0; }
     const auto t0 = Clock::now();
-    const std::size_t k = refs.size() - want + 1;
+    const std::size_t k = refs.size() <= want ? refs.size() : refs.size() - want + 1;
     std::vector<SegmentRef> in(refs.begin(), refs.begin() + k);
     std::int64_t new_id = 0;
     for (auto &r : li->refs) new_id = std::max(new_id, r.seg->id());
-    const std::string bytes = merge_segments(in, new_id + 1);
+    MergeOptions mo;
+    mo.reorder = !flag(argc, argv, "--no-reorder");
+    mo.bisection.min_df = static_cast<std::uint32_t>(std::atoi(opt(argc, argv, "--min-df", "0")));
+    mo.bisection.max_iters = static_cast<std::uint32_t>(std::atoi(opt(argc, argv, "--iters", "20")));
+    mo.bisection.min_partition = static_cast<std::uint32_t>(std::atoi(opt(argc, argv, "--min-partition", "32")));
+    ReorderStats rs;
+    mo.stats = &rs;
+    const std::string bytes = merge_segments(in, new_id + 1, mo);
     CacheWriter w(cache, index);
     w.write_segment(bytes);
     Segment s(bytes.data(), bytes.size());
@@ -143,7 +152,10 @@ static int merge(int argc, char **argv)
     for (auto it = refs.begin() + k; it != refs.end(); ++it) g.segs.push_back({it->seg->id(), it->seg->header().checksum, {}});
     g.segs.push_back({s.id(), s.header().checksum, {}});
     w.activate(g);
-    std::printf("merged %zu segments into one (%.0f MB) in %.1f s; %zu segments now\n", k, bytes.size() / 1e6, secs(t0), g.segs.size());
+    std::printf("merged %zu segments into one (%.0f MB, postings %.0f MB, positions %.0f MB) in %.1f s; %zu segments now\n", k, bytes.size() / 1e6,
+                s.header().len[S_POSTINGS] / 1e6, s.header().len[S_POSITIONS] / 1e6, secs(t0), g.segs.size());
+    if (mo.reorder) std::printf("reordering: %.1f s, %u levels, %llu rounds, %llu swaps\n", rs.seconds, rs.levels,
+                                static_cast<unsigned long long>(rs.rounds), static_cast<unsigned long long>(rs.swaps));
     return 0;
 }
 

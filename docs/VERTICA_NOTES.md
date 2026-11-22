@@ -182,3 +182,25 @@ milestone). Check again on other versions.
   the sentinel row is needed.
 - A perf profile of 3,000 tcount statements that match nothing: about 2% of the samples in the
   library; the rest is the server's statement machinery.
+
+## Verified in milestone M10 (26.3.0-2, single node)
+
+- A row access policy applies to the user who queries a view, also when the view belongs to
+  someone else: `CURRENT_USER()` inside the view is the caller, and the view reads the base table
+  with the caller's policy. The base tables are checked against the view's owner, so a view can
+  read a table (here `vtext.index_keys`) in a schema the caller has no USAGE on, while the caller
+  cannot read that table directly.
+- `v_catalog.views.view_definition` shows only views the user has a privilege on.
+- `v_catalog.access_policy` shows every policy to a superuser and only the policies of their own
+  tables to other users; so a view cannot find out at query time whether its table has a policy.
+- `ALTER SESSION SET UDPARAMETER FOR vtext.vtext ...` needs USAGE on the library (an ordinary user
+  gets `Permission denied on [.vtext]`); USAGE on a library would also let that user create
+  functions from any of its factories, so it is not granted. `ALTER SESSION SET UDPARAMETER name`
+  without `FOR` works for every user and reaches a UDx through the `public` namespace
+  (`getUDSessionParamReader("public")`).
+- Rows passed to a transform UDx cost their declared widths: 258,701 rows of the views' shape
+  (`LONG VARCHAR(32000000)`, `VARCHAR(65000)`, values NULL) took 1.36 s to reach `tcount`, the same
+  rows with widths of 10 took 0.04 s. Many small rows of a wide shape are therefore packed.
+- `GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA` covers procedures too; `REVOKE EXECUTE ON ALL FUNCTIONS`
+  then reports a notice for procedures that were never granted (harmless).
+

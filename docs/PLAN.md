@@ -14,6 +14,7 @@ A milestone is done when all its tests pass, it is committed, and this file and
 | M7 | Multi-node Enterprise and Eon with a secondary subcluster; per-node cache | the same results on every system | done 2026-11-21 (Enterprise: 1 node only) |
 | M8 | Benchmark, README, `blog/` article with charts | every number comes from a recorded run | done 2026-11-21 |
 | M9 | Many clients: tserve + vtext_broker, parallel batches, faster phrases and patterns, tmatch, join test | 32-client throughput and join results recorded with one native client for all engines | done 2026-11-21 |
+| M10 | Access (views as the only input, row access policies, masks refused, internal functions not granted) and document order (graph bisection at merge) | every user's results equal an index of the rows they see; same hits in both orders; affected benchmarks rerun | done 2026-11-21 |
 
 ## Test systems
 
@@ -113,3 +114,21 @@ Result: bench/results/throughput.md, join.jsonl. With 32 clients through tserve,
 queries per second of the faster engine on all five collections; one statement per query a third to an
 eighth of theirs. Attribute changes about 190 to 8,000 times faster than in the engines; filtering and counting
 by an attribute 6 to 15 times slower.
+
+### M10 access and document order
+- [x] found: every function was granted to PUBLIC and tsearch trusted its input, so any user could search any index
+      (input made with a generation number) and call the functions that write node caches
+- [x] per-index key (vtext.index_keys, no grant), generation file version 2 with the access mode and keys, access
+      token in the views' sentinel, checked by every search function (src/udx/view_input.h); REVOKE + GRANT of the
+      search functions only; vtext.check_access (new key, policies read again); upgrade of existing indexes at install
+- [x] row access policies: the views return the indexed documents the caller cannot see (packed, 2,500 per row) and a
+      digest bound to the user and the generation; scores equal an index of the visible rows (tests/sql/test_access.sh)
+- [x] column masks on indexed columns: searches refused
+- [x] session parameters for any user (vtext_<name> in the public namespace)
+- [x] recursive graph bisection at merge (src/engine/reorder.cpp), segment format 5 (doc_order section), format 4
+      byte for byte when not reordered; index option reorder
+- [x] engine A/B on all five collections (bench/plan_c/reorder_ab.sh): identical hits; faster on Enron and PubMed,
+      slower on MS MARCO and Arabic Wikipedia phrases; the benchmark reorders Enron and PubMed only
+- [x] reruns: vtext builds of Enron, PubMed, Hebrew Wikipedia; vtext rounds of the 32-client and 1-client comparison
+      (stage1.sh f1v); access cost (bench/plan_c/access_cost.sh)
+

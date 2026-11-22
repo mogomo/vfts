@@ -5,6 +5,7 @@
 --   vtext.merge(name)
 --   vtext.rebuild(name)
 --   vtext.load_all(name)
+--   vtext.check_access(name)              (after access policies or grants change: new key, views)
 --   vtext.info(name)
 --   vtext.drop_index(name)
 --
@@ -17,21 +18,59 @@
 --   <schema>.<name>_live   rows newer than the segments (the live tail), journal changes, and the
 --                          sentinel row with the generation. The input of tsearch and tcount.
 --   <schema>.<name>_snap   the sentinel only: search the segments, ignore newer rows (fastest).
+-- The sentinel carries the access token in its query column (docs/design.md "Access"):
+--   access open: md5(key:gen:key), a literal.
+--   access rows: the views also return the documents of the generation's segments that the user
+--     cannot see in the source table (its row access policies apply to the user who queries the
+--     view), as H rows of 2,500 comma-separated doc_ids, and the token md5(key:gen:user:n:s1:s2:key)
+--     over those documents, with the key read from vtext.index_keys (the view owner's privilege;
+--     users cannot read it).
 CREATE OR REPLACE PROCEDURE vtext.make_views(nm VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
     src VARCHAR(300); idc VARCHAR(128); txt VARCHAR(128); lng VARCHAR(128); vc VARCHAR(128);
-    jt VARCHAR(300); vs VARCHAR(128); g INT; b VARCHAR(80);
-    cols VARCHAR(2000); sentinel VARCHAR(1000); stmt VARCHAR(20000); lang_expr VARCHAR(300);
+    jt VARCHAR(300); vs VARCHAR(128); g INT; b VARCHAR(80); iid INT; acc VARCHAR(256); k VARCHAR(64);
+    cols VARCHAR(2000); sentinel VARCHAR(16000); stmt VARCHAR(30000); lang_expr VARCHAR(300);
+    hid VARCHAR(4000);
 BEGIN
-    SELECT source_table, id_col, text_col, lang_col, ver_col, journal_table, view_schema, gen, boundary_lit
-      INTO src, idc, txt, lng, vc, jt, vs, g, b
+    SELECT source_table, id_col, text_col, lang_col, ver_col, journal_table, view_schema, gen, boundary_lit, index_id, access
+      INTO src, idc, txt, lng, vc, jt, vs, g, b, iid, acc
       FROM vtext.indexes WHERE index_name = nm;
     IF src IS NULL THEN
         RAISE EXCEPTION 'vtext: index % does not exist', nm;
     END IF;
+    k := (SELECT MAX(secret) FROM vtext.index_keys WHERE index_id = iid);
+    IF k IS NULL OR acc IS NULL THEN
+        RAISE EXCEPTION 'vtext: index % has no access key: run CALL vtext.check_access(''%'')', nm, nm;
+    END IF;
     lang_expr := CASE WHEN lng IS NULL THEN 'NULL::VARCHAR(8)' ELSE 's.' || lng || '::VARCHAR(8)' END;
-    sentinel := 'SELECT NULL::INT AS qid, NULL::VARCHAR(65000) AS query, NULL::INT AS doc_id, NULL::LONG VARCHAR(32000000) AS body, '
-             || 'NULL::VARCHAR(8) AS lang, NULL::VARCHAR(1) AS op, ' || g || '::INT AS gen';
+    IF acc = 'rows' THEN
+        -- one pass: groups of hidden documents and one NULL row (the sentinel), each with the count
+        -- and the two digest sums over all hidden ones (window aggregates over the whole set).
+        -- Duplicates (a doc_id in two active segments) are counted on both sides.
+        hid := 'SELECT d.doc_id FROM vtext.doc_stats d LEFT JOIN ' || src || ' s ON s.' || idc || ' = d.doc_id WHERE d.index_id = ' || iid
+            || ' AND d.segment_id IN (SELECT segment_id FROM vtext.segments WHERE index_id = ' || iid || ' AND gen_added <= ' || g
+            || ' AND (gen_removed IS NULL OR gen_removed > ' || g || ')) AND (s.' || idc || ' IS NULL'
+            -- a row changed since the boundary: the segments hold an older version, whose visibility
+            -- the policy cannot tell (the live view searches the current one through its tail)
+            || CASE WHEN vc IS NOT NULL AND b IS NOT NULL THEN ' OR s.' || vc || ' > ' || b ELSE '' END
+            || CASE WHEN jt IS NOT NULL AND b IS NOT NULL THEN ' OR d.doc_id IN (SELECT doc_id FROM ' || jt || ' WHERE ver > ' || b || ')' ELSE '' END
+            || ')';
+        -- H rows carry 2,500 doc_ids each, comma separated, in query: one row per hidden document
+        -- would cost the declared width of body and query per row (258,701 rows: 1.36 s against
+        -- 0.04 s, docs/VERTICA_NOTES.md)
+        sentinel := 'SELECT NULL::INT AS qid, (CASE WHEN a.b IS NULL THEN MD5(a.secret || '':' || g || ':'' || CURRENT_USER() || '':'' || a.tn || '':'' || a.ts1 || '':'' || a.ts2 || '':'' || a.secret) ELSE a.ids END)::VARCHAR(65000) AS query, '
+                 || 'NULL::INT AS doc_id, NULL::LONG VARCHAR(32000000) AS body, NULL::VARCHAR(8) AS lang, '
+                 || '(CASE WHEN a.b IS NULL THEN NULL ELSE ''H'' END)::VARCHAR(1) AS op, ' || g || '::INT AS gen '
+                 || 'FROM (SELECT y.b, y.ids, y.secret, SUM(y.n) OVER () AS tn, SUM(y.s1) OVER () AS ts1, SUM(y.s2) OVER () AS ts2 FROM ('
+                 || 'SELECT c.b, LISTAGG(c.doc_id::VARCHAR USING PARAMETERS max_length = 65000) AS ids, COUNT(*) AS n, '
+                 || 'SUM(HEX_TO_INTEGER(''0x'' || SUBSTR(c.m, 1, 8))) AS s1, SUM(HEX_TO_INTEGER(''0x'' || SUBSTR(c.m, 9, 8))) AS s2, MAX(c.secret) AS secret '
+                 || 'FROM (SELECT (ROW_NUMBER() OVER () - 1) // 2500 AS b, h.doc_id, k.secret, MD5(k.secret || '':'' || h.doc_id) AS m '
+                 || 'FROM (' || hid || ') h CROSS JOIN vtext.index_keys k WHERE k.index_id = ' || iid || ') c GROUP BY c.b '
+                 || 'UNION ALL SELECT NULL, NULL, 0, 0, 0, k.secret FROM vtext.index_keys k WHERE k.index_id = ' || iid || ') y) a';
+    ELSE
+        sentinel := 'SELECT NULL::INT AS qid, ' || QUOTE_LITERAL(MD5(k || ':' || g || ':' || k)) || '::VARCHAR(65000) AS query, NULL::INT AS doc_id, '
+                 || 'NULL::LONG VARCHAR(32000000) AS body, NULL::VARCHAR(8) AS lang, NULL::VARCHAR(1) AS op, ' || g || '::INT AS gen';
+    END IF;
     cols := 'SELECT NULL::INT AS qid, NULL::VARCHAR(65000) AS query, s.' || idc || '::INT AS doc_id, s.' || txt
          || '::LONG VARCHAR(32000000) AS body, ' || lang_expr || ' AS lang, ''T''::VARCHAR(1) AS op, ' || g || '::INT AS gen FROM ' || src || ' s';
     stmt := 'CREATE OR REPLACE VIEW ' || vs || '.' || nm || '_live AS ';
@@ -54,12 +93,60 @@ BEGIN
 END;
 $$;
 
+-- The access mode of an index from the access policies of its source table, into
+-- vtext.indexes.access (the caller commits):
+--   masked:<column>  an enabled column access policy on the id, text, lang or version column:
+--                    searches are refused (masked text must not be searchable)
+--   rows             an enabled row access policy (or the option access=rows): the views hide the
+--                    documents each user cannot see
+--   open             no policy: the views carry a literal token
+-- Only a superuser or the table's owner sees the policies (v_catalog.access_policy), so only they
+-- may run this.
+CREATE OR REPLACE PROCEDURE vtext.detect_access(nm VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT; src VARCHAR(300); idc VARCHAR(128); txt VARCHAR(128); lng VARCHAR(128); vc VARCHAR(128); opt VARCHAR(8);
+    sup INT; own VARCHAR(256); col VARCHAR(128); nrow INT; acc VARCHAR(256);
+BEGIN
+    SELECT index_id, source_table, id_col, text_col, lang_col, ver_col, access_opt INTO iid, src, idc, txt, lng, vc, opt
+      FROM vtext.indexes WHERE index_name = nm;
+    sup := (SELECT COUNT(*) FROM v_catalog.users WHERE user_name = CURRENT_USER() AND is_super_user);
+    own := (SELECT MAX(owner_name) FROM v_catalog.tables WHERE LOWER(table_schema || '.' || table_name) = LOWER(src));
+    IF sup = 0 AND COALESCE(own, '') <> CURRENT_USER() THEN
+        RAISE EXCEPTION 'vtext: only a superuser or the owner of % sees its access policies: run this as one of them', src;
+    END IF;
+    col := (SELECT MIN(column_name) FROM v_catalog.access_policy
+            WHERE LOWER(table_name) = LOWER(src) AND policy_type ILIKE 'column%'
+              AND (is_policy_enabled::VARCHAR ILIKE 'enabled' OR is_policy_enabled::VARCHAR ILIKE 't%')
+              AND LOWER(column_name) IN (LOWER(idc), LOWER(txt), LOWER(COALESCE(lng, idc)), LOWER(COALESCE(vc, idc))));
+    nrow := (SELECT COUNT(*) FROM v_catalog.access_policy
+             WHERE LOWER(table_name) = LOWER(src) AND policy_type ILIKE 'row%'
+               AND (is_policy_enabled::VARCHAR ILIKE 'enabled' OR is_policy_enabled::VARCHAR ILIKE 't%'));
+    acc := CASE WHEN col IS NOT NULL THEN 'masked:' || col WHEN nrow > 0 OR opt = 'rows' THEN 'rows' ELSE 'open' END;
+    PERFORM UPDATE vtext.indexes SET access = acc WHERE index_id = iid;
+END;
+$$;
+
+-- A new random key (128 bits from /dev/urandom through UUID_GENERATE); the old one stays
+-- accepted as prev_secret until vtext.check_access removes it. The caller commits.
+CREATE OR REPLACE PROCEDURE vtext.new_key(iid INT) LANGUAGE PLvSQL AS $$
+DECLARE
+    k VARCHAR(64);
+BEGIN
+    k := (SELECT MD5(UUID_GENERATE()::VARCHAR || UUID_GENERATE()::VARCHAR));
+    IF (SELECT COUNT(*) FROM vtext.index_keys WHERE index_id = iid) = 0 THEN
+        PERFORM INSERT INTO vtext.index_keys VALUES (iid, k, NULL);
+    ELSE
+        PERFORM UPDATE vtext.index_keys SET prev_secret = secret, secret = k WHERE index_id = iid;
+    END IF;
+END;
+$$;
+
 -- ------------------------------------------------------------------ create_index
 
 -- options: space or comma separated key=value pairs, all optional:
 --   lang=en  journal=schema.table  margin=60  accent_fold=latin|none|all  on_unsupported=error|plain
 --   id_col=doc_id  text_col=body  lang_col=lang  ver_col=ver  threads=0  max_segment_mb=2048
---   merge_factor=10  cache_dir=/path  build=true|false
+--   merge_factor=10  cache_dir=/path  build=true|false  access=auto|rows  reorder=true|false
 CREATE OR REPLACE PROCEDURE vtext.create_index(nm VARCHAR, src VARCHAR, opts VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
     ident VARCHAR(64) := '^[A-Za-z_][A-Za-z0-9_]*$';
@@ -67,7 +154,7 @@ DECLARE
     o VARCHAR(4000); sch VARCHAR(128); tbl VARCHAR(128);
     idc VARCHAR(128); txt VARCHAR(128); lng VARCHAR(128); vc VARCHAR(128); jt VARCHAR(300);
     lang_ VARCHAR(16); fold VARCHAR(16); unsup VARCHAR(16); margin_ INT; threads_ INT; maxmb INT; mf INT;
-    cdir VARCHAR(1024); build VARCHAR(8); n INT; t VARCHAR(128); iid INT;
+    cdir VARCHAR(1024); build VARCHAR(8); n INT; t VARCHAR(128); iid INT; accopt VARCHAR(8); reord VARCHAR(8);
 BEGIN
     IF nm IS NULL OR NOT REGEXP_LIKE(nm, '^[A-Za-z0-9_]{1,64}$') THEN
         RAISE EXCEPTION 'vtext.create_index: index name must be 1 to 64 letters, digits or underscores';
@@ -95,6 +182,14 @@ BEGIN
     mf := COALESCE(REGEXP_SUBSTR(o, ' merge_factor=([0-9]+)', 1, 1, '', 1), '10')::INT;
     cdir := REGEXP_SUBSTR(o, ' cache_dir=([^ ]+)', 1, 1, '', 1);
     build := COALESCE(REGEXP_SUBSTR(o, ' build=([a-z]+)', 1, 1, '', 1), 'true');
+    accopt := COALESCE(REGEXP_SUBSTR(o, ' access=([a-z]+)', 1, 1, '', 1), 'auto');
+    reord := COALESCE(REGEXP_SUBSTR(o, ' reorder=([a-z]+)', 1, 1, '', 1), 'true');
+    IF reord NOT IN ('true', 'false') THEN
+        RAISE EXCEPTION 'vtext.create_index: reorder must be true or false';
+    END IF;
+    IF accopt NOT IN ('auto', 'rows') THEN
+        RAISE EXCEPTION 'vtext.create_index: access must be auto (follow the access policies of the table) or rows (always apply row policies)';
+    END IF;
     IF NOT REGEXP_LIKE(idc, ident) OR NOT REGEXP_LIKE(txt, ident) OR NOT REGEXP_LIKE(COALESCE(lng, 'x'), ident)
        OR NOT REGEXP_LIKE(COALESCE(vc, 'x'), ident) THEN
         RAISE EXCEPTION 'vtext.create_index: column names must be plain identifiers';
@@ -153,8 +248,10 @@ BEGIN
     iid := (SELECT NEXTVAL('vtext.index_seq'));
     PERFORM INSERT INTO vtext.indexes (index_id, index_name, source_table, id_col, text_col, lang_col, ver_col, journal_table,
                                        lang, accent_fold, on_unsupported, margin_s, threads, max_segment_mb, merge_factor,
-                                       cache_dir, view_schema, gen, created_at)
-            VALUES (iid, nm, src, idc, txt, lng, vc, jt, lang_, fold, unsup, margin_, threads_, maxmb, mf, cdir, sch, 0, CLOCK_TIMESTAMP());
+                                       cache_dir, view_schema, gen, created_at, access_opt, reorder)
+            VALUES (iid, nm, src, idc, txt, lng, vc, jt, lang_, fold, unsup, margin_, threads_, maxmb, mf, cdir, sch, 0, CLOCK_TIMESTAMP(), accopt, reord = 'true');
+    PERFORM CALL vtext.new_key(iid);
+    PERFORM CALL vtext.detect_access(nm);
     PERFORM COMMIT;
     PERFORM CALL vtext.make_views(nm);
     IF build = 'true' THEN
@@ -197,7 +294,8 @@ END;
 $$;
 
 -- Makes generation g active on every node of the session's subcluster: the active segments and
--- their tombstones (G and X rows). Fails unless every UP node did it.
+-- their tombstones (G and X rows), the access mode and key(s) (K rows). Fails unless every UP node
+-- did it.
 CREATE OR REPLACE PROCEDURE vtext.activate(nm VARCHAR, g INT) LANGUAGE PLvSQL AS $$
 DECLARE
     iid INT; cdir VARCHAR(1024); opts VARCHAR(256); want INT; got INT; params VARCHAR(2000); act VARCHAR(2000); rows_sql VARCHAR(8000);
@@ -210,7 +308,12 @@ BEGIN
         || 'checksum AS doc_id, NULL::INT AS n, NULL::VARCHAR(256) AS term, NULL::VARCHAR(256) AS stem, NULL::VARCHAR(8) AS lang, '
         || 'NULL::LONG VARBINARY(65000) AS bin FROM vtext.segments WHERE index_id = ' || iid || ' AND segment_id IN ' || act
         || ' UNION ALL SELECT ''X'', segment_id, NULL, NULL, docno, doc_id, NULL, NULL, NULL, NULL, NULL FROM vtext.tombstones '
-        || 'WHERE index_id = ' || iid || ' AND gen <= ' || g || ' AND segment_id IN ' || act;
+        || 'WHERE index_id = ' || iid || ' AND gen <= ' || g || ' AND segment_id IN ' || act
+        -- the access mode and the key(s): read from the tables, never part of the statement text
+        || ' UNION ALL SELECT ''K'', 0, NULL, NULL, NULL, NULL, NULL, i.access::VARCHAR(256), k.secret::VARCHAR(256), NULL, NULL '
+        || 'FROM vtext.index_keys k JOIN vtext.indexes i ON i.index_id = k.index_id WHERE k.index_id = ' || iid
+        || ' UNION ALL SELECT ''K'', 1, NULL, NULL, NULL, NULL, NULL, i.access::VARCHAR(256), k.prev_secret::VARCHAR(256), NULL, NULL '
+        || 'FROM vtext.index_keys k JOIN vtext.indexes i ON i.index_id = k.index_id WHERE k.index_id = ' || iid || ' AND k.prev_secret IS NOT NULL';
     want := (SELECT COUNT(*) FROM (SELECT vtext.tnode(k) OVER(PARTITION NODES) FROM vtext.probe) n);
     params := 'index=' || QUOTE_LITERAL(nm) || ', gen=' || g || ', options=' || QUOTE_LITERAL(opts)
            || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
@@ -338,7 +441,7 @@ DECLARE
     g INT; g_new INT; b_prev VARCHAR(80); b_new VARCHAR(80); cut TIMESTAMPTZ; t0 TIMESTAMPTZ;
     sel VARCHAR(20000); changed VARCHAR(20000); n_rows INT; n_del INT; parts INT; th INT; nodes INT; cores INT;
     seg_base INT; n_segs INT; n_tomb INT; marked INT; note VARCHAR(2000); lang_expr VARCHAR(300); secs FLOAT;
-    full_ BOOLEAN; n_dead INT; me VARCHAR(256);
+    full_ BOOLEAN; n_dead INT; me VARCHAR(256); acc_old VARCHAR(256);
 BEGIN
     SELECT index_id, source_table, id_col, text_col, lang_col, ver_col, journal_table, lang, accent_fold, on_unsupported,
            margin_s, threads, max_segment_mb, cache_dir, gen, boundary_lit
@@ -399,7 +502,12 @@ BEGIN
     g_new := g + 1;
 
     IF n_rows = 0 AND n_del = 0 AND NOT (full_ AND g > 0) AND g > 0 THEN
-        -- nothing changed: move the boundary only
+        -- nothing changed: move the boundary only (and follow a change of the access policies)
+        acc_old := (SELECT access FROM vtext.indexes WHERE index_name = nm);
+        PERFORM CALL vtext.detect_access(nm);
+        IF acc_old IS NULL OR acc_old <> (SELECT access FROM vtext.indexes WHERE index_name = nm) THEN
+            PERFORM CALL vtext.activate(nm, g);
+        END IF;
         PERFORM UPDATE vtext.indexes SET boundary_lit = b_new, refreshed_at = CLOCK_TIMESTAMP(), refresh_note = 'no changes',
                        refresh_started_at = NULL WHERE index_name = nm;
         PERFORM COMMIT;
@@ -450,10 +558,12 @@ BEGIN
              || ' AND (d.segment_id, d.docno) NOT IN (SELECT segment_id, docno FROM vtext.tombstones WHERE index_id = ' || iid || ')';
     END IF;
 
-    -- 6. Every node: the new segment files, then the new generation.
+    -- 6. Every node: the new segment files, then the new generation (with the access mode the
+    --    table's policies give now).
     IF n_segs > 0 THEN
         PERFORM CALL vtext.load_build(nm, cdir);
     END IF;
+    PERFORM CALL vtext.detect_access(nm);
     PERFORM CALL vtext.activate(nm, g_new);
 
     -- 7. Statistics and the manifest, in the same transaction as the rows.
@@ -491,19 +601,21 @@ $$;
 -- segment from the node cache (tmerge), store it, mark the inputs merged, load every node, activate.
 CREATE OR REPLACE PROCEDURE vtext.merge_step(nm VARCHAR, seg_list VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
-    iid INT; g INT; g_new INT; cdir VARCHAR(1024); new_id INT; params VARCHAR(65000); n INT; n_dead INT;
+    iid INT; g INT; g_new INT; cdir VARCHAR(1024); new_id INT; params VARCHAR(65000); n INT; n_dead INT; reord BOOLEAN;
 BEGIN
-    SELECT index_id, gen, cache_dir INTO iid, g, cdir FROM vtext.indexes WHERE index_name = nm;
+    SELECT index_id, gen, cache_dir, reorder INTO iid, g, cdir, reord FROM vtext.indexes WHERE index_name = nm;
     g_new := g + 1;
     new_id := EXECUTE 'SELECT NEXTVAL(''vtext.segment_seq'') * 2147483648';
     PERFORM CALL vtext.build_table();
     params := 'index=' || QUOTE_LITERAL(nm) || ', gen=' || g || ', segments=' || QUOTE_LITERAL(seg_list) || ', new_id=' || new_id
+           || ', reorder=' || CASE WHEN reord IS FALSE THEN 'false' ELSE 'true' END
            || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
     EXECUTE 'INSERT /*+DIRECT, LABEL(vtext_merge)*/ INTO vtext_build SELECT vtext.tmerge(USING PARAMETERS ' || params || ') OVER()';
     PERFORM CALL vtext.store_build(iid, g_new);
     n := EXECUTE 'UPDATE vtext.segments SET state = ''merged'', gen_removed = ' || g_new || ' WHERE index_id = ' || iid
                  || ' AND gen_removed IS NULL AND segment_id IN (' || seg_list || ')';
     PERFORM CALL vtext.load_build(nm, cdir);
+    PERFORM CALL vtext.detect_access(nm);
     PERFORM CALL vtext.activate(nm, g_new);
     -- statistics of the new generation (as refresh_index writes them)
     n_dead := (SELECT COUNT(*) FROM vtext.tombstones t WHERE t.index_id = iid
@@ -591,9 +703,9 @@ $$;
 CREATE OR REPLACE PROCEDURE vtext.info(nm VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
     iid INT; g INT; src VARCHAR(300); vs VARCHAR(128); b VARCHAR(80); note VARCHAR(2000); cdir VARCHAR(1024);
-    segs INT; docs INT; dead INT; nbytes INT; tail INT; nodes INT; ok INT; params VARCHAR(2000);
+    segs INT; docs INT; dead INT; nbytes INT; tail INT; nodes INT; ok INT; params VARCHAR(2000); acc VARCHAR(256);
 BEGIN
-    SELECT index_id, gen, source_table, view_schema, boundary_lit, refresh_note, cache_dir INTO iid, g, src, vs, b, note, cdir
+    SELECT index_id, gen, source_table, view_schema, boundary_lit, refresh_note, cache_dir, access INTO iid, g, src, vs, b, note, cdir, acc
       FROM vtext.indexes WHERE index_name = nm;
     IF iid IS NULL THEN
         RAISE EXCEPTION 'vtext.info: index % does not exist', nm;
@@ -602,13 +714,15 @@ BEGIN
       FROM vtext.segments WHERE index_id = iid AND gen_removed IS NULL;
     dead := (SELECT COUNT(*) FROM vtext.tombstones WHERE index_id = iid
              AND segment_id IN (SELECT segment_id FROM vtext.segments WHERE index_id = iid AND gen_removed IS NULL));
-    tail := EXECUTE 'SELECT COUNT(*) FROM ' || vs || '.' || nm || '_live WHERE doc_id IS NOT NULL';
+    tail := EXECUTE 'SELECT COUNT(*) FROM ' || vs || '.' || nm || '_live WHERE doc_id IS NOT NULL AND COALESCE(op, '''') <> ''H''';
     params := 'index=' || QUOTE_LITERAL(nm) || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
     nodes := (SELECT COUNT(*) FROM (SELECT vtext.tnode(k) OVER(PARTITION NODES) FROM vtext.probe) n);
     ok := EXECUTE 'SELECT COUNT(*) FROM (SELECT vtext.tinfo(USING PARAMETERS ' || params || ') OVER(PARTITION NODES) FROM vtext.probe) i WHERE gen = ' || g;
     RAISE NOTICE 'index %: source %, generation %, % segments, % documents (% deleted), % MB', nm, src, g, segs, docs - dead, dead,
                  TO_CHAR(nbytes / 1048576.0, 'FM999999990.0');
     RAISE NOTICE 'boundary %; live tail % rows (%.%_live); last refresh: %', COALESCE(b, '(none)'), tail, vs, nm, COALESCE(note, '(none)');
+    RAISE NOTICE 'access: % (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)',
+                 COALESCE(acc, '(no key: run CALL vtext.check_access)');
     RAISE NOTICE 'node caches: % of % nodes of this subcluster have generation % (details: SELECT * FROM (SELECT vtext.tinfo(USING PARAMETERS index=''%'') OVER(PARTITION NODES) FROM vtext.probe) i;)',
                  ok, nodes, g, nm;
 END;
@@ -633,6 +747,7 @@ BEGIN
     PERFORM SELECT DROP_PARTITIONS('vtext.tombstones', iid, iid);
     PERFORM DELETE FROM vtext.segments WHERE index_id = iid;
     PERFORM DELETE FROM vtext.index_stats WHERE index_id = iid;
+    PERFORM DELETE FROM vtext.index_keys WHERE index_id = iid;
     PERFORM DELETE FROM vtext.indexes WHERE index_id = iid;
     PERFORM COMMIT;
     RAISE NOTICE 'vtext: index % dropped (caches removed on % nodes of this subcluster)', nm, n;
@@ -648,5 +763,56 @@ BEGIN
     PERFORM UPDATE vtext.indexes SET boundary_lit = NULL WHERE index_name = nm;
     PERFORM COMMIT;
     PERFORM CALL vtext.refresh_index(nm);
+END;
+$$;
+
+-- ------------------------------------------------------------------ access
+
+-- Run after creating, changing, enabling or dropping an access policy on the source table, and
+-- after revoking SELECT on the views from someone: re-reads the policies (access mode), makes a
+-- new key (tokens that anyone saw before stop working), activates it on the nodes of this
+-- subcluster and makes new views. refresh_index and merge re-read the policies too.
+CREATE OR REPLACE PROCEDURE vtext.check_access(nm VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT; g INT;
+BEGIN
+    SELECT index_id, gen INTO iid, g FROM vtext.indexes WHERE index_name = nm;
+    IF iid IS NULL THEN
+        RAISE EXCEPTION 'vtext.check_access: index % does not exist', nm;
+    END IF;
+    PERFORM CALL vtext.detect_access(nm);
+    PERFORM CALL vtext.new_key(iid);
+    PERFORM COMMIT;
+    -- the nodes accept the old and the new key while the views change, then the new one only
+    IF g > 0 THEN
+        PERFORM CALL vtext.activate(nm, g);
+    END IF;
+    PERFORM CALL vtext.make_views(nm);
+    PERFORM UPDATE vtext.index_keys SET prev_secret = NULL WHERE index_id = iid;
+    PERFORM COMMIT;
+    IF g > 0 THEN
+        PERFORM CALL vtext.activate(nm, g);
+    END IF;
+    RAISE NOTICE 'vtext: index % access %, new key active', nm, (SELECT access FROM vtext.indexes WHERE index_id = iid);
+END;
+$$;
+
+-- For indexes made by vtext 0.1.0 (no key): check_access for each. Run by sql/install.sql.
+CREATE OR REPLACE PROCEDURE vtext.upgrade_access() LANGUAGE PLvSQL AS $$
+DECLARE
+    nm VARCHAR(64); last VARCHAR(64);
+BEGIN
+    last := '';
+    LOOP
+        nm := (SELECT MIN(index_name) FROM vtext.indexes
+               WHERE (access IS NULL OR index_id NOT IN (SELECT index_id FROM vtext.index_keys)) AND index_name > last);
+        EXIT WHEN nm IS NULL;
+        last := nm;
+        BEGIN
+            PERFORM CALL vtext.check_access(nm);
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'vtext: index % has no key yet (%): run CALL vtext.check_access(''%'') when its caches are loaded', nm, SQLERRM, nm;
+        END;
+    END LOOP;
 END;
 $$;

@@ -139,6 +139,8 @@ static_assert(sizeof(GenHeader) == 40, "GenHeader size");
 struct GenData {
     std::int64_t gen = 0;
     std::string options;
+    std::string access;
+    std::vector<std::string> keys;
     struct Seg {
         std::int64_t id;
         std::uint64_t checksum;
@@ -156,6 +158,15 @@ std::string encode_gen(const GenData &g)
     const std::uint32_t olen = static_cast<std::uint32_t>(g.options.size());
     put(body, &olen, 4);
     body += g.options;
+    const std::uint32_t alen = static_cast<std::uint32_t>(g.access.size()), nk = static_cast<std::uint32_t>(g.keys.size());
+    put(body, &alen, 4);
+    body += g.access;
+    put(body, &nk, 4);
+    for (const std::string &k : g.keys) {
+        const std::uint32_t kl = static_cast<std::uint32_t>(k.size());
+        put(body, &kl, 4);
+        body += k;
+    }
     while (body.size() % 8) body.push_back('\0');
     for (const auto &s : g.segs) {
         GenRecord r{s.id, s.checksum, static_cast<std::uint32_t>(s.dead.size()),
@@ -168,7 +179,7 @@ std::string encode_gen(const GenData &g)
     }
     GenHeader h{};
     std::memcpy(h.magic, GEN_MAGIC, 8);
-    h.version = 1;
+    h.version = 2;
     h.n_segs = static_cast<std::uint32_t>(g.segs.size());
     h.gen = g.gen;
     h.checksum = fnv64(body.data(), body.size());
@@ -184,7 +195,7 @@ bool decode_gen(const std::string &bytes, GenData &g, std::string &why)
     if (bytes.size() < sizeof(GenHeader)) { why = "generation file too short"; return false; }
     GenHeader h;
     std::memcpy(&h, bytes.data(), sizeof(h));
-    if (std::memcmp(h.magic, GEN_MAGIC, 8) != 0 || h.version != 1) { why = "not a generation file"; return false; }
+    if (std::memcmp(h.magic, GEN_MAGIC, 8) != 0 || (h.version != 1 && h.version != 2)) { why = "not a generation file"; return false; }
     if (h.total_bytes != bytes.size()) { why = "generation file has the wrong size"; return false; }
     if (fnv64(bytes.data() + sizeof(h), bytes.size() - sizeof(h)) != h.checksum) { why = "generation file checksum mismatch"; return false; }
     g.gen = h.gen;
@@ -197,6 +208,28 @@ bool decode_gen(const std::string &bytes, GenData &g, std::string &why)
     if (at + olen > bytes.size()) { why = "generation file truncated"; return false; }
     g.options.assign(bytes.data() + at, olen);
     at += olen;
+    g.access.clear();
+    g.keys.clear();
+    if (h.version >= 2) {
+        // access mode and keys (version 1, written by vtext 0.1.0, had none)
+        auto str = [&](std::string &out) {
+            std::uint32_t n = 0;
+            if (at + 4 > bytes.size()) return false;
+            std::memcpy(&n, bytes.data() + at, 4);
+            at += 4;
+            if (at + n > bytes.size()) return false;
+            out.assign(bytes.data() + at, n);
+            at += n;
+            return true;
+        };
+        std::uint32_t nk = 0;
+        if (!str(g.access) || at + 4 > bytes.size()) { why = "generation file truncated"; return false; }
+        std::memcpy(&nk, bytes.data() + at, 4);
+        at += 4;
+        if (nk > 16) { why = "generation file damaged"; return false; }
+        g.keys.resize(nk);
+        for (auto &k : g.keys) if (!str(k)) { why = "generation file truncated"; return false; }
+    }
     while (at % 8) ++at;
     for (std::uint32_t i = 0; i < h.n_segs; ++i) {
         if (at + sizeof(GenRecord) > bytes.size()) { why = "generation file truncated"; return false; }
@@ -240,6 +273,8 @@ struct Registry {
     struct Entry {
         std::shared_ptr<const LoadedIndex> idx;
         std::chrono::steady_clock::time_point checked;
+        dev_t dev = 0;                  // the generation file it was read from: a new activation of
+        ino_t ino = 0;                  // the same generation (new keys) replaces the file
     };
     std::map<std::string, Entry> indexes;                       // key: dir
     std::map<std::string, std::weak_ptr<Mapping>> mappings;     // key: path
@@ -275,6 +310,8 @@ std::shared_ptr<const LoadedIndex> load_generation(Registry &r, const std::strin
     auto li = std::make_shared<LoadedIndex>();
     li->gen = g.gen;
     li->options = g.options;
+    li->access = g.access;
+    li->keys = g.keys;
     for (auto &s : g.segs) {
         auto m = shared_mapping(r, dir + "/" + seg_name(s.id));
         if (!m) throw std::runtime_error("cache of index " + index + ": segment file " + seg_name(s.id) + " is missing: run CALL vtext.load_all('" + index + "')");
@@ -354,6 +391,8 @@ void CacheWriter::activate(const Generation &g)
     GenData out;
     out.gen = g.gen;
     out.options = g.options;
+    out.access = g.access;
+    out.keys = g.keys;
     for (const GenSegment &s : g.segs) {
         if (!has_segment(s.segment_id, s.checksum))
             throw std::runtime_error("segment " + std::to_string(s.segment_id) + " is not in the cache of this node (or differs)");
@@ -406,14 +445,23 @@ void CacheWriter::activate(const Generation &g)
     ::closedir(d);
 }
 
-std::shared_ptr<const LoadedIndex> open_index(const std::string &cache_dir, const std::string &index, std::int64_t min_gen)
+static bool gen_file_id(const std::string &dir, std::int64_t gen, dev_t &dev, ino_t &ino)
+{
+    struct stat st;
+    if (::stat((dir + "/gen_" + std::to_string(gen) + ".vtg").c_str(), &st) != 0) return false;
+    dev = st.st_dev;
+    ino = st.st_ino;
+    return true;
+}
+
+std::shared_ptr<const LoadedIndex> open_index(const std::string &cache_dir, const std::string &index, std::int64_t min_gen, bool exact)
 {
     const std::string dir = index_dir(cache_dir, index);
     Registry &r = registry();
     std::lock_guard<std::mutex> lock(r.mu);
     const auto now = std::chrono::steady_clock::now();
     auto it = r.indexes.find(dir);
-    if (it != r.indexes.end() && it->second.idx->gen >= min_gen &&
+    if (it != r.indexes.end() && (exact ? it->second.idx->gen == min_gen : it->second.idx->gen >= min_gen) &&
         now - it->second.checked < std::chrono::milliseconds(ACTIVE_CHECK_MS))
         return it->second.idx;
     std::int64_t gen;
@@ -422,12 +470,25 @@ std::shared_ptr<const LoadedIndex> open_index(const std::string &cache_dir, cons
     if (gen < min_gen)
         throw std::runtime_error("cache of index " + index + " is stale on this node (generation " + std::to_string(gen) +
                                  ", the view needs " + std::to_string(min_gen) + "): run CALL vtext.load_all('" + index + "')");
-    if (it != r.indexes.end() && it->second.idx->gen == gen) {
+    if (exact && gen != min_gen) {
+        // a newer generation is active, the view still belongs to the previous one (a refresh is
+        // switching): open that one, not kept in the registry
+        dev_t dev;
+        ino_t ino;
+        if (!gen_file_id(dir, min_gen, dev, ino))
+            throw std::runtime_error("index " + index + " changed while this statement started (generation " + std::to_string(min_gen) +
+                                     " is gone on this node): run the statement again");
+        return load_generation(r, dir, min_gen, index);
+    }
+    dev_t dev = 0;
+    ino_t ino = 0;
+    gen_file_id(dir, gen, dev, ino);
+    if (it != r.indexes.end() && it->second.idx->gen == gen && it->second.dev == dev && it->second.ino == ino) {
         it->second.checked = now;
         return it->second.idx;
     }
     auto li = load_generation(r, dir, gen, index);
-    r.indexes[dir] = {li, now};
+    r.indexes[dir] = {li, now, dev, ino};
     // forget mappings that nobody uses any more
     for (auto m = r.mappings.begin(); m != r.mappings.end();) m = m->second.expired() ? r.mappings.erase(m) : std::next(m);
     return li;

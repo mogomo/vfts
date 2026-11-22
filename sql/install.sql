@@ -37,7 +37,24 @@ CREATE TABLE IF NOT EXISTS vtext.indexes (
     refresh_seconds    FLOAT,
     refresh_note       VARCHAR(2000),
     refresh_started_at TIMESTAMPTZ,
-    refresh_started_by VARCHAR(256)
+    refresh_started_by VARCHAR(256),
+    access_opt         VARCHAR(8),                -- option access: auto (detect policies) or rows
+    access             VARCHAR(256),              -- open, rows or masked:<column> (docs/design.md "Access")
+    reorder            BOOLEAN DEFAULT TRUE       -- merges number documents by graph bisection (docs/design.md "Merge")
+) UNSEGMENTED ALL NODES;
+-- tables of vtext 0.1.0
+ALTER TABLE vtext.indexes ADD COLUMN IF NOT EXISTS access_opt VARCHAR(8);
+ALTER TABLE vtext.indexes ADD COLUMN IF NOT EXISTS access VARCHAR(256);
+ALTER TABLE vtext.indexes ADD COLUMN IF NOT EXISTS reorder BOOLEAN DEFAULT TRUE;
+
+-- The secret key of every index: the views prove with a token made from it that they are the
+-- input of a search. Readable by the owner of the views only (no grant): a view reads it with its
+-- owner's privileges, a user cannot. prev_secret: the previous key while vtext.check_access
+-- changes it.
+CREATE TABLE IF NOT EXISTS vtext.index_keys (
+    index_id    INT NOT NULL PRIMARY KEY,
+    secret      VARCHAR(64) NOT NULL,
+    prev_secret VARCHAR(64)
 ) UNSEGMENTED ALL NODES;
 
 CREATE TABLE IF NOT EXISTS vtext.segments (
@@ -151,4 +168,24 @@ GRANT SELECT ON vtext.indexes, vtext.segments, vtext.index_stats, vtext.probe TO
 
 \i sql/procedures.sql
 
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA vtext TO PUBLIC;
+-- Users get the search functions only. The functions that write node caches (tbuild, tmerge,
+-- tload, thave, tdrop) and the procedures that manage indexes are for the index owner
+-- (a superuser); vtext 0.1.0 granted every function to PUBLIC, this takes that back.
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA vtext FROM PUBLIC;
+GRANT EXECUTE ON TRANSFORM FUNCTION vtext.tversion() TO PUBLIC;
+GRANT EXECUTE ON TRANSFORM FUNCTION vtext.tokenize(LONG VARCHAR) TO PUBLIC;
+GRANT EXECUTE ON TRANSFORM FUNCTION vtext.tokenize(LONG VARCHAR, VARCHAR) TO PUBLIC;
+GRANT EXECUTE ON TRANSFORM FUNCTION vtext.tsearch(INT, VARCHAR, INT, LONG VARCHAR, VARCHAR, VARCHAR, INT) TO PUBLIC;
+GRANT EXECUTE ON TRANSFORM FUNCTION vtext.tcount(INT, VARCHAR, INT, LONG VARCHAR, VARCHAR, VARCHAR, INT) TO PUBLIC;
+GRANT EXECUTE ON TRANSFORM FUNCTION vtext.tmatch(INT, VARCHAR, INT, LONG VARCHAR, VARCHAR, VARCHAR, INT) TO PUBLIC;
+GRANT EXECUTE ON TRANSFORM FUNCTION vtext.tserve(INT, VARCHAR, INT, LONG VARCHAR, VARCHAR, VARCHAR, INT) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION vtext.tsnippet(LONG VARCHAR, VARCHAR) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION vtext.tsnippet(LONG VARCHAR, VARCHAR, VARCHAR) TO PUBLIC;
+GRANT EXECUTE ON TRANSFORM FUNCTION vtext.hybrid(VARCHAR, INT, INT, FLOAT) TO PUBLIC;
+GRANT EXECUTE ON TRANSFORM FUNCTION vtext.tnode(INT) TO PUBLIC;
+GRANT EXECUTE ON TRANSFORM FUNCTION vtext.tinfo() TO PUBLIC;
+GRANT EXECUTE ON PROCEDURE vtext.info(VARCHAR) TO PUBLIC;
+
+-- Indexes made by vtext 0.1.0 get a key, their access mode and new views (best effort: a node
+-- without cache reports it, and CALL vtext.check_access('<index>') can be run again later).
+CALL vtext.upgrade_access();

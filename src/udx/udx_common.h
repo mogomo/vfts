@@ -30,28 +30,29 @@ inline bool one_of(const std::string &v, std::initializer_list<const char *> all
     return false;
 }
 
-// Values with the precedence: function parameter, then session parameter
-// (ALTER SESSION SET UDPARAMETER FOR vtext.vtext <name> = '...'), then the built-in default.
-// Session parameters arrive as strings whatever they look like.
+// Values with the precedence: function parameter, then session parameter, then the built-in
+// default. Session parameters: ALTER SESSION SET UDPARAMETER FOR vtext.vtext <name> = '...' (needs
+// USAGE on the library: the index owner), or ALTER SESSION SET UDPARAMETER vtext_<name> = '...'
+// (any user). They arrive as strings whatever they look like.
 class Settings {
 public:
     explicit Settings(Vertica::ServerInterface &srv)
-        : params_(srv.getParamReader()), session_(srv.getUDSessionParamReader("library")) {}
+        : params_(srv.getParamReader()), session_(srv.getUDSessionParamReader("library")), public_(srv.getUDSessionParamReader("public")) {}
 
-    bool has(const char *name) { return params_.containsParameter(name) || session_.containsParameter(name); }
+    bool has(const char *name) { std::string v; return params_.containsParameter(name) || sess(name, v); }
 
     std::string text(const char *name, const std::string &builtin)
     {
         if (params_.containsParameter(name)) return params_.getStringRef(name).str();
-        if (session_.containsParameter(name)) return session_.getStringRef(name).str();
-        return builtin;
+        std::string v;
+        return sess(name, v) ? v : builtin;
     }
 
     std::int64_t integer(const char *name, std::int64_t builtin)
     {
         if (params_.containsParameter(name)) return params_.getIntRef(name);
-        if (!session_.containsParameter(name)) return builtin;
-        const std::string v = session_.getStringRef(name).str();
+        std::string v;
+        if (!sess(name, v)) return builtin;
         char *end = nullptr;
         errno = 0;
         const long long x = std::strtoll(v.c_str(), &end, 10);
@@ -62,8 +63,8 @@ public:
     double real(const char *name, double builtin)
     {
         if (params_.containsParameter(name)) return params_.getFloatRef(name);
-        if (!session_.containsParameter(name)) return builtin;
-        const std::string v = session_.getStringRef(name).str();
+        std::string v;
+        if (!sess(name, v)) return builtin;
         char *end = nullptr;
         const double x = std::strtod(v.c_str(), &end);
         if (v.empty() || *end || !std::isfinite(x)) fail(std::string("session parameter ") + name + " = '" + v + "' is not a number");
@@ -73,15 +74,22 @@ public:
     bool boolean(const char *name, bool builtin)
     {
         if (params_.containsParameter(name)) return params_.getBoolRef(name) == Vertica::vbool_true;
-        if (!session_.containsParameter(name)) return builtin;
-        const std::string v = session_.getStringRef(name).str();
+        std::string v;
+        if (!sess(name, v)) return builtin;
         if (v == "true" || v == "t" || v == "1" || v == "yes") return true;
         if (v == "false" || v == "f" || v == "0" || v == "no") return false;
         fail(std::string("session parameter ") + name + " = '" + v + "' is not true or false");
     }
 
 private:
-    Vertica::ParamReader params_, session_;
+    bool sess(const char *name, std::string &out)
+    {
+        if (session_.containsParameter(name)) { out = session_.getStringRef(name).str(); return true; }
+        const std::string pub = std::string("vtext_") + name;
+        if (public_.containsParameter(pub)) { out = public_.getStringRef(pub).str(); return true; }
+        return false;
+    }
+    Vertica::ParamReader params_, session_, public_;
 };
 
 // Analyzer options from the parameters lang, accent_fold and on_unsupported.

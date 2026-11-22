@@ -168,7 +168,8 @@ Segment::Segment(const void *data, std::size_t size) : base_(static_cast<const s
     if (size < HEADER_BYTES) bad("shorter than the header");
     const SegmentHeader *h = reinterpret_cast<const SegmentHeader *>(base_);
     if (std::memcmp(h->magic, SEGMENT_MAGIC, 8) != 0) bad("not a vtext segment (magic)");
-    if (h->format != SEGMENT_FORMAT) bad("format " + std::to_string(h->format) + ", expected " + std::to_string(SEGMENT_FORMAT));
+    if (h->format != SEGMENT_FORMAT && h->format != SEGMENT_FORMAT_ORDERED)
+        bad("format " + std::to_string(h->format) + ", expected " + std::to_string(SEGMENT_FORMAT) + " or " + std::to_string(SEGMENT_FORMAT_ORDERED));
     if (h->total_bytes != size) bad("size " + std::to_string(size) + " differs from header " + std::to_string(h->total_bytes));
     for (int s = 0; s < S_COUNT; ++s) {
         if (h->off[s] % 8 || h->off[s] < HEADER_BYTES || h->off[s] > size || h->len[s] > size - h->off[s])
@@ -180,6 +181,14 @@ Segment::Segment(const void *data, std::size_t size) : base_(static_cast<const s
         h->len[S_STEM_ENTRY] != sizeof(StemEntry) * ns || h->len[S_GROUP_INFO] != sizeof(TermInfo) * ns)
         bad("section sizes do not match the counts");
     if (h->off[S_POSTINGS] + h->len[S_POSTINGS] + TAIL_PAD > size) bad("postings padding missing");
+    if (h->format == SEGMENT_FORMAT_ORDERED) {
+        if (h->order_off % 8 || h->order_off < HEADER_BYTES || h->order_off > size || h->order_len != 4 * nd ||
+            h->order_len > size - h->order_off)
+            bad("doc_order section out of bounds");
+        order_ = reinterpret_cast<const std::uint32_t *>(base_ + h->order_off);
+    } else if (h->order_off || h->order_len) {
+        bad("doc_order section in a format 4 segment");
+    }
     if (h->len[S_BITMAP_DIR] % sizeof(BitmapEntry)) bad("bitmap directory size");
     h_ = h;
     doc_ids_ = reinterpret_cast<const std::int64_t *>(base_ + h->off[S_DOC_IDS]);
@@ -206,9 +215,30 @@ Segment::Segment(const void *data, std::size_t size) : base_(static_cast<const s
 
 std::int64_t Segment::find_doc(std::int64_t doc_id) const
 {
+    if (order_) {
+        const std::uint32_t *e = order_ + h_->n_docs;
+        const std::uint32_t *p = std::lower_bound(order_, e, doc_id, [this](std::uint32_t d, std::int64_t id) { return doc_ids_[d] < id; });
+        return p != e && doc_ids_[*p] == doc_id ? static_cast<std::int64_t>(*p) : -1;
+    }
     const std::int64_t *e = doc_ids_ + h_->n_docs;
     const std::int64_t *p = std::lower_bound(doc_ids_, e, doc_id);
     return p != e && *p == doc_id ? p - doc_ids_ : -1;
+}
+
+void Segment::find_docs(const std::int64_t *ids, std::size_t n, std::vector<std::uint32_t> &out) const
+{
+    const std::uint32_t nd = h_->n_docs;
+    if (n * 32 < nd) {
+        for (std::size_t i = 0; i < n; ++i) { const std::int64_t d = find_doc(ids[i]); if (d >= 0) out.push_back(static_cast<std::uint32_t>(d)); }
+        return;
+    }
+    std::size_t j = 0;
+    for (std::uint32_t i = 0; i < nd && j < n; ++i) {
+        const std::uint32_t d = order_ ? order_[i] : i;
+        const std::int64_t id = doc_ids_[d];
+        while (j < n && ids[j] < id) ++j;
+        if (j < n && ids[j] == id) { out.push_back(d); ++j; }
+    }
 }
 
 std::uint32_t Segment::lower_bound(std::string_view t) const
@@ -277,8 +307,18 @@ void Segment::verify() const
     const SegmentHeader &h = *h_;
     const std::uint64_t sum = checksum_words(base_, size_, 0);
     if (sum != h.checksum) bad("checksum mismatch");
-    for (std::uint32_t d = 1; d < h.n_docs; ++d)
-        if (doc_ids_[d - 1] >= doc_ids_[d]) bad("doc ids not ascending at docno " + std::to_string(d));
+    if (order_) {
+        // a permutation of the docnos, by ascending doc_id
+        std::vector<bool> seen(h.n_docs, false);
+        for (std::uint32_t i = 0; i < h.n_docs; ++i) {
+            if (order_[i] >= h.n_docs || seen[order_[i]]) bad("doc_order is not a permutation at " + std::to_string(i));
+            seen[order_[i]] = true;
+            if (i > 0 && doc_ids_[order_[i - 1]] >= doc_ids_[order_[i]]) bad("doc_order not by ascending doc id at " + std::to_string(i));
+        }
+    } else {
+        for (std::uint32_t d = 1; d < h.n_docs; ++d)
+            if (doc_ids_[d - 1] >= doc_ids_[d]) bad("doc ids not ascending at docno " + std::to_string(d));
+    }
     std::uint64_t total = 0, nonempty = 0;
     for (std::uint32_t d = 0; d < h.n_docs; ++d) {
         total += doc_len_[d];

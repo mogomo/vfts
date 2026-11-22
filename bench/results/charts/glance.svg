@@ -16,27 +16,27 @@
 <text class="t1" x="504.0" y="150" font-size="13" font-weight="600">change an attribute of 1% of docs</text>
 <text class="t2" x="504.0" y="172" font-size="12">UPDATE 0.015 s vs rewrite 2.8 s</text>
 <rect class="tile" x="720.0" y="80" width="216.0" height="112" rx="6"/>
-<text class="t1" x="736.0" y="124" font-size="30" font-weight="700">0.51-0.68x</text>
+<text class="t1" x="736.0" y="124" font-size="30" font-weight="700">0.49-0.68x</text>
 <text class="t1" x="736.0" y="150" font-size="13" font-weight="600">index size of the engines'</text>
 <text class="t2" x="736.0" y="172" font-size="12">the text is not copied out of Vertica</text>
 <text class="t1" x="24" y="222" font-size="14" font-weight="600">Throughput, 32 clients, one query per request: vtext tserve / the faster of Elasticsearch and OpenSearch</text>
 <text class="t1" x="160" y="252" font-size="13" text-anchor="end">MS MARCO</text>
-<path class="v" d="M170,236 h369.8223039657053 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-369.8223039657053 z"><title>MS MARCO: 1.11x</title></path>
-<text class="t2" x="551.8223039657053" y="252" font-size="12">1.11x</text>
+<path class="v" d="M170,236 h372.32498624105676 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-372.32498624105676 z"><title>MS MARCO: 1.11x</title></path>
+<text class="t2" x="554.3249862410568" y="252" font-size="12">1.11x</text>
 <text class="t1" x="160" y="284" font-size="13" text-anchor="end">Enron</text>
-<path class="v" d="M170,268 h495.38760021252915 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-495.38760021252915 z"><title>Enron: 1.48x</title></path>
-<text class="t2" x="677.3876002125292" y="284" font-size="12">1.48x</text>
+<path class="v" d="M170,268 h591.3660036907936 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-591.3660036907936 z"><title>Enron: 1.75x</title></path>
+<text class="t2" x="773.3660036907936" y="284" font-size="12">1.75x</text>
 <text class="t1" x="160" y="316" font-size="13" text-anchor="end">PubMed</text>
-<path class="v" d="M170,300 h406.1245702733693 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-406.1245702733693 z"><title>PubMed: 1.22x</title></path>
-<text class="t2" x="588.1245702733693" y="316" font-size="12">1.22x</text>
+<path class="v" d="M170,300 h487.42878248771893 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-487.42878248771893 z"><title>PubMed: 1.45x</title></path>
+<text class="t2" x="669.428782487719" y="316" font-size="12">1.45x</text>
 <text class="t1" x="160" y="348" font-size="13" text-anchor="end">Wikipedia he</text>
-<path class="v" d="M170,332 h676.0 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-676.0 z"><title>Wikipedia he: 2.02x</title></path>
-<text class="t2" x="858.0" y="348" font-size="12">2.02x</text>
+<path class="v" d="M170,332 h669.5249562257767 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-669.5249562257767 z"><title>Wikipedia he: 1.98x</title></path>
+<text class="t2" x="851.5249562257767" y="348" font-size="12">1.98x</text>
 <text class="t1" x="160" y="380" font-size="13" text-anchor="end">Wikipedia ar</text>
-<path class="v" d="M170,364 h561.806000615249 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-561.806000615249 z"><title>Wikipedia ar: 1.68x</title></path>
-<text class="t2" x="743.806000615249" y="380" font-size="12">1.68x</text>
-<line class="ax" x1="506.78645204037883" y1="230" x2="506.78645204037883" y2="392" stroke-width="1.5" stroke-dasharray="4 3"/>
-<text class="t2" x="506.78645204037883" y="408" font-size="11" text-anchor="middle">1.0x = the faster engine</text>
+<path class="v" d="M170,364 h566.2694647957283 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-566.2694647957283 z"><title>Wikipedia ar: 1.68x</title></path>
+<text class="t2" x="748.2694647957283" y="380" font-size="12">1.68x</text>
+<line class="ax" x1="510.0" y1="230" x2="510.0" y2="392" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text class="t2" x="510.0" y="408" font-size="11" text-anchor="middle">1.0x = the faster engine</text>
 <text class="t2" x="24" y="452" font-size="12">Where Elasticsearch and OpenSearch win: one SQL statement per search (a third to an eighth of their throughput),</text>
 <text class="t2" x="24" y="469" font-size="12">filtering or counting matches by an attribute (1-3 ms vs 17-18 ms), PubMed with one client, phrases of very frequent words.</text>
 </svg>

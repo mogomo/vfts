@@ -3,34 +3,21 @@
 // vtext.tmatch (* USING PARAMETERS index, query, ...)    OVER() FROM <schema>.<index>_live
 //
 // Input: the columns of the views made by vtext.create_index (qid, query, doc_id, body, lang, op,
-// gen). The role of a row is given by its columns:
-//   qid and query set          a query (more than one: a batch; the parameter query adds qid 0)
-//   doc_id set, op 'T'         a row of the live tail: newer than the segments; masks the doc_id in
-//                              the segments and is analyzed and searched now
-//   doc_id set, op 'D'         a doc_id changed or deleted since the segments (journal): masked
-//   only gen set               the sentinel: the generation the view belongs to (stale check)
+// gen), read by view_input.h, which also checks the view's access token. Query rows (qid, query)
+// may be added to the view's rows; the parameter query adds qid 0.
 // Output: tsearch (qid, doc_id, score, rank), best first; tcount (qid, count); tmatch (qid, doc_id),
 // every match, no scores, in no order (for joins and GROUP BY over all matches).
 #include "udx_common.h"
 #include "search_options.h"
-#include "../engine/builder.h"
-#include "../engine/search.h"
+#include "view_input.h"
 
-#include <set>
+#include <chrono>
 #include <thread>
 
 using namespace Vertica;
 using namespace vtext_udx;
 
 namespace {
-
-enum InCol { C_QID = 0, C_QUERY, C_DOC_ID, C_BODY, C_LANG, C_OP, C_GEN };
-
-struct TailDoc {
-    std::int64_t doc_id;
-    std::string text;
-    vtext::Lang lang;
-};
 
 class TSearch : public TransformFunction {
     bool counting_, matching_;
@@ -50,6 +37,8 @@ public:
 private:
     void run(ServerInterface &srv, PartitionReader &in, PartitionWriter &out)
     {
+        using clk = std::chrono::steady_clock;
+        const auto te = clk::now();
         Settings s(srv);
         const std::string index = read_index_name(s);
         std::vector<std::pair<vint, std::string>> queries;
@@ -72,44 +61,28 @@ private:
                 at = e + 1;
             }
         }
-        std::vector<std::int64_t> mask;
-        std::vector<TailDoc> tail;
-        std::set<std::int64_t> in_tail;
-        std::int64_t gen = 0;
-        do {
-            if (!in.isNull(C_GEN)) gen = std::max<std::int64_t>(gen, in.getIntRef(C_GEN));
-            if (!in.isNull(C_QID) && !in.isNull(C_QUERY)) {
-                queries.emplace_back(in.getIntRef(C_QID), in.getStringRef(C_QUERY).str());
-                continue;
-            }
-            if (in.isNull(C_DOC_ID)) continue;
-            const std::int64_t id = in.getIntRef(C_DOC_ID);
-            mask.push_back(id);
-            const bool del = !in.isNull(C_OP) && in.getStringRef(C_OP).str() == "D";
-            if (del || !in_tail.insert(id).second) continue;
-            TailDoc d;
-            d.doc_id = id;
-            if (!in.isNull(C_BODY)) { const VString &b = in.getStringRef(C_BODY); d.text.assign(b.data(), b.length()); }
-            d.lang = vtext::LANG_NONE;
-            if (!in.isNull(C_LANG)) {
-                if (!vtext::find_lang(in.getStringRef(C_LANG).str(), d.lang)) d.lang = vtext::LANG_NONE;
-            }
-            tail.push_back(std::move(d));
-        } while (in.next());
+        const auto t0 = clk::now();
+        ViewInput v;
+        v.read(in, true);
+        for (auto &q : v.queries) queries.push_back(std::move(q));
         if (queries.empty()) return;
-
-        auto li = vtext::open_index(resolve_cache_dir(s), index, gen);
-        const vtext::AnalyzerOptions aopts = parse_index_options(li->options);
-        vtext::Searcher searcher(aopts, li->refs);
-        if (!mask.empty()) searcher.mask(mask);
-        if (!tail.empty()) {
-            vtext::SegmentBuilder b(aopts);
-            for (TailDoc &d : tail) {
-                try { b.add(d.doc_id, d.text, d.lang); }
-                catch (const std::exception &e) { fail("live tail, doc_id " + std::to_string(d.doc_id) + ": " + e.what()); }
+        const auto t1 = clk::now();
+        auto li = v.open(resolve_cache_dir(s), index, srv.getUserName());
+        const auto t2 = clk::now();
+        std::unique_ptr<vtext::Searcher> sp = v.searcher(*li);
+        vtext::Searcher &searcher = *sp;
+        searcher.ready();
+        const auto t3 = clk::now();
+        struct Timing {
+            ServerInterface &srv; bool on; clk::time_point te, t0, t1, t2, t3; std::size_t hidden;
+            ~Timing()
+            {
+                if (!on) return;
+                auto ms = [](clk::time_point a, clk::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+                srv.log("vtext timing: parameters %.3f ms, read %.3f ms, open+token %.3f ms, searcher %.3f ms, search %.3f ms (%zu hidden)",
+                        ms(te, t0), ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, clk::now()), hidden);
             }
-            searcher.add_tail(std::make_shared<const std::string>(b.finish(-1)));
-        }
+        } timing{srv, s.text("debug_timing", "") == "1", te, t0, t1, t2, t3, v.hidden.size()};
 
         vtext::SearchOptions o = parse_search_options(s);
 

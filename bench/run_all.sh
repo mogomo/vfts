@@ -45,7 +45,16 @@ queries_of() {   # dataset -> "file throughput_file extra_args"
 mode_of() { case $1 in wiki_he|wiki_ar) echo exact ;; *) echo stem ;; esac; }   # the engines have no equivalent Hebrew / Arabic stemmer
 lang_of() { case $1 in wiki_he) echo he ;; wiki_ar) echo ar ;; *) echo en ;; esac; }
 # Wikipedia articles quote Chinese / Japanese words: index them unstemmed, as the ICU tokenizer of the engines does
-opts_of() { case $1 in wiki_he|wiki_ar) echo "lang=$(lang_of "$1") on_unsupported=plain" ;; *) echo "lang=$(lang_of "$1")" ;; esac; }
+# reorder only where graph bisection made the queries clearly faster (Enron, PubMed): MS MARCO
+# and Arabic Wikipedia are faster in their own order, Hebrew Wikipedia gains 4% for a 6% longer
+# build (bench/plan_c/reorder_ab.sh, README "Document order")
+opts_of() {
+    case $1 in
+        wiki_he|wiki_ar) echo "lang=$(lang_of "$1") on_unsupported=plain reorder=false" ;;
+        msmarco) echo "lang=$(lang_of "$1") reorder=false" ;;
+        *) echo "lang=$(lang_of "$1")" ;;
+    esac
+}
 
 step_env() {
     python3 - > "$R/env.json" <<EOF
