@@ -105,7 +105,7 @@ for ds in ("enron", "pubmed", "msmarco"):
     tt = [t for t in R if t.startswith(f"c4_{ds}_c32_t") and not t.endswith("_t1")]
     cells.append(f"{g(tt[0], 'qps_best')} ({g(tt[0], 'ms', 'mean')} ms; {g(tt[0], 'cpu', 'host')})" if tt else "")
     out.append(f"| {ds} | " + " | ".join(cells) + " |")
-out += ["", "## C5 client and session cost (32 sessions unless noted; q/s wall clock, server ms)", "", "| Test | q/s | server ms | CPU host / Vertica / clients |", "|---|---:|---:|---|"]
+out += ["", "## C5 client and session cost (32 sessions unless noted; q/s over the elapsed time, server ms)", "", "| Test | q/s | server ms | CPU host / Vertica / clients |", "|---|---:|---:|---|"]
 for t in sorted(x for x in R if x.startswith("c5_") and "steps_ms" not in R[x]):
     r = R[t]
     out.append(f"| {t[3:]} | {r.get('qps_best')} | {g(t, 'server_ms', 'mean')} | {cpu(r)} / {g(t, 'cpu', 'clients')} |")

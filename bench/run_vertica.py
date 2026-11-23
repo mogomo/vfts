@@ -110,7 +110,7 @@ def main():
             t.start()
         for t in th:
             t.join()
-        wall = time.time() - t0
+        elapsed = time.time() - t0
         rows, client_ms = {}, {}
         for c in range(clients):
             stmt = None           # first query of the current statement (its marker)
@@ -127,7 +127,7 @@ def main():
                 p = line.split("\t")
                 if len(p) >= 2 and p[0].isdigit() and record:
                     rows.setdefault(int(p[0]), []).append(p[1:])
-        return rows, client_ms, wall, errs[0]
+        return rows, client_ms, elapsed, errs[0]
 
     run_id = "vfb" + uuid.uuid4().hex[:10]
     for w in range(warmup):
@@ -139,7 +139,7 @@ def main():
     errors = 0
     for r in range(repeat):
         label = f"{run_id}r{r}"
-        rows, cms, wall, e = run_once(label, r == 0)
+        rows, cms, elapsed, e = run_once(label, r == 0)
         errors += e
         if r == 0:
             first_rows = rows

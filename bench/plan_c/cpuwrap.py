@@ -51,12 +51,12 @@ def main():
     h0, s0, t0, c0 = host_ticks(), sum(proc_ticks(p) for p in pids), time.time(), os.times()
     p = subprocess.run(cmd, stdout=subprocess.PIPE, text=True)
     h1, s1, t1, c1 = host_ticks(), sum(proc_ticks(p) for p in pids), time.time(), os.times()
-    wall = t1 - t0
+    elapsed = t1 - t0
     lines = [l for l in p.stdout.splitlines() if l.startswith("{")]
     res = json.loads(lines[-1]) if lines else {"error": "no result", "returncode": p.returncode, "stdout": p.stdout[-500:]}
     res["test"] = test
-    res["cpu"] = {"seconds": round(wall, 1), "host": round((h1 - h0) / TCK / wall, 2), "server": round((s1 - s0) / TCK / wall, 2),
-                  "clients": round((c1.children_user + c1.children_system - c0.children_user - c0.children_system) / wall, 2),
+    res["cpu"] = {"seconds": round(elapsed, 1), "host": round((h1 - h0) / TCK / elapsed, 2), "server": round((s1 - s0) / TCK / elapsed, 2),
+                  "clients": round((c1.children_user + c1.children_system - c0.children_user - c0.children_system) / elapsed, 2),
                   "cores": os.cpu_count()}
     line = json.dumps(res)
     print(line, flush=True)

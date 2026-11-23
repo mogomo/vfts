@@ -33,10 +33,13 @@ public:
 
     // Runs f(0) .. f(n-1) with up to `threads` threads (the caller included). Rethrows the first error.
     // While other calls run, a call gets its share of the cores only: one query alone uses all of
-    // them, 32 queries at once about one each.
+    // them, 32 queries at once about one each. A call from inside f (a query of a batch searching
+    // its segments) runs in the calling thread and is not counted: the batch holds its share already,
+    // and counting its queries would leave a statement that starts meanwhile one thread.
     void run(std::size_t n, std::size_t threads, const std::function<void(std::size_t)> &f)
     {
         if (n == 0) return;
+        if (depth() > 0) { for (std::size_t i = 0; i < n; ++i) f(i); return; }
         struct Count {
             std::atomic<int> &c; int now;
             explicit Count(std::atomic<int> &x) : c(x), now(++x) {}
@@ -44,7 +47,13 @@ public:
         } count(running_);
         threads = std::min<std::size_t>(threads, std::max<std::size_t>(1, size_ / static_cast<std::size_t>(std::max(count.now, 1))));
         threads = std::max<std::size_t>(1, std::min(threads, n));
-        if (threads == 1) { for (std::size_t i = 0; i < n; ++i) f(i); return; }
+        if (threads == 1) {
+            ++depth();
+            try { for (std::size_t i = 0; i < n; ++i) f(i); }
+            catch (...) { --depth(); throw; }
+            --depth();
+            return;
+        }
         auto job = std::make_shared<Job>();
         job->n = n;
         job->f = &f;
@@ -96,6 +105,12 @@ private:
             (void)dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE);   // the handle is kept on purpose
     }
 
+    static int &depth()
+    {
+        static thread_local int d = 0;
+        return d;
+    }
+
     static void work(Job &j)
     {
         {
@@ -105,8 +120,10 @@ private:
         for (;;) {
             const std::size_t i = j.next.fetch_add(1);
             if (i >= j.n) break;
-            try { (*j.f)(i); }
+            ++depth();
+            try { (*j.f)(i); --depth(); }
             catch (...) {
+                --depth();
                 std::lock_guard<std::mutex> l(j.mu);
                 if (!j.error) j.error = std::current_exception();
                 j.next = j.n;

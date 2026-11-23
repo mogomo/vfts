@@ -18,7 +18,7 @@
     --same-text      every statement of a session has the same text (label and query): a prepared
                      statement is prepared once per session and then only executed
 
-Prints one JSON line: statements per second over the wall clock of the run (qps_best) and over the
+Prints one JSON line: statements per second over the elapsed time of the run (qps_best) and over the
 server clock (first start to last end in v_monitor.query_requests), server ms per statement.
 Connection: VSQL_HOST, VSQL_PORT, VSQL_USER, VSQL_PASSWORD, VSQL_DATABASE.
 """
@@ -118,7 +118,7 @@ def main():
     errors = 0
     for r in range(repeat):
         label = f"{run_id}r{r}"
-        wall, e = run_once(label)
+        elapsed, e = run_once(label)
         errors += e
         out = vsql_query(f"SELECT COUNT(*), AVG(DATEDIFF('microsecond', start_timestamp, end_timestamp)), "
                          f"APPROXIMATE_PERCENTILE(DATEDIFF('microsecond', start_timestamp, end_timestamp) USING PARAMETERS percentile=0.5), "
@@ -126,14 +126,14 @@ def main():
                          f"DATEDIFF('microsecond', MIN(start_timestamp), MAX(end_timestamp)) FROM v_monitor.query_requests "
                          f"WHERE request_label LIKE '{label}\\_%'").strip().split("\t")
         cnt = int(out[0])
-        res = {"label": label, "wall_s": round(wall, 3), "qps_wall": round(n / wall, 1), "server_rows": cnt,
+        res = {"label": label, "elapsed_s": round(elapsed, 3), "qps_elapsed": round(n / elapsed, 1), "server_rows": cnt,
                "server_ms": {"mean": round(float(out[1] or 0) / 1000, 3), "p50": round(float(out[2] or 0) / 1000, 3),
                              "p99": round(float(out[3] or 0) / 1000, 3)},
                "qps_server": round(cnt / (int(out[4]) / 1e6), 1) if cnt and out[4] and int(out[4]) > 0 else 0}
-        if best is None or res["qps_wall"] > best["qps_wall"]:
+        if best is None or res["qps_elapsed"] > best["qps_elapsed"]:
             best = res
     print(json.dumps({"engine": "sql", "client": kind, "sql": tmpl[:300], "n": n, "clients": clients, "session": session_sql,
-                      "errors": errors, **best, "qps_best": best["qps_wall"]}))
+                      "errors": errors, **best, "qps_best": best["qps_elapsed"]}))
 
 
 if __name__ == "__main__":

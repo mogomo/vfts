@@ -4,7 +4,7 @@
     python3 -I bench/plan_c/f1_report.py bench/out/plan_c/results.jsonl [--json out.json]
 
 Per dataset and engine: the median over the rounds of each round's best q/s (every round runs the
-request file 3 times), the range over the rounds, mean client latency (ms) and the CPU cores busy
+request file 3 times), the range over the rounds, mean and 99th percentile client latency (ms) and the CPU cores busy
 on the host (median round); the latest 3 rounds count when the step ran more than once. Markdown on stdout.
 """
 import json
@@ -51,7 +51,7 @@ for eng, name in ENGINES:
         q = sorted(x["qps_best"] for x in v)
         med = statistics.median(q)
         mid = min(v, key=lambda x: abs(x["qps_best"] - med))
-        out.setdefault(eng, {})[ds] = {"qps_median": round(med, 1), "qps_rounds": q, "client_ms_mean": mid["client_ms"]["mean"],
+        out.setdefault(eng, {})[ds] = {"qps_median": round(med, 1), "qps_rounds": q, "client_ms_mean": mid["client_ms"]["mean"], "client_ms_p99": mid["client_ms"]["p99"],
                                        "cpu_host": mid["cpu"]["host"], "errors": sum(x.get("errors", 0) for x in v)}
         cells.append(f"{med:,.0f} ({q[0]:,.0f}-{q[-1]:,.0f})")
     print(f"| {name} | " + " | ".join(cells) + " |")

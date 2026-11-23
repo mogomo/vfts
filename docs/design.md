@@ -347,6 +347,19 @@ column to the engine instead of the matches to the column.
   The work follows the postings read, not documents times clauses (Lucene's BooleanScorer does the
   same for counts and aggregations). On MS MARCO (questions of 5 to 10 words, up to 7.8 million
   matches each) it brought a count by custodian from 15.4 to 8.7 ms as one SQL statement.
+  Since 0.4.1 a clause sets its window block by block (128 docnos decoded at a time, without their
+  tfs, which are decoded later only if something asks for them), and a word in at least 1 of 32
+  documents of a segment (and 4,096) is turned into a bit set of the whole segment the first time a
+  count uses it; the segment keeps it while it is mapped (up to 1 GB of such sets per process), and
+  a window then takes 512 word ORs, however many documents the word has there. Lucene stores the
+  dense blocks of a list as bit sets in its index for the same reason. On MS MARCO the 6,980 dev
+  questions counted in one statement went from 41 s to 0.5 s with the same counts.
+- **Batches** (parameter `queries`, or query rows). `tsearch`: every query on one thread of the
+  pool, many at once. `tcount`: every query cut into slices of its segments, and the slices of the
+  whole batch in one run of the pool, the costliest queries first, so that one long query (a phrase
+  of two common words) does not hold the batch up on one core. A call of the pool from inside the
+  pool's work (a query of a batch searching its slices) runs in the calling thread and does not
+  count as running, so a second batch that starts meanwhile still gets its share of the cores.
 - **tserve** takes filter, k and by per request (a request that starts with the byte 0, see
   src/udx/tserve.cpp); `vfts_broker` passes them from its JSON (`filter`, `k`; `_count` with `by`).
   A search runs on one thread (many run at once); a count reads every match, so it takes its fair

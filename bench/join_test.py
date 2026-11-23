@@ -40,7 +40,7 @@ the search filters and counts while it matches, as the engines do:
 
 The engines work on a clone of the dataset's index (<ds>_j, _clone API: no copy of the data),
 deleted at the end; J3 and J4 are measured after a force merge of the clone into one segment, as
-in the other tests. Times: J1 and J2 once (wall clock, until searchable: COMMIT / refresh);
+in the other tests. Times: J1 and J2 once (elapsed time, until searchable: COMMIT / refresh);
 J3 and J4 one client, each query 3 times after a warm-up, best time per query, mean over the
 queries. The answers of J3 and J4 are written to bench/out/join_<engine>_*.tsv for comparison.
 Prints one JSON line. Connection: VSQL_* for vfts, ES_PORT / OS_PORT for the engines.

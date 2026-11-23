@@ -342,6 +342,10 @@ vfts 0.4.0 adds attributes (filters and counts by another table's column): the u
 tables `vfts.attributes` and `vfts.attr_values` and the function `tattr`; indexes need nothing.
 It also fixes `vfts_broker --mode sql`, whose vsql session ended at the first failing statement.
 
+vfts 0.4.1 counts faster: `tcount`, `tcount ... by=` and `tmatch` read the documents of frequent
+words as bit sets, and a batch of counts (`queries`) shares the cores slice by slice. The answers
+do not change; nothing to do after the upgrade.
+
     ./install.sh --uninstall             # removes library, functions and procedures; indexes stay
     ./install.sh --uninstall --drop      # also drops every index (views, node caches) and the schema vfts
 
@@ -1104,7 +1108,7 @@ ORDER BY h.rank;
 SELECT version, build, icu FROM (SELECT vfts.tversion() OVER()) v;
     version |                       build                        | icu  
    ---------+----------------------------------------------------+------
-    0.4.0   | -O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0 | 79.1
+    0.4.1   | -O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0 | 79.1
    (1 row)
 ```
 
@@ -1270,12 +1274,18 @@ tables: [bench/results/summary.md](bench/results/summary.md)), and one script ru
   syntax queries) and, query by query, the same top 10 with the same scores: 97% of the 6,980
   MS MARCO queries and 133 of 140 syntax queries have identical scores at every rank. Relevance on
   MS MARCO: MRR@10 0.1815 (vfts), 0.1815 (Elasticsearch), 0.1813 (OpenSearch).
-- **Search next to other data** (an attribute per document, vfts 0.4.0): adding it to all
-  517,401 Enron emails takes 0.4 s against 231 s and 240 s (MS MARCO: 3.2 s against 888 s and
+- **Search next to other data** (an attribute per document, vfts 0.4.1): adding it to all
+  517,401 Enron emails takes 0.5 s against 231 s and 240 s (MS MARCO: 3.2 s against 888 s and
   956 s); changing it for 1% takes 0.3 s against 2.7 s. Filtering and counting by it through
   `tserve` is faster than both engines in every test but the filtered top 10 on MS MARCO at 32
-  clients (OpenSearch 4,336 against 3,914 per second); counting every match of a MS MARCO question
-  per custodian takes 5.4 ms against 76 and 94 ms with the caches off.
+  clients (OpenSearch 4,336 against 3,978 per second); counting every match of a MS MARCO question
+  per custodian takes 0.81 ms against 76 and 94 ms with the caches off.
+- **Many searches at once** (a report, a nightly run; vfts 0.4.1): the 6,980 MS MARCO questions in
+  one batch, top 10 each, in 2.05 s against 2.28 and 2.40 s; the matches of each in 0.53 s
+  against 2.37 and 2.51 s; 500 Enron search terms, top 10 each, 0.026 s against 0.032 and 0.037 s
+  (their counts: 0.020 s against 0.015 and 0.019 s). Each user's batch can run as that user, under
+  Vertica's security, at no measurable cost; on a cluster a batch is split, one statement per node
+  ([Many searches at once](#many-searches-at-once-batches)).
 - **Proximity**: `w/N` over OR groups is where vfts is fastest; `california w/5 (energy OR power OR
   electricity)` on Enron: 10.5 ms against 26.3 ms (Elasticsearch) and 34.7 ms (OpenSearch).
 - **Index size**: vfts's node cache is half to two thirds of the engines' store (the engines also
@@ -1381,47 +1391,49 @@ Enron, 517,401 emails, 40 queries:
 
 | Test | vfts, one SQL statement | vfts, tserve | Elasticsearch | OpenSearch |
 |---|---:|---:|---:|---:|
-| J1 add the attribute to every document (s) | 0.425 | (same) | 231.491 | 240.056 |
-| J2 move 1% of the documents to another custodian (s) | 0.324 | (same) | 2.727 | 2.720 |
-| J3 top 10 among the custodians on hold, 1 client (ms) | 3.38 | 0.97 | 2.01 | 1.74 |
-| J3 top 10 among the custodians on hold, 32 clients (q/s) | 1,263 | 13,907 | 8,345 | 8,559 |
-| J3 top 10 among the custodians on hold, caches off, 1 client (ms) | | 0.96 | 1.34 | 1.45 |
-| J3 top 10 among the custodians on hold, caches off, 32 clients (q/s) | | 13,459 | 7,806 | 7,804 |
-| J4 matches per custodian, 1 client (ms) | 4.10 | 0.05 | 0.51 | 0.40 |
-| J4 matches per custodian, 32 clients (q/s) | 1,183 | 85,195 | 39,910 | 39,355 |
-| J4 matches per custodian, caches off, 1 client (ms) | | 1.08 | 2.29 | 2.22 |
-| J4 matches per custodian, caches off, 32 clients (q/s) | | 5,885 | 4,500 | 4,745 |
+| J1 add the attribute to every document (s) | 0.505 | (same) | 231.491 | 240.056 |
+| J2 move 1% of the documents to another custodian (s) | 0.329 | (same) | 2.727 | 2.720 |
+| J3 top 10 among the custodians on hold, 1 client (ms) | 3.37 | 0.93 | 2.01 | 1.74 |
+| J3 top 10 among the custodians on hold, 32 clients (q/s) | 1,262 | 14,178 | 8,345 | 8,559 |
+| J3 top 10 among the custodians on hold, caches off, 1 client (ms) | | 0.98 | 1.34 | 1.45 |
+| J3 top 10 among the custodians on hold, caches off, 32 clients (q/s) | | 13,694 | 7,806 | 7,804 |
+| J4 matches per custodian, 1 client (ms) | 4.15 | 0.04 | 0.51 | 0.40 |
+| J4 matches per custodian, 32 clients (q/s) | 1,201 | 88,248 | 39,910 | 39,355 |
+| J4 matches per custodian, caches off, 1 client (ms) | | 1.06 | 2.29 | 2.22 |
+| J4 matches per custodian, caches off, 32 clients (q/s) | | 6,097 | 4,500 | 4,745 |
 
 MS MARCO, 8,841,823 passages, the first 40 questions of the dev set:
 
 | Test | vfts, one SQL statement | vfts, tserve | Elasticsearch | OpenSearch |
 |---|---:|---:|---:|---:|
-| J1 add the attribute to every document (s) | 3.214 | (same) | 888.303 | 955.758 |
-| J2 move 1% of the documents to another custodian (s) | 3.022 | (same) | 12.115 | 11.891 |
-| J3 top 10 among the custodians on hold, 1 client (ms) | 4.07 | 2.52 | 3.69 | 3.32 |
-| J3 top 10 among the custodians on hold, 32 clients (q/s) | 935 | 3,914 | 3,881 | 4,336 |
-| J3 top 10 among the custodians on hold, caches off, 1 client (ms) | | 3.75 | 3.95 | 3.63 |
-| J3 top 10 among the custodians on hold, caches off, 32 clients (q/s) | | 2,787 | 2,625 | 2,858 |
-| J4 matches per custodian, 1 client (ms) | 9.84 | 0.07 | 0.45 | 0.39 |
-| J4 matches per custodian, 32 clients (q/s) | 214 | 57,621 | 40,651 | 42,030 |
-| J4 matches per custodian, caches off, 1 client (ms) | | 5.44 | 76.30 | 93.52 |
-| J4 matches per custodian, caches off, 32 clients (q/s) | | 238 | 136 | 118 |
+| J1 add the attribute to every document (s) | 3.205 | (same) | 888.303 | 955.758 |
+| J2 move 1% of the documents to another custodian (s) | 2.812 | (same) | 12.115 | 11.891 |
+| J3 top 10 among the custodians on hold, 1 client (ms) | 4.06 | 2.48 | 3.69 | 3.32 |
+| J3 top 10 among the custodians on hold, 32 clients (q/s) | 939 | 3,978 | 3,881 | 4,336 |
+| J3 top 10 among the custodians on hold, caches off, 1 client (ms) | | 3.77 | 3.95 | 3.63 |
+| J3 top 10 among the custodians on hold, caches off, 32 clients (q/s) | | 2,828 | 2,625 | 2,858 |
+| J4 matches per custodian, 1 client (ms) | 4.52 | 0.06 | 0.45 | 0.39 |
+| J4 matches per custodian, 32 clients (q/s) | 865 | 61,000 | 40,651 | 42,030 |
+| J4 matches per custodian, caches off, 1 client (ms) | | 0.81 | 76.30 | 93.52 |
+| J4 matches per custodian, caches off, 32 clients (q/s) | | 2,280 | 136 | 118 |
 
-- **Changing data around the text**: an attribute of every document in 0.4 s (Enron) and 3.2 s (MS
-  MARCO) against 231 to 956 s; 1% of it changed in 0.3 s and 3.0 s against 2.7 to 12.1 s (and a
+- **Changing data around the text**: an attribute of every document in 0.5 s (Enron) and 3.2 s (MS
+  MARCO) against 231 to 956 s; 1% of it changed in 0.3 s and 2.8 s against 2.7 to 12.1 s (and a
   force merge of 35 to 410 s afterwards for the engines' full speed). An attribute is a column:
   `UPDATE` touches only it, `refresh_attributes` copies it again. A search engine rewrites and
   re-analyzes every document it changes.
 - **Filtering and counting through `tserve`**: faster than both engines in every J3 and J4 test,
-  except J3 on MS MARCO, where OpenSearch leads at 32 clients (4,336 against 3,914 searches per
-  second as shipped, 2,858 against 2,787 with the caches off) and, with the caches off, with one
-  client too (3.63 against 3.75 ms; as shipped vfts is faster, 2.52 against 3.32).
+  except J3 on MS MARCO, where OpenSearch leads at 32 clients (4,336 against 3,978 searches per
+  second as shipped, 2,858 against 2,828 with the caches off) and, with the caches off, with one
+  client too (3.63 against 3.77 ms; as shipped vfts is faster, 2.48 against 3.32).
   With the caches off, counting every match of the MS MARCO questions (up to 7.8 million each) takes
-  5.4 ms against 76 and 94 ms, and 32 clients get 238 counts per second against 136 and 118.
-  As shipped, repeated counts come from the caches on both sides: 0.05 to 0.07 ms in vfts against
-  0.39 to 0.51 ms, 57,621 to 85,195 per second against 39,355 to 42,030.
-- **As one SQL statement per search**, vfts takes 3.4 to 4.1 ms (J3) and 4.1 to 9.8 ms (J4) with
-  one client: the statement's own cost (see [the wall](#where-elasticsearch-and-opensearch-win-and-why)),
+  0.81 ms against 76 and 94 ms, and 32 clients get 2,280 counts per second against 136 and 118
+  (vfts 0.4.0: 5.44 ms and 238; 0.4.1 reads the documents of frequent words as bit sets, see
+  docs/design.md, "Counting an OR"). As shipped, repeated counts come from the caches on both
+  sides: 0.04 to 0.06 ms in vfts against 0.39 to 0.51 ms, 61,000 to 88,248 per second against
+  39,355 to 42,030.
+- **As one SQL statement per search**, vfts takes 3.4 to 4.1 ms (J3) and 4.2 to 4.5 ms (J4) with
+  one client: the statement's own cost (see [Where Elasticsearch and OpenSearch win, and why](#where-elasticsearch-and-opensearch-win-and-why)),
   while the engines take 1.7 to 3.7 ms (J3) and, from their caches, 0.4 to 0.5 ms (J4). Without
   attributes, the same questions as a plain SQL join (every match a row, joined and grouped in
   Vertica) took 16.8 and 18.7 ms on Enron and 906 and 835 ms on MS MARCO.
@@ -1429,6 +1441,52 @@ MS MARCO, 8,841,823 passages, the first 40 questions of the dev set:
   identical for all 40 Enron queries and for 29 of 40 MS MARCO questions (the others within
   0.097% of the matches: words the analyzers see differently), and J3 has the same documents above
   the 10th score for 40 of 40 and 39 of 40 queries.
+
+### Many searches at once (batches)
+
+A report, a review of a list of search terms, a nightly run of saved searches: the questions are
+known up front, and what counts is the time until every result is stored. vfts takes them in one
+statement (the parameter `queries`, or query rows) and can write the results straight into a
+table; Elasticsearch and OpenSearch take them in `_msearch` requests. Timed from the start until
+every result is stored (vfts: into a file through vsql, or a table; the engines: a file), with the
+connections open first; best of 3 runs after a warm-up, the best configuration of each side
+(vfts: 1 to 8 statements at once; the engines: batch sizes and requests at once); counts with the
+engines' caches off. Method, every configuration and the answers:
+[bench/results/bulk.md](bench/results/bulk.md).
+
+| Batch | vfts | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|
+| 6,980 MS MARCO questions, top 10 each | **2.05 s** | 2.40 s | 2.28 s |
+| 500 Enron search terms (words, prefixes, phrases, w/5), top 10 each | **0.026 s** | 0.037 s | 0.032 s |
+| 500 Enron search terms, matching emails of each | 0.020 s | **0.015 s** | 0.019 s |
+| 6,980 MS MARCO questions, matching passages of each | **0.53 s** | 2.51 s | 2.37 s |
+| The same, first run after a restart: MS MARCO top 10 | **2.05 s** | 3.84 s | 3.40 s |
+| First run after a restart: MS MARCO counts | **0.62 s** | 3.25 s | 3.32 s |
+
+- **The same answers**: the Enron counts are equal for all 500 terms; the MS MARCO counts for 4,909
+  of 6,980 questions and within 0.1% for 6,934 (the rest: words Lucene's older Snowball English
+  stems differently, "organization" to "organ"); the top 10 has the same scores at every rank for
+  442 of 443 Enron terms with matches and 6,786 of 6,980 MS MARCO questions.
+- **Into a table**: `INSERT ... SELECT` of all 69,800 MS MARCO results and `COMMIT` take about
+  the same as writing them to a file (2.22 s with 4 statements, 2.73 s with one).
+- **Many users, each with their own batch**: 10 users, each running their share as themselves
+  (their grants, and the row access policies of the table if it has any), all results into one
+  table with a row access policy `requester = CURRENT_USER()`: 2.01 s for the 6,980 MS MARCO
+  questions, against 2.08 s when one service user runs all of them. Each user reads back exactly
+  their own rows. Security in Vertica costs nothing measurable here, so batches need no superuser.
+- **A cluster**: every node keeps a full copy of the index, and a statement runs on the node it
+  connects to; a batch spreads over the cluster as one statement per node. On a 5-node Eon test
+  cluster (2 cores per node), 50,000 Enron searches into a table: top 10 each 25.8 s on one node,
+  6.1 s on 3 and 7.9 s on 5; matches of each 27.3 s on one node, 9.4 s on 2, 5.2 s on 3 and 3.6 s
+  on 5 (best of 3; the runs vary a lot on these small machines, every run in bulk.md).
+- **Where the engines lead**: the 500 Enron counts, by 5 ms (0.015 against 0.020 s): a statement
+  costs vfts about 4 ms before it searches, a large share of a small report.
+
+    -- a batch, results into a table: one statement, then COMMIT
+    INSERT /*+DIRECT*/ INTO app.report (qid, doc_id, rank, score)
+    SELECT qid, doc_id, rank, score FROM (SELECT vfts.tsearch(* USING PARAMETERS index='enron', k=10,
+           queries=E'1\tfraud\n2\t"special purpose entities"\n3\tcontract w/5 indemn*') OVER() FROM app.enron_snap) r;
+    COMMIT;
 
 ### Index build and size
 
@@ -1524,11 +1582,15 @@ by doc_id in vfts and by internal order in the engines.
 - **PubMed's 99th percentile with one client**: OpenSearch 2.8 ms against vfts `tserve` 4.9 ms
   (the mean is lower in vfts: 1.01 against 1.07 ms).
 - **Filtering by an attribute on MS MARCO at 32 clients** (J3, the top 10 among 10 of 150
-  custodians): OpenSearch 4,336 searches per second against `tserve`'s 3,914 (2,858 against 2,787
+  custodians): OpenSearch 4,336 searches per second against `tserve`'s 3,978 (2,858 against 2,828
   with the caches off). Filtered or counted as one SQL statement per search, vfts pays the
-  statement (3.4 to 9.8 ms against the engines' 0.4 to 3.7 ms with one client). Until vfts 0.4.0,
+  statement (3.4 to 4.5 ms against the engines' 0.4 to 3.7 ms with one client). Until vfts 0.4.0,
   filtering and counting by an attribute was a join in Vertica (17 to 19 ms on Enron); attributes
   inside the index turned that around ([Search next to other data](#search-next-to-other-data-attributes)).
+- **Small batches of counts**: 500 Enron search terms counted in 0.015 s (Elasticsearch) and
+  0.019 s (OpenSearch) against vfts's 0.020 s: the statement's own cost, about 4 ms, is a large
+  share of a report this small (top 10 of the same terms: vfts 0.026 s, the engines 0.032 and
+  0.037 s).
 - **Phrases of very frequent words and single fuzzy words**: Lucene's phrase matching and its
   Levenshtein automaton are faster for these (vfts's engine: "case report" on PubMed 3.0 ms; fuzzy
   words about 1.7 ms against about 1.4 ms in Elasticsearch's profile).
@@ -1546,11 +1608,14 @@ by doc_id in vfts and by internal order in the engines.
 - **Proximity over OR groups** (`w/N`, `pre/N`): on Enron `california w/5 (energy OR power OR
   electricity)` 10.5 ms against 26.3 and 34.7 ms, `(stock OR shares) w/3 (sell OR sold OR selling)`
   4.3 ms against 13.3 and 10.0 ms (first run, through vsql).
-- **Search next to other data**: an attribute of every document added in 0.4 s (Enron) and 3.2 s
-  (MS MARCO) against 231 to 956 s, 1% of it changed in 0.3 to 3.0 s against 2.7 to 12.1 s; and
+- **Search next to other data**: an attribute of every document added in 0.5 s (Enron) and 3.2 s
+  (MS MARCO) against 231 to 956 s, 1% of it changed in 0.3 to 2.8 s against 2.7 to 12.1 s; and
   filtering and counting by it through `tserve` faster than both engines in every test but one
   (MS MARCO's filtered top 10 at 32 clients): counting every match per custodian with the caches
-  off, MS MARCO 5.4 ms against 76 and 94 ms, Enron 1.08 against 2.22 and 2.29 ms.
+  off, MS MARCO 0.81 ms against 76 and 94 ms, Enron 1.06 against 2.22 and 2.29 ms.
+- **Batches** (all the questions known up front, every result stored): the 6,980 MS MARCO
+  questions, top 10 each, 2.05 s against 2.28 and 2.40 s; their counts 0.53 s against 2.37 and
+  2.51 s; first runs after a restart 2.05 and 0.62 s against 3.40 to 3.84 and 3.25 to 3.32 s.
 - **Size**: half to two thirds of the engines' store; the text is not copied.
 - **Freshness**: every committed row is searchable without a refresh; a refresh of 88,418 rows
   takes 3.1 s against about 8.5 s.
@@ -1622,6 +1687,14 @@ and about 40 GB of free disk:
     #    access policies (adds a row policy to bench.enron for a while, then removes it)
     bench/plan_c/reorder_ab.sh enron pubmed msmarco wiki_he wiki_ar
     bench/plan_c/access_cost.sh
+
+    # 7. optional: batches (about 40 minutes; b1cold restarts the database and the engines,
+    #    b2 makes 10 test users and drops them again), then the tables
+    python3 -I bench/queries/make_terms.py ~/vfts_data/enron/docs.dat > bench/queries/enron_terms.tsv   # as committed
+    bench/plan_c/bulk.sh b1 b1cold b2
+    python3 -I bench/plan_c/bulk_report.py bench/out/bulk/results.jsonl --answers bench/out/bulk
+    #    on a cluster (run on one of its nodes, the index enron loaded on every subcluster used):
+    BULK_HOSTS=node1,node2,... BULK_X=100 BULK_INTO=bench.bulk_results BULK_RES=bench/out/bulk/eon.jsonl bench/plan_c/bulk.sh b3
 
 The results are appended to `bench/results/*.jsonl`; `python3 -I bench/report.py` writes
 `bench/results/summary.md` and the charts again. `VFTS_SETS="enron pubmed"` limits the datasets,

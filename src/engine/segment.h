@@ -12,11 +12,15 @@
 #ifndef VFTS_ENGINE_SEGMENT_H
 #define VFTS_ENGINE_SEGMENT_H
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -221,6 +225,35 @@ public:
     // The stored bitmap of a term (CRoaring portable bytes), or nullptr.
     const std::uint8_t *bitmap(std::uint32_t term, std::size_t &len) const;
 
+    // Lists of many documents as bit sets (one bit per docno), made on first use by counting and kept
+    // while the segment is mapped (Lucene stores the dense blocks of a list as bit sets in its index).
+    // Key: the list's post_off (a term's or a stem group's). nullptr: not made yet.
+    using DenseBits = std::shared_ptr<const std::vector<std::uint64_t>>;
+    DenseBits dense(std::uint64_t key) const
+    {
+        std::lock_guard<std::mutex> l(dense_->mu);
+        auto it = dense_->bits.find(key);
+        return it == dense_->bits.end() ? nullptr : it->second;
+    }
+    // Keeps b while all kept sets of the process stay within budget bytes (else b serves one search
+    // only); returns the kept one (another thread may have been first).
+    DenseBits keep_dense(std::uint64_t key, DenseBits b, std::size_t budget) const
+    {
+        std::lock_guard<std::mutex> l(dense_->mu);
+        auto it = dense_->bits.find(key);
+        if (it != dense_->bits.end()) return it->second;
+        const std::size_t sz = b->size() * sizeof(std::uint64_t);
+        if (dense_bytes().fetch_add(sz) + sz > budget) { dense_bytes().fetch_sub(sz); return b; }
+        dense_->bytes += sz;
+        return dense_->bits.emplace(key, std::move(b)).first->second;
+    }
+    // Bytes of the dense sets kept by all segments of the process.
+    static std::atomic<std::size_t> &dense_bytes()
+    {
+        static std::atomic<std::size_t> n{0};
+        return n;
+    }
+
     const std::uint8_t *postings() const { return post_; }
     const std::uint8_t *positions() const { return pos_; }
     std::size_t positions_bytes() const { return h_->len[S_POSITIONS]; }
@@ -246,6 +279,13 @@ private:
     const BitmapEntry *bitmap_dir_ = nullptr;
     std::size_t n_bitmaps_ = 0;
     const std::uint8_t *bitmaps_ = nullptr;
+    struct DenseStore {
+        std::mutex mu;
+        std::unordered_map<std::uint64_t, DenseBits> bits;
+        std::size_t bytes = 0;
+        ~DenseStore() { dense_bytes().fetch_sub(bytes); }
+    };
+    std::shared_ptr<DenseStore> dense_ = std::make_shared<DenseStore>();
 };
 
 // ---- small codecs shared by writer and readers

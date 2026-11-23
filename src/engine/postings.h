@@ -48,6 +48,7 @@ public:
             block_n_ = 0;
         }
         block_ = 0;
+        tfs_stale_ = false;
         decoded_ = single_ ? 0 : NO_DOC;
         i_ = 0;
         doc_ = NO_DOC;
@@ -61,9 +62,38 @@ public:
     // Norms to prefetch when a block is decoded (the scorer reads norms[doc] of its documents).
     void prefetch_norms(const std::uint8_t *norms) { norms_ = norms; }
     std::uint32_t doc() const { return doc_; }
-    std::uint32_t tf() const { return tfs_[i_]; }
+    std::uint32_t tf() const { if (tfs_stale_) fill_tfs(); return tfs_[i_]; }
     std::uint32_t term_max_tf() const { return max_tf_; }
     std::uint32_t term_min_len() const { return min_len_; }
+
+    // Counting: sets bit (d - w0) of bits for every document d in [doc(), w1) and leaves the
+    // iterator at its first document >= w1 (or NO_DOC). Positioned at a document >= w0 first (the
+    // caller's advance). Whole blocks at a time, docnos only: a block's tfs are decoded later only
+    // if something asks for them (Lucene's BooleanScorer counts a disjunction the same way).
+    void or_into(std::uint64_t *bits, std::uint32_t w0, std::uint32_t w1)
+    {
+        if (!positioned_) advance(w0);
+        if (doc_ == NO_DOC || doc_ >= w1) return;
+        if (single_) {
+            bits[(doc_ - w0) >> 6] |= 1ull << ((doc_ - w0) & 63);
+            doc_ = NO_DOC;
+            return;
+        }
+        for (;;) {
+            std::uint32_t i = i_;
+            const std::uint32_t n = block_n_;
+            while (i < n && docs_[i] < w1) {
+                const std::uint32_t r = docs_[i] - w0;
+                bits[r >> 6] |= 1ull << (r & 63);
+                ++i;
+            }
+            if (i < n) { i_ = i; doc_ = docs_[i]; return; }
+            if (block_ + 1 >= n_blocks_) { i_ = n - 1; doc_ = NO_DOC; return; }
+            ++block_;
+            decode(block_, false, true);
+            i_ = 0;
+        }
+    }
 
     // Moves to the next document; returns it (NO_DOC at the end).
     std::uint32_t next()
@@ -183,6 +213,7 @@ public:
             pos_ptr_ = pos_base_ + (single_ ? 0 : meta_[block_].pos_off);
             pos_i_ = 0;
         }
+        if (tfs_stale_) fill_tfs();
         while (pos_i_ < i_) { skip_varints(pos_ptr_, tfs_[pos_i_]); ++pos_i_; }
         const std::uint32_t n = tfs_[i_];
         std::uint32_t p = 0;
@@ -193,19 +224,28 @@ public:
 private:
     // prefetch: also the norms of the block's documents (a list that is read document by document;
     // a list that is only probed at a few documents does not need them)
-    void decode(std::uint32_t b, bool prefetch = true)
+    // docs_only: the tfs of the block are decoded by fill_tfs when first asked for
+    void decode(std::uint32_t b, bool prefetch = true, bool docs_only = false)
     {
         const BlockMeta &m = meta_[b];
         const std::uint32_t n = b + 1 < n_blocks_ ? BLOCK : df_ - b * BLOCK;
         const std::uint8_t *p = data_ + m.data_off;
-        const std::uint32_t db = p[0], tb = p[1];
+        const std::uint32_t db = p[0];
         unpack_bits(p + 2, n, db, docs_);
-        unpack_bits(p + 2 + packed_bytes(n, db), n, tb, tfs_);
         std::uint32_t prev = b == 0 ? NO_DOC : meta_[b - 1].last_doc;     // NO_DOC + 1 wraps to 0
-        for (std::uint32_t k = 0; k < n; ++k) { prev += docs_[k] + 1; docs_[k] = prev; tfs_[k] += 1; }
-        if (norms_ && prefetch) for (std::uint32_t k = 0; k < n; k += 1) __builtin_prefetch(norms_ + docs_[k]);
+        for (std::uint32_t k = 0; k < n; ++k) { prev += docs_[k] + 1; docs_[k] = prev; }
         block_n_ = n;
         decoded_ = b;
+        tfs_stale_ = true;
+        if (!docs_only) fill_tfs();
+        if (norms_ && prefetch) for (std::uint32_t k = 0; k < n; k += 1) __builtin_prefetch(norms_ + docs_[k]);
+    }
+    void fill_tfs() const
+    {
+        const std::uint8_t *p = data_ + meta_[decoded_].data_off;
+        unpack_bits(p + 2 + packed_bytes(block_n_, p[0]), block_n_, p[1], tfs_);
+        for (std::uint32_t k = 0; k < block_n_; ++k) tfs_[k] += 1;
+        tfs_stale_ = false;
     }
 
     std::uint32_t df_ = 0, n_blocks_ = 0, max_tf_ = 0, min_len_ = 0;
@@ -218,7 +258,9 @@ private:
     const std::uint8_t *data_ = nullptr;
     const std::uint8_t *pos_base_ = nullptr;
     std::uint32_t block_ = 0, decoded_ = NO_DOC, block_n_ = 0, i_ = 0, doc_ = NO_DOC;
-    std::uint32_t docs_[BLOCK], tfs_[BLOCK];
+    std::uint32_t docs_[BLOCK];
+    mutable std::uint32_t tfs_[BLOCK];
+    mutable bool tfs_stale_ = false;      // the decoded block's tfs are not decoded yet (or_into)
     const std::uint8_t *pos_ptr_ = nullptr;
     std::uint32_t pos_block_ = NO_DOC, pos_i_ = 0;
 };

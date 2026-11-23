@@ -173,6 +173,12 @@ struct It {
     // by start, then end
     virtual void lspans(std::vector<LSpan> &) {}
     virtual std::uint64_t cost() const = 0;
+    // Counting an OR (each_match): sets bit (d - w0) of bits for every document d in [doc, w1) and
+    // moves to the first document >= w1. doc is >= w0 (and >= the range's start) when called.
+    virtual void or_window(std::uint64_t *bits, std::uint32_t w0, std::uint32_t w1)
+    {
+        for (std::uint32_t d = doc; d < w1; d = next()) bits[(d - w0) >> 6] |= 1ull << ((d - w0) & 63);
+    }
     // At most how many spans (lspans) the current document gives; ~0u: not known. Bounds the
     // frequency of a phrase or w/N, whose matches each count at most 1.
     virtual std::uint32_t max_spans() { return ~0u; }
@@ -244,6 +250,16 @@ struct LeafIt : It {
         positions(tmp);
         for (std::uint32_t p : tmp) out.push_back({static_cast<std::int32_t>(p), static_cast<std::int32_t>(p) + 1, 0});
     }
+    void or_window(std::uint64_t *bits, std::uint32_t w0, std::uint32_t w1) override
+    {
+        if (!grp.empty()) { grp[0].or_into(bits, w0, w1); doc = grp[0].doc(); return; }
+        std::uint32_t m = NO_DOC;
+        for (PostingIter &p : its) {
+            if (p.doc() < w1) p.or_into(bits, w0, w1);
+            m = std::min(m, p.doc());
+        }
+        doc = m;
+    }
     std::uint64_t cost() const override
     {
         if (!grp.empty()) return grp[0].df();
@@ -256,23 +272,43 @@ struct LeafIt : It {
 // The documents of a constant-score pattern with many terms (prefix / wildcard / fuzzy outside
 // w/N), collected once into a bit set: one cheap list instead of advancing every term's list at
 // every step (Lucene rewrites such patterns into a bit set as well). Score 1, like the leaf.
+constexpr std::size_t DENSE_BUDGET = std::size_t(1) << 30;     // bytes of dense bit sets per process
+
 struct SetIt : It {
-    std::vector<std::uint64_t> bits;
+    std::vector<std::uint64_t> bits;        // its own set (a pattern), or
+    Segment::DenseBits shared;              // a dense list's set, kept by the segment
+    const std::uint64_t *b = nullptr;       // the set in use
+    std::size_t nb = 0;
     std::uint32_t n = 0;
     std::uint64_t count = 0;
+    void use_own() { b = bits.data(); nb = bits.size(); }
+    void use(Segment::DenseBits s) { shared = std::move(s); b = shared->data(); nb = shared->size(); }
     std::uint32_t advance(std::uint32_t target) override
     {
         if (positioned && (doc == NO_DOC || doc >= target)) return doc;
         positioned = true;
         if (target >= n) return doc = NO_DOC;
         std::size_t w = target >> 6;
-        std::uint64_t x = bits[w] & (~0ull << (target & 63));
-        while (!x) { if (++w >= bits.size()) return doc = NO_DOC; x = bits[w]; }
+        std::uint64_t x = b[w] & (~0ull << (target & 63));
+        while (!x) { if (++w >= nb) return doc = NO_DOC; x = b[w]; }
         return doc = static_cast<std::uint32_t>(w * 64 + static_cast<std::size_t>(__builtin_ctzll(x)));
     }
     float score() override { return 1.0f; }
     void spans(std::vector<Span> &) override {}
     std::uint64_t cost() const override { return count; }
+    void or_window(std::uint64_t *out, std::uint32_t w0, std::uint32_t w1) override
+    {
+        if (doc >= w1) return;
+        // word by word (w0 is a multiple of 64): from doc's word, without the bits below doc, up to w1
+        const std::size_t first = doc >> 6, last = std::min<std::size_t>((w1 - 1) >> 6, nb - 1);
+        for (std::size_t w = first; w <= last; ++w) {
+            std::uint64_t x = b[w];
+            if (w == first) x &= ~0ull << (doc & 63);
+            if (w == ((w1 - 1) >> 6) && (w1 & 63)) x &= (1ull << (w1 & 63)) - 1;
+            out[w - (w0 >> 6)] |= x;
+        }
+        advance(w1);
+    }
 };
 
 struct AllIt : It {
@@ -923,6 +959,33 @@ struct Searcher::Impl {
         return static_cast<float>(w);
     }
 
+    // Counting: a word whose list holds at least 1 in 32 documents of the segment (and 4,096) as its
+    // bit set, made on first use and kept by the segment (up to DENSE_BUDGET bytes per process).
+    // ORing a window of a bit set is 512 word operations, whatever the number of documents in it.
+    std::unique_ptr<It> dense_it(std::size_t si, const PNode &k)
+    {
+        if (k.kind != QKind::Term) return nullptr;
+        const Leaf &L = leaves[k.leaves[0]];
+        if (L.constant || L.ids[si].empty()) return nullptr;
+        const Segment &seg = *segs[si];
+        const TermInfo *ti = nullptr;
+        if (L.ids[si].size() == 1) ti = &seg.info(L.ids[si][0]);
+        else if (L.stem_entry[si] >= 0) ti = &seg.group_info(static_cast<std::uint32_t>(L.stem_entry[si]));
+        if (!ti || ti->df < 4096 || ti->df < seg.n_docs() / 32) return nullptr;
+        Segment::DenseBits bits = seg.dense(ti->post_off);
+        if (!bits) {
+            auto made = std::make_shared<std::vector<std::uint64_t>>((seg.n_docs() + 63) / 64, 0);
+            PostingIter pi(seg, *ti);
+            pi.or_into(made->data(), 0, seg.n_docs());
+            bits = seg.keep_dense(ti->post_off, std::move(made), DENSE_BUDGET);
+        }
+        std::unique_ptr<SetIt> it(new SetIt());
+        it->n = seg.n_docs();
+        it->count = ti->df;
+        it->use(std::move(bits));
+        return std::unique_ptr<It>(it.release());
+    }
+
     std::unique_ptr<LeafIt> leaf_it(std::size_t si, int l, float weight, const Scoring &sc)
     {
         std::unique_ptr<LeafIt> it(new LeafIt());
@@ -952,6 +1015,7 @@ struct Searcher::Impl {
                     for (std::uint32_t d = pi.advance(0); d != NO_DOC; d = pi.next()) it->bits[d >> 6] |= 1ull << (d & 63);
                 }
                 for (std::uint64_t w : it->bits) it->count += static_cast<std::uint64_t>(__builtin_popcountll(w));
+                it->use_own();
                 return std::unique_ptr<It>(it.release());
             }
             return leaf_it(si, p.leaves[0], p.weight, sc);
@@ -1481,15 +1545,19 @@ struct Searcher::Impl {
         std::uint64_t n = 0;
         if (hi <= lo) return 0;
         Scoring sc{cache, segs[si]->norms()};
-        if (!(p.kind == QKind::Bool && p.must.empty() && p.must_not.empty() && p.should.size() > 1)) {
+        const bool any_of = p.kind == QKind::Bool && p.must.empty() && p.must_not.empty() && p.should.size() > 1;
+        const bool leaf = p.kind == QKind::Term || p.kind == QKind::Prefix || p.kind == QKind::Wildcard || p.kind == QKind::Fuzzy;
+        if (!any_of && !leaf) {
             std::unique_ptr<It> root = build(si, p, sc);
             for (std::uint32_t d = root->advance(lo); d < hi; d = root->next())
                 if (!is_skipped(si, d)) { ++n; if (!count_only) f(d); }
             return n;
         }
+        // an OR, or one word: each clause sets its documents of a window in a bit set
         std::vector<std::unique_ptr<It>> kids;
-        for (const PNode &k : p.should) {
-            std::unique_ptr<It> c = build(si, k, sc);
+        for (const PNode &k : any_of ? p.should : std::vector<PNode>{p}) {
+            std::unique_ptr<It> c = dense_it(si, k);
+            if (!c) c = build(si, k, sc);
             if (!dynamic_cast<EmptyIt *>(c.get())) kids.push_back(std::move(c));
         }
         constexpr std::uint32_t W = 1u << 15;       // docnos per window: a 4 KB bit set
@@ -1504,8 +1572,7 @@ struct Searcher::Impl {
             const std::uint32_t w1 = static_cast<std::uint32_t>(std::min<std::uint64_t>(hi, static_cast<std::uint64_t>(w0) + W));
             const std::uint32_t nw = (w1 - w0 + 63) / 64;
             std::memset(bits, 0, nw * sizeof(std::uint64_t));
-            for (auto &c : kids)
-                for (std::uint32_t d = c->doc; d < w1; d = c->next()) bits[(d - w0) >> 6] |= 1ull << ((d - w0) & 63);
+            for (auto &c : kids) c->or_window(bits, w0, w1);
             if (sk) {
                 const std::size_t b0 = w0 >> 6, ns = sk->bits.size();
                 for (std::uint32_t i = 0; i < nw && b0 + i < ns; ++i) bits[i] &= ~sk->bits[b0 + i];
@@ -1876,11 +1943,37 @@ std::vector<std::uint64_t> Searcher::count_many(const std::vector<std::string> &
     for (const std::string &q : queries) qs.push_back(parse_query(q, *analyzer_, opts.query));
     std::vector<std::uint64_t> out(qs.size(), 0);
     if (qs.size() == 1) { out[0] = run_count(qs[0], opts); return out; }
-    SearchOptions one = opts;
-    one.threads = 1;
-    one.stats = nullptr;
-    const std::function<void(std::size_t)> fn = [&](std::size_t i) { out[i] = run_count(qs[i], one); };
-    Pool::instance().run(qs.size(), static_cast<std::size_t>(std::max(opts.threads, 1)), fn);
+    // Every query cut into slices of its segments (as a query alone on 4 threads), and the slices of
+    // the whole batch in one run of the pool, the costliest queries first: a long query (a phrase of
+    // two common words) does not hold the batch up on one core after the others are done.
+    SearchOptions sliced = opts;
+    sliced.threads = 4;
+    sliced.stats = nullptr;
+    struct Q { std::unique_ptr<Impl> im; PNode p; std::vector<Impl::Task> t; std::uint64_t cost = 0; };
+    std::vector<Q> v(qs.size());
+    const std::size_t threads = static_cast<std::size_t>(std::max(opts.threads, 1));
+    const std::function<void(std::size_t)> plan = [&](std::size_t i) {
+        if (qs[i].kind == QKind::None) return;
+        v[i].im.reset(new Impl(*this, sliced));
+        v[i].p = v[i].im->plan(qs[i]);
+        v[i].t = v[i].im->tasks();
+        for (const Leaf &L : v[i].im->leaves) v[i].cost += L.df;
+    };
+    Pool::instance().run(qs.size(), threads, plan);
+    std::vector<std::size_t> order(qs.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return v[a].cost > v[b].cost; });
+    std::vector<std::pair<std::size_t, std::size_t>> items;       // (query, slice)
+    for (std::size_t i : order)
+        if (v[i].im) for (std::size_t t = 0; t < v[i].t.size(); ++t) items.emplace_back(i, t);
+    std::vector<std::uint64_t> per(items.size(), 0);
+    const std::function<void(std::size_t)> count = [&](std::size_t k) {
+        Q &q = v[items[k].first];
+        const Impl::Task &t = q.t[items[k].second];
+        per[k] = q.im->each_match(t.si, q.p, t.lo, t.hi, true, [](std::uint32_t) {});
+    };
+    Pool::instance().run(items.size(), threads, count);
+    for (std::size_t k = 0; k < items.size(); ++k) out[items[k].first] += per[k];
     return out;
 }
 

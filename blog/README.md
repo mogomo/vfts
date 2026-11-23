@@ -39,12 +39,13 @@ load generator for all three, and one script runs it all again.
 7. [The benchmark](#the-benchmark)
 8. [Results](#results)
 9. [Search next to other data](#search-next-to-other-data)
-10. [Who may search what](#who-may-search-what)
-11. [Where Elasticsearch and OpenSearch win](#where-elasticsearch-and-opensearch-win)
-12. [Install it in your Vertica](#install-it-in-your-vertica)
-13. [What is in the repository](#what-is-in-the-repository)
-14. [Run it yourself](#run-it-yourself)
-15. [Conclusion](#conclusion)
+10. [Many searches at once](#many-searches-at-once)
+11. [Who may search what](#who-may-search-what)
+12. [Where Elasticsearch and OpenSearch win](#where-elasticsearch-and-opensearch-win)
+13. [Install it in your Vertica](#install-it-in-your-vertica)
+14. [What is in the repository](#what-is-in-the-repository)
+15. [Run it yourself](#run-it-yourself)
+16. [Conclusion](#conclusion)
 
 ## Full-text search, and why it is hard
 
@@ -463,37 +464,78 @@ MS MARCO, 8.8 million passages, the first 40 questions of the dev set:
 | Test | vfts (`tserve`) | Elasticsearch | OpenSearch |
 |---|---:|---:|---:|
 | Add the attribute to every document | **3.2 s** | 888 s | 956 s |
-| Move 1% of the documents to another custodian | **3.0 s** | 12.1 s | 11.9 s |
-| Top 10 among the custodians on hold, 32 clients, caches off | 2,787/s | 2,625/s | **2,858/s** |
-| Matches per custodian, one client, caches off | **5.4 ms** | 76.3 ms | 93.5 ms |
-| Matches per custodian, 32 clients, caches off | **238/s** | 136/s | 118/s |
-| Matches per custodian, 32 clients, as shipped (repeated: from the caches) | **57,621/s** | 40,651/s | 42,030/s |
+| Move 1% of the documents to another custodian | **2.8 s** | 12.1 s | 11.9 s |
+| Top 10 among the custodians on hold, 32 clients, caches off | 2,828/s | 2,625/s | **2,858/s** |
+| Matches per custodian, one client, caches off | **0.81 ms** | 76.3 ms | 93.5 ms |
+| Matches per custodian, 32 clients, caches off | **2,280/s** | 136/s | 118/s |
+| Matches per custodian, 32 clients, as shipped (repeated: from the caches) | **61,000/s** | 40,651/s | 42,030/s |
 
 Enron, 517,401 emails:
 
 | Test | vfts (`tserve`) | Elasticsearch | OpenSearch |
 |---|---:|---:|---:|
-| Add the attribute to every document | **0.4 s** | 231 s | 240 s |
+| Add the attribute to every document | **0.5 s** | 231 s | 240 s |
 | Move 1% of the documents to another custodian | **0.3 s** | 2.7 s | 2.7 s |
-| Top 10 among the custodians on hold, one client, caches off | **0.96 ms** | 1.34 ms | 1.45 ms |
-| Top 10 among the custodians on hold, 32 clients, caches off | **13,459/s** | 7,806/s | 7,804/s |
-| Matches per custodian, one client, caches off | **1.08 ms** | 2.29 ms | 2.22 ms |
-| Matches per custodian, 32 clients, caches off | **5,885/s** | 4,500/s | 4,745/s |
+| Top 10 among the custodians on hold, one client, caches off | **0.98 ms** | 1.34 ms | 1.45 ms |
+| Top 10 among the custodians on hold, 32 clients, caches off | **13,694/s** | 7,806/s | 7,804/s |
+| Matches per custodian, one client, caches off | **1.06 ms** | 2.29 ms | 2.22 ms |
+| Matches per custodian, 32 clients, caches off | **6,097/s** | 4,500/s | 4,745/s |
 
 Changing the data around the text is an `UPDATE` of one column and a copy of it, against a rewrite
-and re-analysis of every changed document: adding the attribute is 280 to 580 times faster, moving
-1% of it 4 to 9 times, and the engines then need a force merge for full speed (35 to 410 s here).
+and re-analysis of every changed document: adding the attribute is 280 to 480 times faster, moving
+1% of it 4 to 8 times, and the engines then need a force merge for full speed (35 to 410 s here).
 Filtering and counting is now faster through `tserve` in every test but one: on MS MARCO OpenSearch
-serves 3% to 11% more filtered top 10s per second at 32 clients.
+serves 1% to 9% more filtered top 10s per second at 32 clients.
 Counting every match of the MS MARCO questions (up to 7.8 million each) is where vfts gained most:
 it walks the query's words window by window in a bit set and adds one to the custodian's counter
-per match. The answers equal the plain SQL join, query by query, and the engines' (on MS MARCO,
+per match, and since 0.4.1 a frequent word's documents are a ready bit set (0.4.0 needed 5.4 ms,
+0.4.1 needs 0.81). The answers equal the plain SQL join, query by query, and the engines' (on MS MARCO,
 for 11 of 40 questions the counts differ by at most 0.1%, words the analyzers see differently).
 
-As one SQL statement per search, the same filter and count cost 3.4 to 9.8 ms, mostly the
+As one SQL statement per search, the same filter and count cost 3.4 to 4.5 ms, mostly the
 statement itself. Before attributes, a plain SQL join of every match took 17 to 19 ms on Enron and
 835 to 906 ms on MS MARCO. All numbers, both protocols, and how to run it again:
 bench/results/joins.md in the repository.
+
+## Many searches at once
+
+Not every search has a person waiting for it. A review of a list of search terms, a report, a
+nightly run of everyone's saved searches: the questions are known up front, and what matters is
+that the results are ready, in a table, not how many milliseconds each one took. vfts takes all of
+them in one statement and can write the results straight into a table:
+
+    INSERT /*+DIRECT*/ INTO app.report (qid, doc_id, rank, score)
+    SELECT qid, doc_id, rank, score FROM (SELECT vfts.tsearch(* USING PARAMETERS index='enron', k=10,
+           queries=E'1\tfraud\n2\t"special purpose entities"\n3\tcontract w/5 indemn*') OVER() FROM app.enron_snap) r;
+    COMMIT;
+
+The engines get the same queries in `_msearch` requests. Each side in its best configuration
+(vfts: 1 to 8 statements at once; the engines: batch sizes and requests at once), timed until
+every result is stored, counts with the engines' caches off:
+
+| Batch | vfts | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|
+| 6,980 MS MARCO questions, top 10 each | **2.05 s** | 2.40 s | 2.28 s |
+| 6,980 MS MARCO questions, matching passages of each | **0.53 s** | 2.51 s | 2.37 s |
+| 500 Enron search terms, top 10 each | **0.026 s** | 0.037 s | 0.032 s |
+| 500 Enron search terms, matching emails of each | 0.020 s | **0.015 s** | 0.019 s |
+| First run after a restart: MS MARCO counts | **0.62 s** | 3.25 s | 3.32 s |
+
+The counts were the surprise of this test: the first version of vfts needed 41 s for the MS MARCO
+batch, because a question like "what is the meaning of" matches six million passages, and every
+one of them was visited word by word. Lucene keeps the dense parts of such lists as bit sets. vfts
+0.4.1 does the same in memory the first time a count uses a frequent word, reads the other lists
+128 documents at a time, and lets one long query of a batch use several cores: 0.53 s, with the
+same counts.
+
+Two more questions came with it. Must a batch run as a superuser to avoid the cost of each user's
+security? No: ten users, each running their share as themselves into one table with a row access
+policy `requester = CURRENT_USER()`, took 2.01 s for the MS MARCO batch, against 2.08 s for one
+service user doing all of it, and each user reads back only their own rows. And does a cluster
+help? Every node keeps a full copy of the index and a statement runs on the node it connects to,
+so a batch is split, one statement per node: on a small 5-node test cluster, 50,000 counts took
+27.3 s on one node and 3.6 s on five (top 10 each: 25.8 s and 6.1 to 7.9 s); runs vary a lot on
+those small machines. Every configuration and every run: bench/results/bulk.md.
 
 ## Who may search what
 
@@ -518,9 +560,12 @@ Honestly, and with the reasons:
 - **PubMed's 99th percentile with one client**: OpenSearch 2.8 ms against 4.9 ms (vfts's mean is
   lower: 1.01 against 1.07 ms).
 - **A filtered top 10 on MS MARCO at 32 clients**: OpenSearch 4,336 per second against `tserve`'s
-  3,914 (2,858 against 2,787 with the caches off). And a filter or a count sent as one SQL
-  statement pays the statement: 3.4 to 9.8 ms against the engines' 0.4 to 3.7 ms
+  3,978 (2,858 against 2,828 with the caches off). And a filter or a count sent as one SQL
+  statement pays the statement: 3.4 to 4.5 ms against the engines' 0.4 to 3.7 ms
   ([Search next to other data](#search-next-to-other-data)).
+- **Small batches of counts**: 500 search terms counted on the Enron emails in 15 and 19 ms against
+  vfts's 20 ms; a statement costs about 4 ms before it searches
+  ([Many searches at once](#many-searches-at-once)).
 - **Phrases of very frequent words and single fuzzy words**: Lucene's phrase matching and its
   Levenshtein automaton are faster for these.
 - **Building large collections**: OpenSearch builds fastest everywhere, Elasticsearch beats vfts
@@ -577,8 +622,10 @@ and OpenSearch return, with the same scores, from SQL, on rows committed a momen
 collection measured here, as the user they logged in as and within the table's row access
 policies. With an attribute in the index, it filters and counts by another table's column faster
 than both engines in all but one of our tests, and that column still changes with one `UPDATE`.
-Sent one SQL statement at a time, small searches cost what a database statement costs, and a
-dedicated search engine is faster.
+Given a whole batch of questions at once, it stores every answer sooner than either engine in
+three of our four batches, and four to five times sooner when every match is counted. Sent one
+SQL statement at a time, each small search costs Vertica about two milliseconds more: no person
+notices, but one server answers fewer of them per second, and `tserve` takes that cost away.
 
 If your text lives in Vertica and you search it with SQL next to your other data - e-discovery
 over email, literature in a research warehouse, logs and tickets, Arabic and Hebrew documents - you

@@ -14,7 +14,7 @@ Per statement the best of R runs after a warm-up, then the mean over the queries
 bench.<ds>_meta and bench.<ds>_hold that join_test.py creates and leaves in place. Prints one
 JSON line.
 
-usage: wall_breakdown.py [--dataset enron] [--queries FILE] [--plain] [--limit N] [--repeat 3]
+usage: join_breakdown.py [--dataset enron] [--queries FILE] [--plain] [--limit N] [--repeat 3]
   --queries FILE  qid<TAB>query (default bench/queries/<dataset>.tsv)
   --plain         syntax='plain' (MS MARCO questions)
   --limit N       the first N queries only
