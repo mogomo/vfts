@@ -65,9 +65,9 @@ refuse to search, rather than search the masked text ([Access policies](#access-
 - [Install](#install)
 - [Prepare a table](#prepare-a-table)
 - [Reference](#reference)
-  - [Index management](#index-management): create_index, refresh_index, merge, rebuild, load_all, check_access, info, drop_index, the views, [access policies](#access-policies)
-  - [Search functions](#search-functions): tsearch, tcount, tmatch, tserve and vfts_broker, tsnippet, hybrid, tokenize, tversion
-  - [Query syntax](#query-syntax)
+  - [Index management](#index-management): [create_index](#create_index), [info](#info), [tinfo](#tinfo), [refresh_index](#refresh_index), [merge](#merge), [rebuild](#rebuild), [load_all](#load_all), [check_access](#check_access), [drop_index](#drop_index), [add_attribute](#add_attribute), [refresh_attributes](#refresh_attributes-refresh_attribute), [drop_attribute](#drop_attribute), [the views](#the-views-_live-and-_snap), [access policies](#access-policies)
+  - [Search functions](#search-functions): [tsearch](#tsearch), [tcount](#tcount), [tmatch](#tmatch), [tserve and vfts_broker](#tserve-and-vfts_broker-many-clients), [tsnippet](#tsnippet), [hybrid](#hybrid), [tokenize](#tokenize), [tversion](#tversion)
+  - [Query syntax](#query-syntax), [Filter syntax](#filter-syntax)
 - [Search patterns](#search-patterns)
 - [Performance](#performance)
 - [FAQ](#faq)
@@ -88,7 +88,7 @@ refuse to search, rather than search the masked text ([Access policies](#access-
 | Scale | segments searched in parallel; global statistics, so scores do not depend on segments or nodes; Enterprise and Eon (also secondary subclusters) |
 | Storage | the index is in Vertica tables (backed up with the database); every node keeps a memory-mapped copy |
 | Many clients | `tserve` with `tools/vfts_broker`: an HTTP front end, each user's own Vertica sessions, searches over a channel instead of one statement each; with 32 clients 1.1 to 2.0 times the queries per second of Elasticsearch and OpenSearch on the benchmark ([tserve](#tserve-and-vfts_broker-many-clients)) |
-| Attributes | a column of another table (custodian, status, date) copied into the index with `add_attribute`: searches filter by it (`filter='custodian IN (3, 17)'`) and count by it (`tcount ... by='custodian'`) while they match, as search engines do with doc values; `refresh_attributes` after the table changes ([Attributes](#add_attribute-refresh_attributes-drop_attribute)) |
+| Attributes | a column of another table (custodian, status, date) copied into the index with `add_attribute`: searches filter by it (`filter='custodian IN (3, 17)'`) and count by it (`tcount ... by='custodian'`) while they match, as search engines do with doc values; `refresh_attributes` after the table changes ([Attributes](#add_attribute)) |
 | Extras | `tcount` (matches only), `tmatch` (every matching doc_id, for joins), `tsnippet` (marked fragments), `hybrid` (BM25 + vectors with Reciprocal Rank Fusion), `tokenize` |
 
 ## How it was tested
@@ -396,398 +396,27 @@ Ready to run:
 ## Reference
 
 Every object lives in schema `vfts`. Procedures manage indexes (`CALL vfts.x(...)`); functions
-search (`SELECT ...`). Short examples use the demo table `demo.cases` of `scripts/demo.sh`; every
-function also has a full example with its real output in
-[Examples: every function](#examples-every-function-with-its-output) (`scripts/examples.sh`).
-
-### Index management
-
-#### create_index
-
-[Full example with output](#example-create_index)
-
-Registers a source table as an index, creates the views `<schema>.<index>_live` and
-`<index>_snap` in the table's schema, builds the index from every row and loads it on every node of
-the session's subcluster.
-
-    CALL vfts.create_index(index, source_table [, options]);
-
-| Argument | Meaning |
-|---|---|
-| index | 1 to 64 letters, digits or underscores; unique |
-| source_table | `schema.table` ([Prepare a table](#prepare-a-table)) |
-| options | space or comma separated `key=value` pairs, all optional (below) |
-
-| Option | Default | Meaning |
-|---|---|---|
-| lang | en | index language (ISO 639-1): documents without a `lang` value, and the stemmer of Latin words |
-| journal | none | `schema.table` with columns doc_id, op, ver |
-| margin | 60 | seconds the boundary stays behind a refresh (clock differences between nodes; 0 is fine on one node) |
-| accent_fold | latin | `latin` (remove accents of Latin letters), `none`, `all` (also Greek and Cyrillic) |
-| on_unsupported | error | `error` or `plain` for Chinese, Japanese, Korean, Thai, Lao, Khmer, Myanmar text |
-| id_col, text_col, lang_col, ver_col | doc_id, body, lang, ver | column names in the source table |
-| threads | 0 | build threads per instance (0: a quarter of the cores) |
-| max_segment_mb | 2048 | a build thread starts a new segment above this memory |
-| merge_factor | 10 | segments per tier of the merge policy |
-| cache_dir | /tmp/vfts | directory of the node caches |
-| build | true | `false`: register and create the views only |
-| access | auto | `auto`: follow the access policies of the source table ([Access policies](#access-policies)); `rows`: apply its row access policies to every search even before one exists |
-| reorder | true | merges number the documents by recursive graph bisection (smaller and faster index, same results); `false`: keep doc_id order |
-
-    CALL vfts.create_index('cases', 'demo.cases', 'lang=en journal=demo.cases_journal margin=0');
-
-#### refresh_index
-
-[Full example with output](#example-refresh_index-a-new-row-is-found-at-once-through-the-live-view-after-refresh_index-through-snap)
-
-Indexes the rows written since the last refresh into new segments, tombstones their older versions
-and the journal's deletes, loads every node, and moves the views' boundary. Incremental; the table
-changes are one transaction. Then runs the tiered merge policy. (The name `refresh` is a Vertica
-built-in function and cannot be a procedure.)
-
-    CALL vfts.refresh_index(index);
-
-When to run it: whenever convenient - every minute, every hour. Searches are exact without it; a
-longer live tail only costs query time (every tail row is analyzed per query).
-
-#### merge
-
-[Full example with output](#example-merge-into-one-segment)
-
-Merges segments into one, dropping deleted documents, and numbers the documents so that
-documents with similar words are next to each other (recursive graph bisection: smaller postings,
-more skipped blocks; the same hits and scores; index option `reorder=false` keeps doc_id order).
-Searches keep working on the previous generation while it runs.
-
-    CALL vfts.merge(index);                -- the tiered policy (also run by refresh_index)
-    CALL vfts.merge(index, max_segments);  -- merge the smallest segments until at most max_segments remain
-
-Fewer segments use less CPU per query; more segments are searched in parallel (lower latency for
-one query at a time). The benchmark shows both ([Performance](#performance)).
-
-#### rebuild
-
-[Full example with output](#example-rebuild-recovery-only)
-
-For recovery only: indexes every row again as new segments and drops the old ones.
-
-    CALL vfts.rebuild(index);
-
-#### load_all
-
-[Full example with output](#example-load_all-write-missing-node-caches-from-the-index-tables)
-
-Writes the node cache of every node of the session's subcluster from the index tables: for a new
-node, a secondary subcluster (Eon), or a damaged cache directory. Segments a node has already are
-not written again.
-
-    CALL vfts.load_all(index);
-
-On Eon, every subcluster keeps its own caches: run `load_all` from a session on each secondary
-subcluster after a refresh on the primary. A node whose cache is behind refuses to answer:
-`cache of index cases is stale on this node (generation 3, the view needs 4): run CALL vfts.load_all('cases')`.
-
-#### check_access
-
-[Full example with output](#example-check_access-read-the-access-policies-again-and-make-a-new-key)
-
-Re-reads the access policies of the source table and makes a new key: run it after creating,
-changing, enabling or dropping an access policy on the source table, and after revoking `SELECT`
-on the views from someone (a token copied from a view before stops working). `refresh_index` and
-`merge` re-read the policies too. Run as a superuser or the table's owner (the only users who see
-the policies).
-
-    CALL vfts.check_access(index);
-
-On Eon, the new key reaches the nodes of the session's subcluster: run `CALL vfts.load_all(index)`
-from a session on each secondary subcluster afterwards, as after a refresh.
-
-#### info
-
-[Full example with output](#example-info)
-
-Segments, documents, the live tail, the last refresh, the attributes and the caches of the subcluster, as notices.
-
-    CALL vfts.info(index);
-
-Per node: `SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='cases') OVER(PARTITION NODES) FROM vfts.probe) i;`
-Tables to read: `vfts.indexes` (the manifest), `vfts.segments`, `vfts.index_stats`.
-
-#### drop_index
-
-[Full example with output](#example-drop_index)
-
-Removes the index: its rows (partitions), its attributes, the views and the node caches of the subcluster.
-
-    CALL vfts.drop_index(index);
-
-#### add_attribute, refresh_attributes, drop_attribute
-
-[Full example with output](#example-add_attribute-a-column-of-another-table-copied-into-the-index-for-filters-and-counts)
-
-A column of another table (a custodian, a status, a date) copied into the index, so that searches
-filter and count by it while they match (`filter`, `tcount ... by`), as search engines do with
-doc values. The table stays the place where the value lives and is changed.
-
-    CALL vfts.add_attribute(index, attribute, 'schema.table', key_column, value_column);
-    CALL vfts.refresh_attributes(index);          -- after the table changed: copy every attribute again
-    CALL vfts.refresh_attribute(index, attribute); -- or one of them
-    CALL vfts.drop_attribute(index, attribute);
-
-| | |
-|---|---|
-| key_column | the index's doc_id: INT, unique in the table (a key twice is refused) |
-| value_column | INT, BOOLEAN, DATE or VARCHAR (at most 1,024 bytes) |
-| attribute | the name in filters and in `by`: 1 to 64 letters, digits or underscores |
-| documents without a row, or NULL | no value: a comparison with them is unknown (SQL), so a filter leaves them out; `by` does not count them; `IS NULL` finds them |
-
-- **A copy, made by a statement.** `add_attribute` and `refresh_attributes` copy the column into
-  `vfts.attr_values` (replicated) and into every node's cache. Between an `UPDATE` of the table and
-  `refresh_attributes`, searches see the old values (a running `tserve` sees a refresh within
-  0.2 s). A refresh copies the whole column: Enron (517,401 values) 0.3 s, MS MARCO (8.8 million)
-  2.6 to 3.0 s on the test machine. The text index is not touched.
-- **Tables with access policies are refused** (row or column policies, also when one is added
-  later: every refresh checks): a copy would show values that the policy hides from a user. Only a
-  superuser or the table's owner sees policies, so only they can add or refresh an attribute.
-- `CALL vfts.info(index)` lists the attributes; `vfts.attributes` is the table of them (readable by
-  every user); `load_all` writes them on new nodes; `drop_index` removes them.
-
-#### The views _live and _snap
-
-`create_index` makes two views in the schema of the source table; they are the input of `tsearch`
-and `tcount` (call the functions with `*`):
-
-| View | Rows | Use |
-|---|---|---|
-| `<index>_live` | the live tail (rows written after the boundary of the last refresh, journal changes) and one sentinel row | always exact: sees every committed change |
-| `<index>_snap` | the sentinel row only | the segments only: ignores changes since the last refresh |
-
-Both have the columns `(qid, query, doc_id, body, lang, op, gen)`. The sentinel carries the
-generation, so a node with an old cache fails instead of answering from it, and an access token,
-so the search functions accept the views' rows only. With a row access policy on the source table
-the views also return the indexed documents the querying user may not see (rows with op `H`,
-2,500 doc_ids each).
-Grant SELECT on the views (and the source table) to the users who search.
-
-#### Access policies
-
-Searches follow Vertica's access rules (details and the reasons: docs/design.md "Access"):
-
-| Source table has | What a user's search returns |
-|---|---|
-| no access policy | every document, to every user with SELECT on the views |
-| a row access policy | only the documents that user sees in the source table; scores are those of an index of exactly those rows (statistics leave hidden rows out); through the snap view, rows changed since the last refresh are left out (their indexed version may not be the one the policy shows) |
-| a column access policy (mask) on the id, text, lang or ver column | an error for everyone: a search through the index would reveal words of the masked text |
-
-- Only the views can feed the search functions: input made by the statement itself is refused,
-  so a search needs `SELECT` on the views. The functions that write node caches are not granted to
-  users.
-- vfts reads the policies at `create_index`, `refresh_index`, `merge` and `check_access`. After
-  creating or changing a policy, run `CALL vfts.check_access(index)`; or create the index with
-  `access=rows` to apply row policies from the start.
-- Cost with a row policy: each statement joins the index's doc_ids with the source table and
-  checks a digest of the hidden rows (measured in [Performance](#performance)); `tserve` pays it
-  once per statement, not per search.
-- A mask on another column (one that is not indexed) does not matter.
-
-### Search functions
-
-#### tsearch
-
-[Full example with output](#example-tsearch-ranked-search-joined-to-the-source-table)
-
-The k best documents of a query, by BM25.
-
-    SELECT vfts.tsearch(* USING PARAMETERS index='name', query='...' [, parameter=value ...]) OVER()
-    FROM <schema>.<index>_live;
-
-Output: `(qid, doc_id, score, rank)`; rank 1 is the best; ties by doc_id. Join to the source
-table with `USING (doc_id)`.
-
-| Parameter | Default | Meaning |
-|---|---|---|
-| index | (required) | the index |
-| query | | the query ([Query syntax](#query-syntax)); or query rows (below) |
-| k | 10 | hits per query, 1 to 1,000,000 |
-| mode | stem | `stem`: words match their stem group (running, runs, run); `exact`: the word only. `"match"` (quoted: MATCH is reserved in Vertica) works too |
-| syntax | query | `plain`: no operators, every word is an OR clause (like a match query of Elasticsearch) |
-| operator | or | the implicit operator between words: `or` or `and` |
-| lang | the index language | language of the query (stemming) |
-| stopwords | false | drop the query language's stopwords |
-| max_expansions | 50 | prefix, wildcard and fuzzy words expand to at most this many terms (the most frequent first; fuzzy: fewest edits first) |
-| prefix_length | 0 | fuzzy: leading letters that must match exactly |
-| queries | | many queries in one statement: one per line, `qid<TAB>query` (or the query alone: qid = line number) |
-| bm25 | lucene | `lucene`: the scores of Lucene and OpenSearch; `classic`: times (1 + k1), the scores of Elasticsearch (its LegacyBM25 scale) |
-| threads | 0 | threads for this query (0: one per core). A large segment is cut into slices of documents, so one query can use every core; while many queries run, each gets its share |
-| cache_dir | /tmp/vfts | node cache directory (or the session parameter) |
-| filter | | only the matches the filter accepts ([Filter syntax](#filter-syntax)); scores unchanged |
-| filter_cache | true | keep the filter's set of left-out documents per segment; `false`: ask the filter per candidate |
-
-Many queries in one statement (a batch saves the per-statement cost of Vertica, about 2 ms): the
-parameter `queries`, one query per line,
-
-    SELECT qid, rank, doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='cases', k=3,
-                                   queries=E'1\tindemnity\n2\tholmes') OVER() FROM demo.cases_live) r
-    ORDER BY qid, rank;
-
-or query rows `(qid, query)` added to the view's rows:
-
-    SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='cases', k=3) OVER()
-                   FROM (SELECT * FROM demo.cases_live
-                         UNION ALL SELECT 1, 'indemnity', NULL, NULL, NULL, NULL, NULL
-                         UNION ALL SELECT 2, 'holmes', NULL, NULL, NULL, NULL, NULL) i) r
-    ORDER BY qid, rank;
-
-Session defaults (any parameter except index and query): `ALTER SESSION SET UDPARAMETER vfts_mode = 'exact';`
-(any user; the name with the prefix `vfts_`), or `ALTER SESSION SET UDPARAMETER FOR vfts.vfts mode = 'exact';`
-(only users with USAGE on the library: do not grant that to searchers, it would let them create
-functions from the library's internal factories). With `ALTER SESSION SET UDPARAMETER vfts_debug_timing = '1'`,
-`tsearch` writes the time of each of its stages to the node's vertica.log (`vfts timing: ...`).
-
-#### tcount
-
-[Full example with output](#example-tcount)
-
-The number of matching documents (no scoring), or with `by` the number per value of an
-[attribute](#add_attribute-refresh_attributes-drop_attribute), counted while matching.
-
-    SELECT vfts.tcount(* USING PARAMETERS index='name', query='...' [, filter, by, mode, syntax, operator, lang, ...]) OVER()
-    FROM <schema>.<index>_live;
-
-Output: `(qid, count)`; with `by='<attribute>'`: `(qid, value, count)`, one row per value that has
-matches, in value order; `value` is VARCHAR (cast it: `value::INT`, `value::DATE`). Documents
-without a value are not counted. [Example](#example-tcount-with-by-matches-per-attribute-value-counted-while-matching)
-
-#### tmatch
-
-[Full example with output](#example-tmatch-every-match-without-scores-for-joins-and-group-by-over-all-matches)
-
-Every matching document, without scores and in no order: the input for joins and `GROUP BY` over
-all matches (a report of matches per owner, per month).
-
-    SELECT vfts.tmatch(* USING PARAMETERS index='name', query='...' [, mode, syntax, operator, lang, ...]) OVER()
-    FROM <schema>.<index>_live;
-
-Output: `(qid, doc_id)`. Same parameters as `tcount` (`filter` too, not `by`). For counts per
-value of an attribute, `tcount ... by` is faster: no row per match.
-
-#### tserve and vfts_broker: many clients
-
-[Full example with output](#example-tserve-through-vfts_broker-mode-serve-http-in-the-users-own-vertica-session-one-tserve-statement)
-
-Every SQL statement costs Vertica about 2 ms of parsing, planning and executor set-up before vfts
-runs, and statements that call a UDx peak at about 2,000 per second on the test machine however
-many sessions send them. For many small searches at once there are two front ends in
-`tools/vfts_broker` (`make tools`), an HTTP service that a search application calls instead of
-sending SQL itself:
-
-    build/tools/vfts_broker --port 9300 --schema bench --mode serve [--param "mode='stem'" ...]
-    curl -XPOST localhost:9300/enron/_search -u alice:secret -d '{"query": "fraud AND (audit OR sec)"}'
-    # {"hits": [{"id": 134348, "score": 5.11062765}, ...]}
-    curl -XPOST localhost:9300/enron/_search -d '{"query": "fraud", "filter": "custodian IN (3, 17)", "k": 20}'
-    curl -XPOST localhost:9300/enron/_count  -d '{"query": "fraud"}'                    # {"count": <matches>}
-    curl -XPOST localhost:9300/enron/_count  -d '{"query": "fraud", "by": "custodian"}'
-    # {"buckets": [{"value": "<custodian>", "count": <matches>}, ...]}
-
-`filter` and `k` per request; `_count` with `by` counts per attribute value (both modes).
-
-- **Every user has their own Vertica sessions.** The broker logs in with the credentials of the
-  request (HTTP Basic; without them, the `VSQL_*` environment). Vertica checks the password, the
-  grants on the view and the user's resource pool, and records the statements under that user.
-- `--mode sql`: a request goes out at once as a `tsearch` statement when one of the user's
-  sessions (`--sessions`, default 4) is idle; while all are busy, requests wait, and the next free
-  session sends all of them (up to `--max-batch`) in one statement (parameter `queries`). No fixed
-  wait. Each statement is labeled `vfts_broker`.
-- `--mode serve`: each session (`--channels`, default 1) runs one long statement,
-
-      SELECT vfts.tserve(* USING PARAMETERS index='enron', endpoint='/tmp/vfts_broker.9300.sock',
-                          token='<made by the broker>', k=10, ...) OVER() FROM bench.enron_snap;
-
-  which connects to the broker's Unix socket (mode 0600) with a token made for that statement only,
-  and answers searches until the broker closes it or the statement is canceled. A search is then no
-  statement of its own. `tserve` takes the parameters of `tsearch` plus `workers` (search threads,
-  default one per core; each search uses one; a count uses its fair share of the cores: all of them
-  when it runs alone, about one each under load, unless `threads` is given) and `request_cache`
-  (default true: the answers of counts are kept while the statement runs and a repeated count is
-  answered from memory, as Elasticsearch's shard request cache does; searches with hits are never
-  kept). It reads the view when it starts, so it answers from that snapshot: the broker starts a
-  new statement when one ends; restart it after a refresh. A kept answer names the attribute files
-  it read, so a `refresh_attribute` while the statement runs is seen at once. It accepts only an
-  endpoint named `vfts_broker.<name>.sock`.
-
-Both modes give the same hits and scores as `tsearch` (tests/sql/test_serve.sh). Searches through
-`tserve` are not rows of `query_requests`: Vertica records the session and the `tserve` statement,
-not each search. A `tserve` statement holds one slot (and its memory) of the user's resource pool
-while it runs, and its search threads are vfts's own, outside the pool's CPU accounting, like
-the threads of `tsearch`. Run the broker on a node of the database, as the database's OS user,
-with its sessions connected to that node (the Unix socket is local); tested on one Enterprise node
-and on a 3-node Eon subcluster (fenced). [Performance](#performance) has the numbers of both modes.
-
-#### tsnippet
-
-[Full example with output](#example-tsnippet)
-
-The parts of a text that match a query, with the matching words marked. A scalar function: pass
-the text (joined from the source table) and the query.
-
-    vfts.tsnippet(body, query [, lang] USING PARAMETERS index='name' [, mode, words, fragments, pre_tag, post_tag, separator])
-
-| Parameter | Default | Meaning |
-|---|---|---|
-| index | | use that index's analyzer settings (recommended); without it: `lang`, `accent_fold` |
-| words | 20 | words per fragment |
-| fragments | 2 | fragments at most (the best ones, in text order) |
-| pre_tag, post_tag | `<b>`, `</b>` | marks around a hit |
-| separator | ` ... ` | between fragments |
-
-Hits are the words that match a word, stem, prefix, wildcard or fuzzy word of the query (not those
-under NOT). Call it for the top hits only: it analyzes the text again.
-
-#### hybrid
-
-[Full example with output](#example-hybrid-two-ranked-lists-fused-with-reciprocal-rank-fusion)
-
-Fuses ranked lists by doc_id: BM25 from `tsearch` and vectors from vvector's `vsearch`.
-
-    SELECT vfts.hybrid(source, doc_id, rank, score USING PARAMETERS [k, method, rrf_k, weights, distance]) OVER()
-    FROM (<list 1> UNION ALL <list 2> ...) u;
-
-| Parameter | Default | Meaning |
-|---|---|---|
-| method | rrf | `rrf`: score = sum of w / (rrf_k + rank); `weighted`: sum of w * min-max normalized score |
-| k | 10 | results |
-| rrf_k | 60 | the constant of Reciprocal Rank Fusion |
-| weights | 1 each | `'text=0.7,vector=0.3'` |
-| distance | | sources whose score is a distance (smaller is better), for `weighted` |
-
-Output: `(doc_id, score, rank, sources)`; sources shows the rank in each list (`text:2 vector:1`).
-Embeddings are computed outside Vertica; vfts includes no model.
-
-#### tokenize
-
-[Full example with output](#example-tokenize-what-the-analyzer-sees)
-
-What the analyzer makes of a text: one row per word.
-
-    SELECT vfts.tokenize(text [, lang] [USING PARAMETERS lang, accent_fold, on_unsupported]) OVER() ...;
-    SELECT doc_id, vfts.tokenize(body, lang) FROM t;      -- beside other columns
-
-Output: `(pos, term, stem, lang, start_byte, end_byte)`.
-
-#### tversion
-
-[Full example with output](#example-tversion)
-
-    SELECT vfts.tversion() OVER();
-
-Output: library version, build flags, ICU version, the Snowball stemmers linked in.
-
-### Examples: every function, with its output
-
-Run by `scripts/examples.sh` on a table of its own (schema `ex`); the outputs are copied from that run
-(Vertica 26.3, one node). Each block is the statement, then what vsql printed.
-
-#### Example: the source table
+search (`SELECT ...`). Each entry below follows the layout of the Vertica documentation:
+what it does, **Syntax**, **Arguments** and **Parameters**, **Returns**, **Privileges** and
+**Examples**.
+
+- In a syntax block, `[ ]` marks an optional part, `|` separates alternatives, `[,...]` means
+  "more of the same", and lower-case words are placeholders.
+- Procedures return 0 and report what they did as `NOTICE` messages. They run with the caller's
+  privileges; `dbadmin` (a superuser) may run all of them. The search functions are granted to
+  `PUBLIC`: what limits a search is `SELECT` on the index's views ([The views](#the-views-_live-and-_snap)).
+- Every example that shows output is real: `scripts/examples.sh` runs them all, one after the
+  other, on a table of its own (schema `ex`, index `notes`; vfts 0.4.1, Vertica 26.3, one node),
+  and the blocks show each statement, then what vsql printed. Run it yourself after an install
+  (`scripts/examples.sh`; `scripts/examples.sh --clean` removes it). The script runs them as a
+  story: create the index, search, add the attribute `owner`, change it, insert document 6 and
+  refresh, merge, and finally drop. So an example sees what the steps before it in the script did
+  (the hybrid example finds document 6; the merge example's `info` lists the attribute).
+
+### The example table
+
+Five short notes in two languages, a journal for deletes, and a table of owners (for the
+[attribute](#add_attribute) examples). The table layout is described in [Prepare a table](#prepare-a-table).
 
 ```sql
 CREATE SCHEMA ex;
@@ -806,7 +435,54 @@ COMMIT;
    COMMIT
 ```
 
-#### Example: create_index
+### Index management
+
+#### create_index
+
+Registers a source table as an index, creates the views `<schema>.<index>_live` and
+`<schema>.<index>_snap` in the table's schema, builds the index from every row and loads it on
+every node of the session's subcluster.
+
+**Syntax**
+
+    CALL vfts.create_index ( 'index', 'schema.table' [, 'options' ] )
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index name: 1 to 64 letters, digits or underscores; unique in the database |
+| schema.table | the source table ([Prepare a table](#prepare-a-table)) |
+| options | `key=value` pairs separated by spaces or commas, all optional (below) |
+
+**Options**
+
+| Option | Default | Meaning |
+|---|---|---|
+| lang | en | index language (ISO 639-1): for documents without a `lang` value, and the stemmer of Latin words |
+| journal | none | `schema.table` with columns doc_id, op, ver: deletes (op `D`) and updates that do not set `ver` (op `U`) |
+| margin | 60 | seconds the boundary stays behind a refresh (clock differences between nodes; 0 is fine on one node) |
+| accent_fold | latin | `latin` (remove accents of Latin letters), `none`, `all` (also Greek and Cyrillic) |
+| on_unsupported | error | `error` or `plain` for Chinese, Japanese, Korean, Thai, Lao, Khmer, Myanmar text |
+| id_col, text_col, lang_col, ver_col | doc_id, body, lang, ver | column names in the source table |
+| threads | 0 | build threads per instance (0: a quarter of the cores) |
+| max_segment_mb | 2048 | a build thread starts a new segment above this memory |
+| merge_factor | 10 | segments per tier of the merge policy |
+| cache_dir | /tmp/vfts | directory of the node caches |
+| build | true | `false`: register and create the views only |
+| access | auto | `auto`: follow the access policies of the source table ([Access policies](#access-policies)); `rows`: apply its row access policies to every search even before one exists |
+| reorder | true | merges number the documents by recursive graph bisection (smaller and faster index, same results); `false`: keep doc_id order |
+
+**Privileges**
+
+Superuser, or the owner of the source table (vfts reads the table's access policies, which only
+they can see) with `EXECUTE` on the procedure, write access to the `vfts` tables and `CREATE` on the
+table's schema. The views belong to the user who ran `create_index`; Vertica checks the source
+table against them, so that user must own the table or have `SELECT ... WITH GRANT OPTION` on it.
+
+**Examples**
+
+An English index with a journal for deletes, and no margin (one node):
 
 ```sql
 CALL vfts.create_index('notes', 'ex.notes', 'lang=en journal=ex.notes_journal margin=0');
@@ -817,12 +493,31 @@ CALL vfts.create_index('notes', 'ex.notes', 'lang=en journal=ex.notes_journal ma
    (1 row)
 ```
 
-#### Example: info
+Other forms:
+
+    CALL vfts.create_index('docs', 'app.docs');                                          -- every default
+    CALL vfts.create_index('mail', 'app.mail', 'id_col=msg_id text_col=content lang_col=language');
+    CALL vfts.create_index('big', 'app.big', 'threads=16 max_segment_mb=4096');          -- a large table, more build threads
+
+#### info
+
+Segments, documents, the live tail, the last refresh, the access mode, the attributes and the
+caches of the subcluster's nodes, as notices.
+
+**Syntax**
+
+    CALL vfts.info ( 'index' )
+
+**Privileges**
+
+Any user (`EXECUTE` is granted to `PUBLIC`).
+
+**Examples**
 
 ```sql
 CALL vfts.info('notes');
    NOTICE 2005:  index notes: source ex.notes, generation 1, 1 segments, 5 documents (0 deleted), 0.0 MB
-   NOTICE 2005:  boundary TIMESTAMPTZ '2026-11-23 15:32:06.155201+00'; live tail 0 rows (ex.notes_live); last refresh: full build: 5 rows into 1 segments, 0 tombstones, 0 journal rows
+   NOTICE 2005:  boundary TIMESTAMPTZ '2026-11-23 22:32:53.077523+00'; live tail 0 rows (ex.notes_live); last refresh: full build: 5 rows into 1 segments, 0 tombstones, 0 journal rows
    NOTICE 2005:  access: open (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)
    NOTICE 2005:  attributes: (none)
    NOTICE 2005:  node caches: 1 of 1 nodes of this subcluster have generation 1 (details: SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;)
@@ -832,147 +527,64 @@ CALL vfts.info('notes');
    (1 row)
 ```
 
-#### Example: tsearch: ranked search, joined to the source table
+The same facts as tables, readable by every user: `vfts.indexes` (the manifest: one row per
+index), `vfts.segments`, `vfts.index_stats` (one row per generation), `vfts.attributes`. Per node,
+the function `tinfo` (below).
+
+#### tinfo
+
+The node cache of an index on every node: generation, segments, documents and bytes, and a
+problem if the node's cache is missing or behind.
+
+**Syntax**
+
+    SELECT * FROM ( SELECT vfts.tinfo ( USING PARAMETERS index='index' [, cache_dir='dir' ] )
+                    OVER ( PARTITION NODES ) FROM vfts.probe ) i;
+
+**Returns**
+
+`(node_name VARCHAR, gen INT, segments INT, docs INT, deleted INT, bytes INT, problem VARCHAR)`,
+one row per node.
+
+**Privileges**
+
+Any user (`EXECUTE` is granted to `PUBLIC`; `vfts.probe` is readable by `PUBLIC`).
+
+**Examples**
+
+After the [merge](#merge) example (generation 3, one segment, six documents):
 
 ```sql
-SELECT r.rank, r.doc_id, ROUND(r.score, 4) AS score, n.body
-FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract AND indemn*', k=10) OVER()
-      FROM ex.notes_live) r
-JOIN ex.notes n USING (doc_id)
-ORDER BY r.rank;
-    rank | doc_id | score  |                                 body                                 
-   ------+--------+--------+----------------------------------------------------------------------
-       1 |      1 | 1.2305 | The supplier shall indemnify the buyer under this contract.
-       2 |      2 | 1.2305 | Contract renewal: indemnity terms unchanged, payment within 30 days.
-   (2 rows)
-```
-
-#### Example: tsearch: proximity and a join with another table, aggregated
-
-```sql
-SELECT o.owner, COUNT(*) AS hits
-FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract w/5 (indemnify OR indemnity OR market)', k=1000) OVER()
-      FROM ex.notes_live) r
-JOIN ex.owners o USING (doc_id)
-GROUP BY o.owner ORDER BY hits DESC, o.owner;
-     owner  | hits 
-   ---------+------
-    legal   |    1
-    sales   |    1
-    trading |    1
-   (3 rows)
-```
-
-#### Example: tsearch: a batch of queries in one statement (parameter queries)
-
-```sql
-SELECT qid, rank, doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', k=2,
-       queries=E'1\tholmes\n2\t"mark to market"\n3\tcontrat') OVER() FROM ex.notes_snap) r
-ORDER BY qid, rank;
-    qid | rank | doc_id 
-   -----+------+--------
-      1 |    1 |      4
-      2 |    1 |      3
-      3 |    1 |      5
-   (3 rows)
-```
-
-#### Example: tcount
-
-```sql
-SELECT * FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract') OVER() FROM ex.notes_live) c;
-    qid | count 
-   -----+-------
-      0 |     3
+SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;
+      node_name    | gen | segments | docs | deleted | bytes | problem 
+   ----------------+-----+----------+------+---------+-------+---------
+    v_vdb_node0001 |   3 |        1 |    6 |       0 |  5288 | 
    (1 row)
 ```
 
-#### Example: tmatch: every match without scores, for joins and GROUP BY over all matches
+#### refresh_index
 
-```sql
-SELECT o.owner, COUNT(*) AS documents
-FROM (SELECT vfts.tmatch(* USING PARAMETERS index='notes', query='contract*') OVER() FROM ex.notes_live) m
-JOIN ex.owners o USING (doc_id)
-GROUP BY o.owner ORDER BY o.owner;
-     owner  | documents 
-   ---------+-----------
-    legal   |         1
-    sales   |         1
-    trading |         1
-   (3 rows)
-```
+Indexes the rows written since the last refresh into new segments, tombstones their older versions
+and the journal's deletes, loads every node, and moves the views' boundary. Incremental; the table
+changes are one transaction. Then runs the tiered merge policy. (The name `refresh` is a Vertica
+built-in function and cannot be a procedure.)
 
-#### Example: add_attribute: a column of another table, copied into the index for filters and counts
+**Syntax**
 
-```sql
-CALL vfts.add_attribute('notes', 'owner', 'ex.owners', 'doc_id', 'owner');
-    add_attribute 
-   ---------------
-                0
-   (1 row)
-```
+    CALL vfts.refresh_index ( 'index' )
 
-#### Example: tsearch with filter: only the matches whose attribute passes (scores unchanged)
+When to run it: whenever convenient - every minute, every hour, from cron or any scheduler.
+Searches are exact without it (the live view reads the rows written since); a longer live tail
+only costs query time, because every tail row is analyzed per query.
 
-```sql
-SELECT doc_id, ROUND(score, 4) AS score, rank
-FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract* OR indemn*', filter='owner IN (''legal'', ''sales'')') OVER()
-      FROM ex.notes_live) r
-ORDER BY rank;
-    doc_id | score | rank 
-   --------+-------+------
-         1 |     2 |    1
-         2 |     2 |    2
-         5 |     1 |    3
-   (3 rows)
-```
+**Privileges**
 
-#### Example: tcount with by: matches per attribute value, counted while matching
+As [create_index](#create_index).
 
-```sql
-SELECT value AS owner, count
-FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract*', by='owner') OVER() FROM ex.notes_live) c
-ORDER BY owner;
-     owner  | count 
-   ---------+-------
-    legal   |     1
-    sales   |     1
-    trading |     1
-   (3 rows)
-```
+**Examples**
 
-#### Example: refresh_attributes: after the table changes, copy it again
-
-```sql
-UPDATE ex.owners SET owner = 'legal' WHERE doc_id = 3; COMMIT;
-   COMMIT
-CALL vfts.refresh_attributes('notes');
-    refresh_attributes 
-   --------------------
-                     0
-   (1 row)
-SELECT value AS owner, count
-FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract*', by='owner', filter='owner <> ''sales''') OVER() FROM ex.notes_live) c
-ORDER BY owner;
-    owner | count 
-   -------+-------
-    legal |     2
-   (1 row)
-```
-
-#### Example: tsnippet
-
-```sql
-SELECT doc_id, vfts.tsnippet(body, 'indemnity contract' USING PARAMETERS index='notes', words=8) AS snippet
-FROM ex.notes WHERE doc_id IN (1, 2) ORDER BY doc_id;
-    doc_id |                                     snippet                                      
-   --------+----------------------------------------------------------------------------------
-         1 | ... supplier shall indemnify the buyer under this <b>contract</b>.
-         2 | <b>Contract</b> renewal: <b>indemnity</b> terms unchanged, payment within 30 ...
-   (2 rows)
-```
-
-#### Example: refresh_index: a new row is found at once through the live view, after refresh_index through snap
+A new row is found at once through the live view; through the snap view only after
+`refresh_index`:
 
 ```sql
 INSERT INTO ex.notes (doc_id, body) VALUES (6, 'Draft contract with an indemnity cap.'); COMMIT;
@@ -997,7 +609,52 @@ SELECT 'snap' AS view, doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index
    (1 row)
 ```
 
-#### Example: merge into one segment
+Updates and deletes (searchable at once through the live view, folded into the index by the next
+refresh; [Prepare a table](#prepare-a-table) has the rules):
+
+    UPDATE ex.notes SET body = '...', ver = CLOCK_TIMESTAMP() WHERE doc_id = 2;
+    DELETE FROM ex.notes WHERE doc_id = 4; INSERT INTO ex.notes_journal (doc_id, op) VALUES (4, 'D');
+    COMMIT;
+    CALL vfts.refresh_index('notes');
+
+#### merge
+
+Merges segments, dropping deleted documents, and numbers the documents so that documents with
+similar words are next to each other (recursive graph bisection: smaller postings, more skipped
+blocks; the same hits and scores; index option `reorder=false` keeps doc_id order). Searches keep
+working on the previous generation while it runs.
+
+**Syntax**
+
+    CALL vfts.merge ( 'index' [, max_segments ] )
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index |
+| max_segments | merge the smallest segments until at most this many remain. Without it: the tiered policy (`merge_factor` segments of a size tier become one), which `refresh_index` also runs |
+
+Fewer segments use less CPU per query; more segments are searched in parallel (lower latency for
+one query at a time). The benchmark shows both ([Performance](#performance)).
+
+**Privileges**
+
+As [create_index](#create_index).
+
+**Examples**
+
+The tiered policy: two small segments are fewer than `merge_factor` (10), so nothing is merged:
+
+```sql
+CALL vfts.merge('notes');
+    merge 
+   -------
+        0
+   (1 row)
+```
+
+Into one segment, then the index's state:
 
 ```sql
 CALL vfts.merge('notes', 1);
@@ -1008,9 +665,9 @@ CALL vfts.merge('notes', 1);
    (1 row)
 CALL vfts.info('notes');
    NOTICE 2005:  index notes: source ex.notes, generation 3, 1 segments, 6 documents (0 deleted), 0.0 MB
-   NOTICE 2005:  boundary TIMESTAMPTZ '2026-11-23 15:32:07.325828+00'; live tail 0 rows (ex.notes_live); last refresh: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows
+   NOTICE 2005:  boundary TIMESTAMPTZ '2026-11-23 22:32:54.585445+00'; live tail 0 rows (ex.notes_live); last refresh: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows
    NOTICE 2005:  access: open (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)
-   NOTICE 2005:  attributes: owner text from ex.owners.owner (5 values, refreshed 2026-11-23 17:32:07)
+   NOTICE 2005:  attributes: owner text from ex.owners.owner (5 values, refreshed 2026-11-24 00:32:54)
    NOTICE 2005:  node caches: 1 of 1 nodes of this subcluster have generation 3 (details: SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;)
     info 
    ------
@@ -1024,17 +681,47 @@ WHERE i.index_name = 'notes' ORDER BY s.gen DESC LIMIT 1;
    (1 row)
 ```
 
-#### Example: tinfo: the cache of every node
+#### rebuild
+
+For recovery only: indexes every row again as new segments and drops the old ones.
+
+**Syntax**
+
+    CALL vfts.rebuild ( 'index' )
+
+**Privileges**
+
+As [create_index](#create_index).
+
+**Examples**
 
 ```sql
-SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;
-      node_name    | gen | segments | docs | deleted | bytes | problem 
-   ----------------+-----+----------+------+---------+-------+---------
-    v_vdb_node0001 |   3 |        1 |    6 |       0 |  5288 | 
+CALL vfts.rebuild('notes');
+    rebuild 
+   ---------
+          0
    (1 row)
 ```
 
-#### Example: load_all: write missing node caches from the index tables
+#### load_all
+
+Writes the node cache of every node of the session's subcluster from the index tables: for a new
+node, a secondary subcluster (Eon), or a damaged cache directory. Segments a node has already are
+not written again.
+
+**Syntax**
+
+    CALL vfts.load_all ( 'index' )
+
+On Eon, every subcluster keeps its own caches: run `load_all` from a session on each secondary
+subcluster after a refresh on the primary. A node whose cache is behind refuses to answer:
+`cache of index cases is stale on this node (generation 3, the view needs 4): run CALL vfts.load_all('cases')`.
+
+**Privileges**
+
+Superuser, or a user with `EXECUTE` on the procedure and write access to the `vfts` tables.
+
+**Examples**
 
 ```sql
 CALL vfts.load_all('notes');
@@ -1045,7 +732,25 @@ CALL vfts.load_all('notes');
    (1 row)
 ```
 
-#### Example: check_access: read the access policies again and make a new key
+#### check_access
+
+Re-reads the access policies of the source table and makes a new key: run it after creating,
+changing, enabling or dropping an access policy on the source table, and after revoking `SELECT`
+on the views from someone (a token copied from a view before stops working). `refresh_index` and
+`merge` re-read the policies too.
+
+**Syntax**
+
+    CALL vfts.check_access ( 'index' )
+
+On Eon, the new key reaches the nodes of the session's subcluster: run `CALL vfts.load_all(index)`
+from a session on each secondary subcluster afterwards, as after a refresh.
+
+**Privileges**
+
+Superuser or the owner of the source table (the only users who see its policies).
+
+**Examples**
 
 ```sql
 CALL vfts.check_access('notes');
@@ -1061,30 +766,659 @@ SELECT index_name, access, reorder FROM vfts.indexes WHERE index_name = 'notes';
    (1 row)
 ```
 
-#### Example: rebuild (recovery only)
+`access` is `open` (no policy), `rows` (row access policies apply to every search) or
+`masked:<column>` (searches refused): [Access policies](#access-policies).
+
+#### drop_index
+
+Removes the index: its rows (partitions), its attributes, the views and the node caches of the
+subcluster. The source table is not touched.
+
+**Syntax**
+
+    CALL vfts.drop_index ( 'index' )
+
+**Privileges**
+
+Superuser, or a user with `EXECUTE` on the procedure, write access to the `vfts` tables and the
+right to drop the views.
+
+**Examples**
 
 ```sql
-CALL vfts.rebuild('notes');
-    rebuild 
-   ---------
-          0
+CALL vfts.drop_index('notes');
+   NOTICE 2005:  vfts: index notes dropped (caches removed on 1 nodes of this subcluster)
+    drop_index 
+   ------------
+             0
    (1 row)
 ```
 
-#### Example: tokenize: what the analyzer sees
+#### add_attribute
+
+A column of another table (a custodian, a status, a date) copied into the index, so that searches
+filter and count by it while they match (`filter`, `tcount ... by`), as search engines do with
+doc values. The table stays the place where the value lives and is changed.
+
+**Syntax**
+
+    CALL vfts.add_attribute ( 'index', 'attribute', 'schema.table', 'key_column', 'value_column' )
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index |
+| attribute | the name in filters and in `by`: 1 to 64 letters, digits or underscores |
+| schema.table | the table that holds the value |
+| key_column | the index's doc_id: INT, unique in the table (a key twice is refused) |
+| value_column | INT, BOOLEAN, DATE or VARCHAR (at most 1,024 bytes) |
+
+Documents without a row, or with NULL, have no value: a comparison with them is unknown (as in
+SQL), so a filter leaves them out, `by` does not count them, and `IS NULL` finds them.
+
+- **A copy, made by a statement.** `add_attribute` and `refresh_attributes` copy the column into
+  `vfts.attr_values` (replicated) and into every node's cache. Between an `UPDATE` of the table and
+  `refresh_attributes`, searches see the old values (a running `tserve` sees a refresh within
+  0.2 s). A refresh copies the whole column: Enron (517,401 values) 0.3 s, MS MARCO (8.8 million)
+  2.6 to 3.0 s on the test machine. The text index is not touched.
+- **Tables with access policies are refused** (row or column policies, also when one is added
+  later: every refresh checks): a copy would show values that the policy hides from a user.
+- `CALL vfts.info(index)` lists the attributes; `vfts.attributes` is the table of them (readable by
+  every user); `load_all` writes them on new nodes; `drop_index` removes them.
+
+**Privileges**
+
+Superuser or the owner of the attribute table (the only users who see its policies), with
+`EXECUTE` on the procedure and write access to the `vfts` tables.
+
+**Examples**
 
 ```sql
-SELECT pos, term, stem, lang FROM (SELECT vfts.tokenize('Holmes'' contracts, Holmes-style' USING PARAMETERS lang='en') OVER()) t ORDER BY pos;
-    pos |   term    |   stem   | lang 
-   -----+-----------+----------+------
-      0 | holmes    | holm     | en
-      1 | contracts | contract | en
-      2 | holmes    | holm     | en
-      3 | style     | style    | en
+CALL vfts.add_attribute('notes', 'owner', 'ex.owners', 'doc_id', 'owner');
+    add_attribute 
+   ---------------
+                0
+   (1 row)
+```
+
+The attribute at work: [tsearch with filter](#tsearch), [tcount with by](#tcount), and the
+[broker](#tserve-and-vfts_broker-many-clients).
+
+#### refresh_attributes, refresh_attribute
+
+After the attribute table changed: copy every attribute of the index again, or one of them.
+
+**Syntax**
+
+    CALL vfts.refresh_attributes ( 'index' )
+    CALL vfts.refresh_attribute ( 'index', 'attribute' )
+
+**Privileges**
+
+As [add_attribute](#add_attribute).
+
+**Examples**
+
+Document 3 moves from `trading` to `legal`; after the refresh, counts and filters see it:
+
+```sql
+UPDATE ex.owners SET owner = 'legal' WHERE doc_id = 3; COMMIT;
+   COMMIT
+CALL vfts.refresh_attributes('notes');
+    refresh_attributes 
+   --------------------
+                     0
+   (1 row)
+SELECT value AS owner, count
+FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract*', by='owner', filter='owner <> ''sales''') OVER() FROM ex.notes_live) c
+ORDER BY owner;
+    owner | count 
+   -------+-------
+    legal |     2
+   (1 row)
+```
+
+One attribute, and its row in `vfts.attributes` (`version` counts the copies made so far):
+
+```sql
+CALL vfts.refresh_attribute('notes', 'owner');
+   NOTICE 2005:  vfts: attribute owner of index notes refreshed: 5 values in 0.126 s
+    refresh_attribute 
+   -------------------
+                    0
+   (1 row)
+SELECT a.attr_name, a.attr_type, a.source_table, a.version, a.n_rows FROM vfts.attributes a JOIN vfts.indexes i USING (index_id)
+WHERE i.index_name = 'notes';
+    attr_name | attr_type | source_table | version | n_rows 
+   -----------+-----------+--------------+---------+--------
+    owner     | text      | ex.owners    |       3 |      5
+   (1 row)
+```
+
+#### drop_attribute
+
+Removes an attribute from the index (its copy and its files on the nodes). The attribute table is
+not touched.
+
+**Syntax**
+
+    CALL vfts.drop_attribute ( 'index', 'attribute' )
+
+**Privileges**
+
+Superuser, or a user with `EXECUTE` on the procedure and write access to the `vfts` tables.
+
+**Examples**
+
+```sql
+CALL vfts.drop_attribute('notes', 'owner');
+   NOTICE 2005:  vfts: attribute owner of index notes dropped (files removed on 1 nodes of this subcluster)
+    drop_attribute 
+   ----------------
+                 0
+   (1 row)
+SELECT COUNT(*) AS attributes FROM vfts.attributes a JOIN vfts.indexes i USING (index_id) WHERE i.index_name = 'notes';
+    attributes 
+   ------------
+             0
+   (1 row)
+```
+#### The views _live and _snap
+
+`create_index` makes two views in the schema of the source table; they are the input of `tsearch`,
+`tcount`, `tmatch` and `tserve` (call the functions with `*`):
+
+| View | Rows | Use |
+|---|---|---|
+| `<index>_live` | the live tail (rows written after the boundary of the last refresh, journal changes) and one sentinel row | always exact: sees every committed change |
+| `<index>_snap` | the sentinel row only | the segments only: ignores changes since the last refresh |
+
+Both have the columns `(qid, query, doc_id, body, lang, op, gen)`. The sentinel carries the
+generation, so a node with an old cache fails instead of answering from it, and an access token,
+so the search functions accept the views' rows only. With a row access policy on the source table
+the views also return the indexed documents the querying user may not see (rows with op `H`,
+2,500 doc_ids each).
+
+Grant `USAGE` on the schema and `SELECT` on the views (and on the source table, to show the text)
+to the users who search:
+
+    GRANT USAGE ON SCHEMA ex TO analysts;
+    GRANT SELECT ON ex.notes_live, ex.notes_snap, ex.notes TO analysts;
+
+#### Access policies
+
+Searches follow Vertica's access rules (details and the reasons: docs/design.md "Access"):
+
+| Source table has | What a user's search returns |
+|---|---|
+| no access policy | every document, to every user with SELECT on the views |
+| a row access policy | only the documents that user sees in the source table; scores are those of an index of exactly those rows (statistics leave hidden rows out); through the snap view, rows changed since the last refresh are left out (their indexed version may not be the one the policy shows) |
+| a column access policy (mask) on the id, text, lang or ver column | an error for everyone: a search through the index would reveal words of the masked text |
+
+- Only the views can feed the search functions: input made by the statement itself is refused,
+  so a search needs `SELECT` on the views. The functions that write node caches are not granted to
+  users.
+- vfts reads the policies at `create_index`, `refresh_index`, `merge` and `check_access`. After
+  creating or changing a policy, run `CALL vfts.check_access(index)`; or create the index with
+  `access=rows` to apply row policies from the start.
+- Cost with a row policy: each statement joins the index's doc_ids with the source table and
+  checks a digest of the hidden rows (measured in [Performance](#performance)); `tserve` pays it
+  once per statement, not per search.
+- A mask on another column (one that is not indexed) does not matter.
+
+For example, every user sees only the notes of their own department (a sketch; the users and the
+`dept` column are not part of the example table):
+
+    CREATE ACCESS POLICY ON app.docs FOR ROWS WHERE app.docs.dept = CURRENT_USER() ENABLE;
+    CALL vfts.check_access('docs');      -- the views now apply the policy to every search
+
+### Search functions
+
+#### tsearch
+
+The k best documents of a query, by BM25.
+
+**Syntax**
+
+    SELECT vfts.tsearch ( * USING PARAMETERS index='index' { , query='query' | , queries='lines' }
+                          [, parameter=value [,...] ] ) OVER ()
+    FROM schema.index_live | schema.index_snap
+
+Call it in a subquery and join the result to the source table (`USING (doc_id)`) to show the text
+or to filter, group and aggregate with SQL.
+
+**Parameters**
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| index | (required) | the index |
+| query | | the query ([Query syntax](#query-syntax)) |
+| queries | | many queries in one statement: one per line, `qid<TAB>query` (or the query alone: qid = line number) |
+| k | 10 | hits per query, 1 to 1,000,000 |
+| mode | stem | `stem`: words match their stem group (running, runs, run); `exact`: the word only. `"match"` (quoted: MATCH is reserved in Vertica) works too |
+| syntax | query | `plain`: no operators, every word is an OR clause (like a match query of Elasticsearch) |
+| operator | or | the implicit operator between words: `or` or `and` |
+| lang | the index language | language of the query (stemming) |
+| stopwords | false | drop the query language's stopwords |
+| max_expansions | 50 | prefix, wildcard and fuzzy words expand to at most this many terms (the most frequent first; fuzzy: fewest edits first) |
+| prefix_length | 0 | fuzzy: leading letters that must match exactly |
+| bm25 | lucene | `lucene`: the scores of Lucene and OpenSearch; `classic`: times (1 + k1), the scores of Elasticsearch (its LegacyBM25 scale) |
+| filter | | only the matches the filter accepts ([Filter syntax](#filter-syntax)); scores unchanged |
+| filter_cache | true | keep the filter's set of left-out documents per segment; `false`: ask the filter per candidate |
+| threads | 0 | threads for this query (0: one per core). A large segment is cut into slices of documents, so one query can use every core; while many queries run, each gets its share |
+| cache_dir | /tmp/vfts | node cache directory (or the session parameter) |
+
+Session defaults (any parameter except index and query): `ALTER SESSION SET UDPARAMETER vfts_mode = 'exact';`
+(any user; the name with the prefix `vfts_`), or `ALTER SESSION SET UDPARAMETER FOR vfts.vfts mode = 'exact';`
+(only users with USAGE on the library: do not grant that to searchers, it would let them create
+functions from the library's internal factories). With `ALTER SESSION SET UDPARAMETER vfts_debug_timing = '1'`,
+`tsearch` writes the time of each of its stages to the node's vertica.log (`vfts timing: ...`).
+
+**Returns**
+
+`(qid INT, doc_id INT, score FLOAT, rank INT)`: rank 1 is the best; equal scores are ranked by
+doc_id. `qid` is 0 for `query`, the line's number or qid for `queries`.
+
+**Privileges**
+
+`EXECUTE` (granted to `PUBLIC`), `USAGE` on the schema of the views and `SELECT` on the view.
+With a row access policy on the source table, a user finds only the rows that user sees
+([Access policies](#access-policies)).
+
+**Examples**
+
+Ranked search, joined to the source table for the text:
+
+```sql
+SELECT r.rank, r.doc_id, ROUND(r.score, 4) AS score, n.body
+FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract AND indemn*', k=10) OVER()
+      FROM ex.notes_live) r
+JOIN ex.notes n USING (doc_id)
+ORDER BY r.rank;
+    rank | doc_id | score  |                                 body                                 
+   ------+--------+--------+----------------------------------------------------------------------
+       1 |      1 | 1.2305 | The supplier shall indemnify the buyer under this contract.
+       2 |      2 | 1.2305 | Contract renewal: indemnity terms unchanged, payment within 30 days.
+   (2 rows)
+```
+
+Proximity (`w/5`: within five words) and a join with another table, aggregated:
+
+```sql
+SELECT o.owner, COUNT(*) AS hits
+FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract w/5 (indemnify OR indemnity OR market)', k=1000) OVER()
+      FROM ex.notes_live) r
+JOIN ex.owners o USING (doc_id)
+GROUP BY o.owner ORDER BY hits DESC, o.owner;
+     owner  | hits 
+   ---------+------
+    legal   |    1
+    sales   |    1
+    trading |    1
+   (3 rows)
+```
+
+A batch of queries in one statement (parameter `queries`): one statement instead of three saves
+the per-statement cost of Vertica (about 2 ms each). The French query finds the French note:
+
+```sql
+SELECT qid, rank, doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', k=2,
+       queries=E'1\tholmes\n2\t"mark to market"\n3\tcontrat') OVER() FROM ex.notes_snap) r
+ORDER BY qid, rank;
+    qid | rank | doc_id 
+   -----+------+--------
+      1 |    1 |      4
+      2 |    1 |      3
+      3 |    1 |      5
+   (3 rows)
+```
+
+`mode='stem'` (the default) finds *contract* and *contracts*; `mode='exact'` only *contracts*;
+`operator='and'` needs every word:
+
+```sql
+SELECT 'stem' AS mode, doc_id, rank FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contracts') OVER() FROM ex.notes_live) r
+UNION ALL
+SELECT 'exact', doc_id, rank FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contracts', mode='exact') OVER() FROM ex.notes_live) r
+UNION ALL
+SELECT 'and', doc_id, rank FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract indemnity', operator='and') OVER() FROM ex.notes_live) r
+ORDER BY 1 DESC, 3;
+    mode  | doc_id | rank 
+   -------+--------+------
+    stem  |      1 |    1
+    stem  |      2 |    2
+    stem  |      3 |    3
+    exact |      3 |    1
+    and   |      2 |    1
+   (5 rows)
+```
+
+With a filter on an [attribute](#add_attribute): only the matches whose owner is legal or sales;
+the scores stay those of the whole index (prefix words score a constant 1 each):
+
+```sql
+SELECT doc_id, ROUND(score, 4) AS score, rank
+FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract* OR indemn*', filter='owner IN (''legal'', ''sales'')') OVER()
+      FROM ex.notes_live) r
+ORDER BY rank;
+    doc_id | score | rank 
+   --------+-------+------
+         1 |     2 |    1
+         2 |     2 |    2
+         5 |     1 |    3
+   (3 rows)
+```
+
+Query rows `(qid, query)` added to the view's rows work as well as the parameter `queries`:
+
+    SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', k=3) OVER()
+                   FROM (SELECT * FROM ex.notes_live
+                         UNION ALL SELECT 1, 'indemnity', NULL, NULL, NULL, NULL, NULL
+                         UNION ALL SELECT 2, 'holmes', NULL, NULL, NULL, NULL, NULL) i) r
+    ORDER BY qid, rank;
+
+#### tcount
+
+The number of matching documents (no scoring), or with `by` the number per value of an
+[attribute](#add_attribute), counted while matching.
+
+**Syntax**
+
+    SELECT vfts.tcount ( * USING PARAMETERS index='index' { , query='query' | , queries='lines' }
+                         [, by='attribute' ] [, parameter=value [,...] ] ) OVER ()
+    FROM schema.index_live | schema.index_snap
+
+**Parameters**
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| by | | count per value of this attribute instead of one total |
+| index, query, queries, mode, syntax, operator, lang, stopwords, max_expansions, prefix_length, filter, filter_cache, threads, cache_dir | | as in [tsearch](#tsearch) (`k` and `bm25` do not apply) |
+
+**Returns**
+
+`(qid INT, count INT)`; with `by`: `(qid INT, value VARCHAR, count INT)`, one row per value that
+has matches, in value order. `value` is VARCHAR (cast it: `value::INT`, `value::DATE`). Documents
+without a value are not counted.
+
+**Privileges**
+
+As [tsearch](#tsearch).
+
+**Examples**
+
+```sql
+SELECT * FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract') OVER() FROM ex.notes_live) c;
+    qid | count 
+   -----+-------
+      0 |     3
+   (1 row)
+```
+
+Several counts in one statement: a word, a boolean query with a prefix, a typo (`holmse~1`: one
+edit away from *holmes*) and an ordered proximity (`pre/3`: *supplier* at most three words before
+*indemnify*):
+
+```sql
+SELECT qid, count FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes',
+       queries=E'1\tcontract\n2\tcontract AND indemn*\n3\tholmse~1\n4\tsupplier pre/3 indemnify') OVER() FROM ex.notes_live) c
+ORDER BY qid;
+    qid | count 
+   -----+-------
+      1 |     3
+      2 |     2
+      3 |     1
+      4 |     1
    (4 rows)
 ```
 
-#### Example: hybrid: two ranked lists fused with Reciprocal Rank Fusion
+Matches per value of the attribute `owner` (`by`), counted while matching:
+
+```sql
+SELECT value AS owner, count
+FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract*', by='owner') OVER() FROM ex.notes_live) c
+ORDER BY owner;
+     owner  | count 
+   ---------+-------
+    legal   |     1
+    sales   |     1
+    trading |     1
+   (3 rows)
+```
+
+#### tmatch
+
+Every matching document, without scores and in no order: the input for joins and `GROUP BY` over
+all matches (a report of matches per owner, per month).
+
+**Syntax**
+
+    SELECT vfts.tmatch ( * USING PARAMETERS index='index' { , query='query' | , queries='lines' }
+                         [, parameter=value [,...] ] ) OVER ()
+    FROM schema.index_live | schema.index_snap
+
+**Parameters**
+
+As [tcount](#tcount), without `by`. For counts per value of an attribute, `tcount ... by` is
+faster: no row per match.
+
+**Returns**
+
+`(qid INT, doc_id INT)`, one row per matching document.
+
+**Privileges**
+
+As [tsearch](#tsearch).
+
+**Examples**
+
+Matching documents per owner, by a join with the owners table:
+
+```sql
+SELECT o.owner, COUNT(*) AS documents
+FROM (SELECT vfts.tmatch(* USING PARAMETERS index='notes', query='contract*') OVER() FROM ex.notes_live) m
+JOIN ex.owners o USING (doc_id)
+GROUP BY o.owner ORDER BY o.owner;
+     owner  | documents 
+   ---------+-----------
+    legal   |         1
+    sales   |         1
+    trading |         1
+   (3 rows)
+```
+
+#### tserve and vfts_broker: many clients
+
+Every SQL statement costs Vertica about 2 ms of parsing, planning and executor set-up before vfts
+runs, and statements that call a UDx peak at about 2,000 per second on the test machine however
+many sessions send them. No person notices 2 ms, but a server answering thousands of small
+searches per second does. `tserve` takes that cost away: one long statement per session answers
+many searches. `tools/vfts_broker` (`make tools`) is the HTTP service in front of it that a search
+application calls instead of sending SQL itself.
+
+**Syntax**
+
+The broker:
+
+    build/tools/vfts_broker --port port --schema schema [--view snap | live] [--k n] [--bind address]
+                            [--param "name=value" ...] [--mode sql | serve]
+                            sql:   [--sessions n] [--max-batch n]
+                            serve: [--channels n] [--workers n] [--socket path]
+
+    POST /index/_search   {"query": "...", ["filter": "...",] ["k": n]}
+                          -> {"hits": [{"id": doc_id, "score": score}, ...]}
+    POST /index/_count    {"query": "...", ["filter": "...",] ["by": "attribute"]}
+                          -> {"count": n}  or  {"buckets": [{"value": "...", "count": n}, ...]}
+
+The statement that the broker runs in mode `serve`, one per channel (it is not meant to be typed
+by hand):
+
+    SELECT vfts.tserve ( * USING PARAMETERS index='index', endpoint='/tmp/vfts_broker.name.sock',
+                         token='...' [, workers=n ] [, request_cache=true | false ]
+                         [, any parameter of tsearch ] ) OVER ()
+    FROM schema.index_snap
+
+**Broker options and tserve parameters**
+
+| Option or parameter | Default | Meaning |
+|---|---|---|
+| `--mode serve` | | each session (`--channels`, default 1) runs one `tserve` statement; a search is then no statement of its own |
+| `--mode sql` | | a request goes out at once as a `tsearch` statement when one of the user's sessions (`--sessions`, default 4) is idle; while all are busy, requests wait, and the next free session sends all of them (up to `--max-batch`) in one statement (parameter `queries`). No fixed wait. Each statement is labeled `vfts_broker` |
+| `--schema`, `--view` | snap | the views searched: `<schema>.<index>_snap` (or `_live`) |
+| `--k` | 10 | hits per search when a request has no `k` |
+| `--bind` | 127.0.0.1 | the address the broker listens on |
+| `--param` | | a default parameter of every search, for example `--param "mode='stem'"` |
+| `--workers` | 0 | `serve`: the `workers` of each `tserve` statement (0: one per core) |
+| `--socket` | /tmp/vfts_broker.\<port\>.sock | `serve`: the Unix socket the statements connect to |
+| workers | one per core | `tserve`: search threads; each search uses one; a count uses its fair share of the cores (all of them when it runs alone, about one each under load) unless `threads` is given |
+| request_cache | true | `tserve`: the answers of counts are kept while the statement runs and a repeated count is answered from memory, as Elasticsearch's shard request cache does; searches with hits are never kept. A kept answer names the attribute files it read, so a `refresh_attribute` while the statement runs is seen at once |
+
+**Returns**
+
+The broker: JSON, as above. `tserve` itself returns `(served INT)` when it ends: the number of
+requests it answered.
+
+**Privileges**
+
+- **Every user has their own Vertica sessions.** The broker logs in with the credentials of the
+  request (HTTP Basic; without them, the `VSQL_*` environment). Vertica checks the password, the
+  grants on the view and the user's resource pool, and records the statements under that user:
+  the same privileges as [tsearch](#tsearch).
+- Run the broker on a node of the database, as the database's OS user, with its sessions connected
+  to that node. `tserve` connects to the broker's Unix socket (mode 0600) with a token made for that
+  statement only, and accepts only an endpoint named `vfts_broker.<name>.sock`.
+
+Both modes give the same hits and scores as `tsearch` (tests/sql/test_serve.sh). `tserve` reads
+the view when it starts, so it answers from that snapshot: the broker starts a new statement when
+one ends; restart it after a refresh. Searches through `tserve` are not rows of `query_requests`:
+Vertica records the session and the `tserve` statement, not each search. A `tserve` statement
+holds one slot (and its memory) of the user's resource pool while it runs, and its search threads
+are vfts's own, outside the pool's CPU accounting, like the threads of `tsearch`. Tested on one
+Enterprise node and on a 3-node Eon subcluster (fenced). [Performance](#performance) has the
+numbers of both modes.
+
+**Examples**
+
+A search, a search with a filter on the attribute `owner`, and counts per owner, over HTTP:
+
+```
+build/tools/vfts_broker --port 9399 --schema ex --mode serve &
+curl -s -XPOST localhost:9399/notes/_search -d '{"query": "contract AND indemn*"}'
+   {"hits": [{"id": 6, "score": 1.21872902}, {"id": 1, "score": 1.18564403}, {"id": 2, "score": 1.18564403}]}
+curl -s -XPOST localhost:9399/notes/_search -d '{"query": "contract*", "filter": "owner = '\''legal'\''", "k": 2}'
+   {"hits": [{"id": 1, "score": 1}, {"id": 3, "score": 1}]}
+curl -s -XPOST localhost:9399/notes/_count -d '{"query": "contract*", "by": "owner"}'
+   {"buckets": [{"value": "legal", "count": 2}, {"value": "sales", "count": 1}]}
+```
+
+With a user's own credentials (HTTP Basic):
+
+    curl -XPOST localhost:9300/enron/_search -u alice:secret -d '{"query": "fraud AND (audit OR sec)"}'
+
+#### tsnippet
+
+The parts of a text that match a query, with the matching words marked. A scalar function: pass
+the text (joined from the source table) and the query.
+
+**Syntax**
+
+    vfts.tsnippet ( text, 'query' [, 'lang' ] USING PARAMETERS index='index'
+                    [, mode='stem' | 'exact' ] [, words=n ] [, fragments=n ]
+                    [, pre_tag='tag' ] [, post_tag='tag' ] [, separator='text' ] )
+
+**Parameters**
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| index | | use that index's analyzer settings (recommended); without it: `lang`, `accent_fold` |
+| mode | stem | as in [tsearch](#tsearch) |
+| words | 20 | words per fragment |
+| fragments | 2 | fragments at most (the best ones, in text order) |
+| pre_tag, post_tag | `<b>`, `</b>` | marks around a hit |
+| separator | ` ... ` | between fragments |
+| prefix_length | 0 | fuzzy words: as in [tsearch](#tsearch) |
+
+Hits are the words that match a word, stem, prefix, wildcard or fuzzy word of the query (not those
+under NOT). Call it for the top hits only: it analyzes the text again.
+
+**Returns**
+
+VARCHAR: the fragments, with the hits marked.
+
+**Privileges**
+
+`EXECUTE` (granted to `PUBLIC`) and `SELECT` on the table that holds the text.
+
+**Examples**
+
+```sql
+SELECT doc_id, vfts.tsnippet(body, 'indemnity contract' USING PARAMETERS index='notes', words=8) AS snippet
+FROM ex.notes WHERE doc_id IN (1, 2) ORDER BY doc_id;
+    doc_id |                                     snippet                                      
+   --------+----------------------------------------------------------------------------------
+         1 | ... supplier shall indemnify the buyer under this <b>contract</b>.
+         2 | <b>Contract</b> renewal: <b>indemnity</b> terms unchanged, payment within 30 ...
+   (2 rows)
+```
+
+The snippets of the top hits of a search, with tags of your own (the prefix `indemn*` marks
+*indemnify* too):
+
+```sql
+SELECT r.rank, vfts.tsnippet(n.body, 'contract AND indemn*' USING PARAMETERS index='notes', words=6, pre_tag='[', post_tag=']') AS snippet
+FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract AND indemn*', k=3) OVER() FROM ex.notes_live) r
+JOIN ex.notes n USING (doc_id)
+ORDER BY r.rank;
+    rank |                           snippet                            
+   ------+--------------------------------------------------------------
+       1 | ... [indemnify] the buyer under this [contract].
+       2 | [Contract] renewal: [indemnity] terms unchanged, payment ...
+   (2 rows)
+```
+
+#### hybrid
+
+Fuses ranked lists by doc_id: BM25 from `tsearch` and vectors, for example from vvector's
+`vsearch`. Embeddings are computed outside Vertica; vfts includes no model.
+
+**Syntax**
+
+    SELECT vfts.hybrid ( source, doc_id, rank, score USING PARAMETERS [ k=n ] [, method='rrf' | 'weighted' ]
+                         [, rrf_k=n ] [, weights='source=w,...' ] [, distance='source,...' ] ) OVER ()
+    FROM ( list_1 UNION ALL list_2 [ UNION ALL ... ] ) u
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| source | VARCHAR: the name of the list a row comes from (`'text'`, `'vector'`) |
+| doc_id | INT: the document |
+| rank | INT: its rank in that list (1 = best) |
+| score | FLOAT: its score in that list |
+
+**Parameters**
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| method | rrf | `rrf`: score = sum of w / (rrf_k + rank); `weighted`: sum of w * min-max normalized score |
+| k | 10 | results |
+| rrf_k | 60 | the constant of Reciprocal Rank Fusion |
+| weights | 1 each | `'text=0.7,vector=0.3'` |
+| distance | | sources whose score is a distance (smaller is better), for `weighted` |
+
+**Returns**
+
+`(doc_id INT, score FLOAT, rank INT, sources VARCHAR)`; `sources` shows the rank in each list
+(`text:2 vector:1`).
+
+**Privileges**
+
+`EXECUTE` (granted to `PUBLIC`), and the privileges of the searches that make the lists.
+
+**Examples**
+
+A text list from `tsearch` and a vector list (three fixed rows here), fused by rank:
 
 ```sql
 SELECT h.rank, h.doc_id, ROUND(h.score, 5) AS score, h.sources
@@ -1102,36 +1436,106 @@ ORDER BY h.rank;
    (3 rows)
 ```
 
-#### Example: tversion
+The same lists, weighted 0.7 for the words and 0.3 for the vectors (scores normalized to 0..1 per
+list first):
+
+```sql
+SELECT h.rank, h.doc_id, ROUND(h.score, 4) AS score, h.sources
+FROM (SELECT vfts.hybrid(src, doc_id, rank, score USING PARAMETERS k=3, method='weighted', weights='text=0.7,vector=0.3') OVER() FROM (
+        SELECT 'text' AS src, doc_id, rank, score
+        FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='indemnity contract', k=10) OVER() FROM ex.notes_live) t
+        UNION ALL
+        SELECT 'vector', 3, 1, 0.91 UNION ALL SELECT 'vector', 2, 2, 0.88 UNION ALL SELECT 'vector', 6, 3, 0.80) u) h
+ORDER BY h.rank;
+    rank | doc_id | score  |     sources     
+   ------+--------+--------+-----------------
+       1 |      2 | 0.7784 | text:2 vector:2
+       2 |      6 |    0.7 | text:1 vector:3
+       3 |      3 |    0.3 | text:4 vector:1
+   (3 rows)
+```
+
+#### tokenize
+
+What the analyzer makes of a text: one row per word, with its stem and language. The first thing to
+try when a search does not find what you expected.
+
+**Syntax**
+
+    SELECT vfts.tokenize ( text [, lang ] [ USING PARAMETERS [ lang='xx' ] [, accent_fold='latin' | 'none' | 'all' ]
+                           [, on_unsupported='error' | 'plain' ] ] ) OVER () ...
+    SELECT doc_id, vfts.tokenize ( text [, lang ] ) FROM table      -- beside other columns
+
+**Returns**
+
+`(pos INT, term VARCHAR, stem VARCHAR, lang VARCHAR, start_byte INT, end_byte INT)`: the word's
+position, the word as indexed, its stem, the language used and where it is in the text.
+
+**Privileges**
+
+`EXECUTE` (granted to `PUBLIC`).
+
+**Examples**
+
+A possessive, a plural and a hyphenated word:
+
+```sql
+SELECT pos, term, stem, lang FROM (SELECT vfts.tokenize('Holmes'' contracts, Holmes-style' USING PARAMETERS lang='en') OVER()) t ORDER BY pos;
+    pos |   term    |   stem   | lang 
+   -----+-----------+----------+------
+      0 | holmes    | holm     | en
+      1 | contracts | contract | en
+      2 | holmes    | holm     | en
+      3 | style     | style    | en
+   (4 rows)
+```
+
+The rows of a table, beside their doc_id, each in its own language (accents of Latin letters
+removed):
+
+```sql
+SELECT doc_id, pos, term, stem, lang FROM (SELECT doc_id, vfts.tokenize(body, lang) FROM ex.notes WHERE doc_id IN (4, 5)) t
+ORDER BY doc_id, pos;
+    doc_id | pos |    term     |    stem    | lang 
+   --------+-----+-------------+------------+------
+         4 |   0 | holmes      | holm       | en
+         4 |   1 | notes       | note       | en
+         4 |   2 | on          | on         | en
+         4 |   3 | the         | the        | en
+         4 |   4 | baskerville | baskervill | en
+         4 |   5 | case        | case       | en
+         5 |   0 | le          | le         | fr
+         5 |   1 | contrat     | contrat    | fr
+         5 |   2 | prevoit     | prevoit    | fr
+         5 |   3 | une         | une        | fr
+         5 |   4 | indemnite   | indemnit   | fr
+   (11 rows)
+```
+
+#### tversion
+
+Which build of vfts is installed.
+
+**Syntax**
+
+    SELECT vfts.tversion() OVER ()
+
+**Returns**
+
+`(version VARCHAR, build VARCHAR, icu VARCHAR, snowball VARCHAR)`: the library version, the
+compiler and flags, the ICU version, and the Snowball stemmers linked in.
+
+**Privileges**
+
+`EXECUTE` (granted to `PUBLIC`).
+
+**Examples**
 
 ```sql
 SELECT version, build, icu FROM (SELECT vfts.tversion() OVER()) v;
     version |                       build                        | icu  
    ---------+----------------------------------------------------+------
     0.4.1   | -O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0 | 79.1
-   (1 row)
-```
-
-#### Example: tserve through vfts_broker (mode serve): HTTP in, the user's own Vertica session, one tserve statement
-
-```
-build/tools/vfts_broker --port 9399 --schema ex --mode serve &
-curl -s -XPOST localhost:9399/notes/_search -d '{"query": "contract AND indemn*"}'
-   {"hits": [{"id": 6, "score": 1.21872902}, {"id": 1, "score": 1.18564403}, {"id": 2, "score": 1.18564403}]}
-curl -s -XPOST localhost:9399/notes/_search -d '{"query": "contract*", "filter": "owner = '\''legal'\''", "k": 2}'
-   {"hits": [{"id": 1, "score": 1}, {"id": 3, "score": 1}]}
-curl -s -XPOST localhost:9399/notes/_count -d '{"query": "contract*", "by": "owner"}'
-   {"buckets": [{"value": "legal", "count": 2}, {"value": "sales", "count": 1}]}
-```
-
-#### Example: drop_index
-
-```sql
-CALL vfts.drop_index('notes');
-   NOTICE 2005:  vfts: index notes dropped (caches removed on 1 nodes of this subcluster)
-    drop_index 
-   ------------
-             0
    (1 row)
 ```
 
@@ -1173,7 +1577,7 @@ CALL vfts.drop_index('notes');
 ### Filter syntax
 
 The parameter `filter` (of `tsearch`, `tcount`, `tmatch`, `tserve` and the broker's requests) is
-SQL's `WHERE` over the index's [attributes](#add_attribute-refresh_attributes-drop_attribute):
+SQL's `WHERE` over the index's [attributes](#add_attribute):
 
 | Syntax | Example |
 |---|---|
@@ -1372,7 +1776,7 @@ before the engine changes that made phrases and patterns faster) is in
 
 Every document gets an attribute, its custodian (150 values, as in an e-discovery case); 10
 custodians are on legal hold. vfts keeps the attribute in a table and copies it into the index with
-`add_attribute` ([attributes](#add_attribute-refresh_attributes-drop_attribute)); Elasticsearch and
+`add_attribute` ([attributes](#add_attribute)); Elasticsearch and
 OpenSearch, which have no joins, keep it in every document (`_update_by_query` on a clone of their
 index). J1 adds it to every document; J2 moves 1% of the documents to another custodian; J3 is the
 top 10 of a query among the custodians on hold (`filter=`); J4 counts the matches of a query per
@@ -1625,8 +2029,8 @@ by doc_id in vfts and by internal order in the engines.
 ### Method
 
 - Machine: Intel Core Ultra 7 165H (22 logical cores), 61 GB RAM, NVMe disk, Ubuntu 26.04.1.
-  Vertica 26.3.0-2 Enterprise, one node; vfts 0.2.0 (then named vtext; 0.3.0 changes only the
-  name), g++ 15.2, -O3, unfenced (fenced: 10.1 ms against 5.0 ms on MS MARCO, live view).
+  Vertica 26.3.0-2 Enterprise, one node; vfts 0.2.0 for the search tests (then named vtext; 0.3.0
+  changes only the name) and vfts 0.4.1 for search next to other data and batches, g++ 15.2, -O3, unfenced (fenced: 10.1 ms against 5.0 ms on MS MARCO, live view).
   Elasticsearch 9.5.6 and OpenSearch 3.10.0 from their tarballs, 16 GB heap, security off,
   1 shard, 0 replicas, force-merged into one segment. One engine runs at a time; the clients run
   on the same machine (127.0.0.1).

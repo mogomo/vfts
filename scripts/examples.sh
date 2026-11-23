@@ -83,8 +83,21 @@ ex "tsearch: a batch of queries in one statement (parameter queries)" \
        queries=E'1\tholmes\n2\t\"mark to market\"\n3\tcontrat') OVER() FROM ex.notes_snap) r
 ORDER BY qid, rank;"
 
+ex "tsearch: mode stem (default) against mode exact, and operator and" \
+"SELECT 'stem' AS mode, doc_id, rank FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contracts') OVER() FROM ex.notes_live) r
+UNION ALL
+SELECT 'exact', doc_id, rank FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contracts', mode='exact') OVER() FROM ex.notes_live) r
+UNION ALL
+SELECT 'and', doc_id, rank FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract indemnity', operator='and') OVER() FROM ex.notes_live) r
+ORDER BY 1 DESC, 3;"
+
 ex "tcount" \
 "SELECT * FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract') OVER() FROM ex.notes_live) c;"
+
+ex "tcount: several counts in one statement (parameter queries)" \
+"SELECT qid, count FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes',
+       queries=E'1\tcontract\n2\tcontract AND indemn*\n3\tholmse~1\n4\tsupplier pre/3 indemnify') OVER() FROM ex.notes_live) c
+ORDER BY qid;"
 
 ex "tmatch: every match without scores, for joins and GROUP BY over all matches" \
 "SELECT o.owner, COUNT(*) AS documents
@@ -113,9 +126,20 @@ ex "refresh_attributes: after the table changes, copy it again" \
 FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract*', by='owner', filter='owner <> ''sales''') OVER() FROM ex.notes_live) c
 ORDER BY owner;"
 
+ex "refresh_attribute: copy one attribute again" \
+"CALL vfts.refresh_attribute('notes', 'owner');" \
+"SELECT a.attr_name, a.attr_type, a.source_table, a.version, a.n_rows FROM vfts.attributes a JOIN vfts.indexes i USING (index_id)
+WHERE i.index_name = 'notes';"
+
 ex "tsnippet" \
 "SELECT doc_id, vfts.tsnippet(body, 'indemnity contract' USING PARAMETERS index='notes', words=8) AS snippet
 FROM ex.notes WHERE doc_id IN (1, 2) ORDER BY doc_id;"
+
+ex "tsnippet: the snippets of the top hits, with tags of your own" \
+"SELECT r.rank, vfts.tsnippet(n.body, 'contract AND indemn*' USING PARAMETERS index='notes', words=6, pre_tag='[', post_tag=']') AS snippet
+FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract AND indemn*', k=3) OVER() FROM ex.notes_live) r
+JOIN ex.notes n USING (doc_id)
+ORDER BY r.rank;"
 
 ex "refresh_index: a new row is found at once through the live view, after refresh_index through snap" \
 "INSERT INTO ex.notes (doc_id, body) VALUES (6, 'Draft contract with an indemnity cap.'); COMMIT;" \
@@ -124,6 +148,8 @@ UNION ALL
 SELECT 'snap', doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='cap') OVER() FROM ex.notes_snap) r;" \
 "CALL vfts.refresh_index('notes');" \
 "SELECT 'snap' AS view, doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='cap') OVER() FROM ex.notes_snap) r;"
+
+ex "merge: the tiered policy (what refresh_index runs after each refresh)" "CALL vfts.merge('notes');"
 
 ex "merge into one segment" "CALL vfts.merge('notes', 1);" "CALL vfts.info('notes');" \
 "SELECT s.gen, s.n_segments, s.n_docs FROM vfts.index_stats s JOIN vfts.indexes i USING (index_id)
@@ -141,9 +167,22 @@ ex "rebuild (recovery only)" "CALL vfts.rebuild('notes');"
 ex "tokenize: what the analyzer sees" \
 "SELECT pos, term, stem, lang FROM (SELECT vfts.tokenize('Holmes'' contracts, Holmes-style' USING PARAMETERS lang='en') OVER()) t ORDER BY pos;"
 
+ex "tokenize: the rows of a table, beside their doc_id (each row in its own language)" \
+"SELECT doc_id, pos, term, stem, lang FROM (SELECT doc_id, vfts.tokenize(body, lang) FROM ex.notes WHERE doc_id IN (4, 5)) t
+ORDER BY doc_id, pos;"
+
 ex "hybrid: two ranked lists fused with Reciprocal Rank Fusion" \
 "SELECT h.rank, h.doc_id, ROUND(h.score, 5) AS score, h.sources
 FROM (SELECT vfts.hybrid(src, doc_id, rank, score USING PARAMETERS k=3) OVER() FROM (
+        SELECT 'text' AS src, doc_id, rank, score
+        FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='indemnity contract', k=10) OVER() FROM ex.notes_live) t
+        UNION ALL
+        SELECT 'vector', 3, 1, 0.91 UNION ALL SELECT 'vector', 2, 2, 0.88 UNION ALL SELECT 'vector', 6, 3, 0.80) u) h
+ORDER BY h.rank;"
+
+ex "hybrid: the same lists, weighted (min-max normalized scores)" \
+"SELECT h.rank, h.doc_id, ROUND(h.score, 4) AS score, h.sources
+FROM (SELECT vfts.hybrid(src, doc_id, rank, score USING PARAMETERS k=3, method='weighted', weights='text=0.7,vector=0.3') OVER() FROM (
         SELECT 'text' AS src, doc_id, rank, score
         FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='indemnity contract', k=10) OVER() FROM ex.notes_live) t
         UNION ALL
@@ -172,6 +211,9 @@ if [ -x build/tools/vfts_broker ] && command -v curl > /dev/null; then
     case "$r" in *'"buckets"'*) ;; *) FAILS=$((FAILS + 1)) ;; esac
     kill $bp 2> /dev/null; wait $bp 2> /dev/null
 fi
+
+ex "drop_attribute" "CALL vfts.drop_attribute('notes', 'owner');" \
+"SELECT COUNT(*) AS attributes FROM vfts.attributes a JOIN vfts.indexes i USING (index_id) WHERE i.index_name = 'notes';"
 
 ex "drop_index" "CALL vfts.drop_index('notes');"
 vsql -X -q -c "DROP SCHEMA IF EXISTS $S CASCADE" > /dev/null 2>&1
