@@ -22,6 +22,8 @@ from local data) and partitioned by `index_id` (dropping an index drops partitio
 | `tombstones` | index_id, segment_id, docno, doc_id, gen | deleted document version |
 | `index_stats` | index_id, gen, n_docs, sum_len, avg_length, n_segments, n_terms, bytes, created | generation |
 | `probe` | k | 1,024 rows, segmented: makes `OVER(PARTITION NODES)` reach every node |
+| `attributes` | index_id, attr_name, source_table, key_col, value_col, attr_type, version, slot, n_rows, refreshed_at, refresh_seconds | attribute of an index (0.4.0) |
+| `attr_values` | slot, doc_id, ival, sval `VARCHAR(1024)` | value of an attribute copy; partitioned by `slot` (one per copy) |
 
 - **docno**: inside a segment, documents are numbered 0 .. n-1: in doc_id order in a new segment,
   in the order of recursive graph bisection in a merged one (docs/design.md "Merge").
@@ -135,8 +137,10 @@ impact) before it is used. Queries check the header only.
 | `seg_<id>.vfs` | a segment, never changed after it is written (`.vts` up to 0.2.0) |
 | `gen_<g>.vfg` | generation g (`.vtg` up to 0.2.0): header `VFTSGEN1` (`VTEXTGN1` up to 0.2.0), version (2; 1 in vfts 0.1.0, without access mode and keys), number of segments, g, an FNV-1a checksum of the rest, size; the index's analyzer options; the access mode and the key(s) (docs/design.md "Access"); per segment: segment_id, the segment file's checksum, its tombstoned docnos, and how the tombstones lower the document frequency of each affected term and stem group |
 | `ACTIVE` | the active generation number, as text |
+| `attr_<name>.vfa` | an attribute (0.4.0): header `VFTSATR1` (64 bytes: format 1, type int/bool/date/text, version, rows, distinct values, text bytes, a checksum of the rest, size); `int64 doc_id[rows]` ascending; `uint32 code[rows]`; the dictionary in value order: `int64 value[n]` (bool 0/1, date: days since 2000-01-01), or for text `uint64 offset[n + 1]` and the bytes. Written by `tattr`, replaced whole by every refresh |
 
 Files are written to a temporary name, synced and renamed; `ACTIVE` is replaced last. The files
-of the active and the previous generation are kept; other `seg_*` and `gen_*` files are removed.
+of the active and the previous generation are kept; other `seg_*` and `gen_*` files are removed
+(attribute files are not touched by an activation).
 A missing or damaged file is never a data loss: `CALL vfts.load_all('<index>')` writes it again
 from the tables.

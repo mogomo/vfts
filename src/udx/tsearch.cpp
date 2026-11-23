@@ -7,6 +7,9 @@
 // may be added to the view's rows; the parameter query adds qid 0.
 // Output: tsearch (qid, doc_id, score, rank), best first; tcount (qid, count); tmatch (qid, doc_id),
 // every match, no scores, in no order (for joins and GROUP BY over all matches).
+// Attributes (CALL vfts.add_attribute): filter='custodian IN (3, 17)' keeps the matches the filter
+// accepts (scores unchanged); tcount by='custodian' counts the matches per value instead:
+// (qid, value, count), one row per value with matches, in value order.
 #include "udx_common.h"
 #include "search_options.h"
 #include "view_input.h"
@@ -85,6 +88,26 @@ private:
         } timing{srv, s.text("debug_timing", "") == "1", te, t0, t1, t2, t3, v.hidden.size()};
 
         vfts::SearchOptions o = parse_search_options(s);
+        const std::string by_name = s.text("by", "");
+        if (!by_name.empty() && (!counting_ || matching_)) fail("parameter by is for tcount");
+        AttrSearch attrs;
+        attrs.setup(resolve_cache_dir(s), index, s.text("filter", ""), by_name, s.boolean("filter_cache", true), searcher, o);
+
+        if (attrs.by) {
+            // matches per value: (qid, value, count)
+            for (auto &q : queries) {
+                if (isCanceled()) return;
+                const std::vector<std::uint64_t> n = searcher.count_by(q.second, o, attrs.by_codes, attrs.by->n_codes());
+                for (std::uint32_t c = 0; c < n.size(); ++c) {
+                    if (!n[c]) continue;
+                    out.setInt(0, q.first);
+                    out.getStringRef(1).copy(attrs.by->value_string(c));
+                    out.setInt(2, static_cast<vint>(n[c]));
+                    out.next();
+                }
+            }
+            return;
+        }
 
         if (matching_) {
             // every match, no scores: (qid, doc_id)
@@ -145,14 +168,17 @@ public:
         a.addVarchar();         // lang
         a.addVarchar();         // op
         a.addInt();             // gen
+        // tcount: (qid, count), or with by (qid, value, count): the columns come from getReturnType
+        if (counting_ && !matching_) { r.addAny(); return; }
         r.addInt();
         r.addInt();
         if (!counting_) { r.addFloat(); r.addInt(); }
     }
-    void getReturnType(ServerInterface &, const SizedColumnTypes &, SizedColumnTypes &out) override
+    void getReturnType(ServerInterface &srv, const SizedColumnTypes &, SizedColumnTypes &out) override
     {
         out.addInt("qid");
         if (matching_) { out.addInt("doc_id"); return; }
+        if (counting_ && srv.getParamReader().containsParameter("by")) { out.addVarchar(1024, "value"); out.addInt("count"); return; }
         if (counting_) { out.addInt("count"); return; }
         out.addInt("doc_id");
         out.addFloat("score");
@@ -164,6 +190,7 @@ public:
         p.addVarchar(65000, "query");
         p.addLongVarchar(32000000, "queries");
         add_search_parameters(p);
+        p.addVarchar(64, "by");             // tcount only (an error elsewhere)
     }
     TransformFunction *createTransformFunction(ServerInterface &srv) override
     {

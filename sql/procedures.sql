@@ -8,6 +8,9 @@
 --   vfts.check_access(name)              (after access policies or grants change: new key, views)
 --   vfts.info(name)
 --   vfts.drop_index(name)
+--   vfts.add_attribute(name, attribute, table, key_column, value_column)
+--   vfts.refresh_attributes(name)
+--   vfts.drop_attribute(name, attribute)
 --
 -- Identifiers given by the caller are checked against strict patterns before they are put into
 -- dynamic SQL. docs/design.md explains the order of every step.
@@ -333,7 +336,7 @@ $$;
 -- damaged cache. Segments a node already has are not written again.
 CREATE OR REPLACE PROCEDURE vfts.load_all(nm VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
-    iid INT; g INT; cdir VARCHAR(1024); seg INT; n INT; i INT; rows_sql VARCHAR(8000); t0 TIMESTAMPTZ;
+    iid INT; g INT; cdir VARCHAR(1024); seg INT; n INT; i INT; rows_sql VARCHAR(8000); t0 TIMESTAMPTZ; na INT; a VARCHAR(64);
 BEGIN
     SELECT index_id, gen, cache_dir INTO iid, g, cdir FROM vfts.indexes WHERE index_name = nm;
     IF iid IS NULL THEN
@@ -360,6 +363,15 @@ BEGIN
         i := i + 1;
     END LOOP;
     PERFORM CALL vfts.activate(nm, g);
+    -- the attributes, from their copies (not from the tables: those may have changed since)
+    na := (SELECT COUNT(*) FROM vfts.attributes WHERE index_id = iid AND slot IS NOT NULL);
+    i := 0;
+    WHILE i < na LOOP
+        a := (SELECT MAX(attr_name) FROM (SELECT attr_name, ROW_NUMBER() OVER(ORDER BY attr_name) AS rn FROM vfts.attributes
+              WHERE index_id = iid AND slot IS NOT NULL) x WHERE rn = i + 1);
+        PERFORM CALL vfts.load_attribute(nm, a);
+        i := i + 1;
+    END LOOP;
     RAISE NOTICE 'vfts: index % generation % (% segments) loaded on the nodes of this subcluster in % s', nm, g, n,
                  (SELECT ROUND(DATEDIFF('millisecond', t0, CLOCK_TIMESTAMP()) / 1000.0, 1));
 END;
@@ -723,6 +735,9 @@ BEGIN
     RAISE NOTICE 'boundary %; live tail % rows (%.%_live); last refresh: %', COALESCE(b, '(none)'), tail, vs, nm, COALESCE(note, '(none)');
     RAISE NOTICE 'access: % (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)',
                  COALESCE(acc, '(no key: run CALL vfts.check_access)');
+    RAISE NOTICE 'attributes: %', COALESCE((SELECT LISTAGG(attr_name || ' ' || attr_type || ' from ' || source_table || '.' || value_col || ' ('
+                 || COALESCE(n_rows, 0) || ' values, refreshed ' || COALESCE(TO_CHAR(refreshed_at, 'YYYY-MM-DD HH24:MI:SS'), 'never') || ')' USING PARAMETERS separator='; ')
+                 FROM vfts.attributes WHERE index_id = iid), '(none)');
     RAISE NOTICE 'node caches: % of % nodes of this subcluster have generation % (details: SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index=''%'') OVER(PARTITION NODES) FROM vfts.probe) i;)',
                  ok, nodes, g, nm;
 END;
@@ -730,7 +745,7 @@ $$;
 
 CREATE OR REPLACE PROCEDURE vfts.drop_index(nm VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
-    iid INT; vs VARCHAR(128); cdir VARCHAR(1024); params VARCHAR(2000); n INT;
+    iid INT; vs VARCHAR(128); cdir VARCHAR(1024); params VARCHAR(2000); n INT; na INT; sl INT;
 BEGIN
     SELECT index_id, view_schema, cache_dir INTO iid, vs, cdir FROM vfts.indexes WHERE index_name = nm;
     IF iid IS NULL THEN
@@ -745,6 +760,14 @@ BEGIN
     PERFORM SELECT DROP_PARTITIONS('vfts.positions', iid, iid);
     PERFORM SELECT DROP_PARTITIONS('vfts.doc_stats', iid, iid);
     PERFORM SELECT DROP_PARTITIONS('vfts.tombstones', iid, iid);
+    na := (SELECT COUNT(*) FROM vfts.attributes WHERE index_id = iid AND slot IS NOT NULL);
+    WHILE na > 0 LOOP
+        sl := (SELECT MIN(slot) FROM vfts.attributes WHERE index_id = iid AND slot IS NOT NULL);
+        PERFORM SELECT DROP_PARTITIONS('vfts.attr_values', sl, sl);
+        PERFORM UPDATE vfts.attributes SET slot = NULL WHERE index_id = iid AND slot = sl;
+        na := na - 1;
+    END LOOP;
+    PERFORM DELETE FROM vfts.attributes WHERE index_id = iid;
     PERFORM DELETE FROM vfts.segments WHERE index_id = iid;
     PERFORM DELETE FROM vfts.index_stats WHERE index_id = iid;
     PERFORM DELETE FROM vfts.index_keys WHERE index_id = iid;
@@ -814,5 +837,215 @@ BEGIN
             RAISE NOTICE 'vfts: index % has no key yet (%): run CALL vfts.check_access(''%'') when its caches are loaded', nm, SQLERRM, nm;
         END;
     END LOOP;
+END;
+$$;
+
+-- ------------------------------------------------------------------ attributes (docs/design.md "Attributes")
+
+-- Writes the attribute's current copy (vfts.attr_values, its slot) into the cache of every node of
+-- the session's subcluster, as load_rows does for segments: each node joins its own replica with
+-- the one row tnode returns there. One row with NULLs per node (from a replicated table) makes
+-- every node run tattr, also when the attribute has no rows.
+CREATE OR REPLACE PROCEDURE vfts.load_attribute(nm VARCHAR, attr VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT; cdir VARCHAR(1024); typ VARCHAR(8); sl INT; ver INT; want INT; got INT; w INT;
+    params VARCHAR(2000); val VARCHAR(200); nul VARCHAR(100);
+BEGIN
+    SELECT i.index_id, i.cache_dir, a.attr_type, a.slot, a.version INTO iid, cdir, typ, sl, ver
+      FROM vfts.attributes a JOIN vfts.indexes i ON i.index_id = a.index_id WHERE i.index_name = nm AND a.attr_name = attr;
+    IF iid IS NULL OR sl IS NULL THEN
+        RAISE EXCEPTION 'vfts: index % has no attribute % (CALL vfts.add_attribute)', nm, attr;
+    END IF;
+    IF typ = 'text' THEN
+        -- the declared width of a UDx input is what every row costs: the longest value, not 1024
+        w := (SELECT GREATEST(1, COALESCE(MAX(OCTET_LENGTH(sval)), 1)) FROM vfts.attr_values WHERE slot = sl);
+        val := 'sval::VARCHAR(' || w || ')';
+        nul := 'NULL::VARCHAR(' || w || ')';
+    ELSE
+        val := 'ival';
+        nul := 'NULL::INT';
+    END IF;
+    want := (SELECT COUNT(*) FROM (SELECT vfts.tnode(k) OVER(PARTITION NODES) FROM vfts.probe) n);
+    params := 'index=' || QUOTE_LITERAL(nm) || ', name=' || QUOTE_LITERAL(attr) || ', type=' || QUOTE_LITERAL(typ) || ', version=' || ver
+           || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
+    got := EXECUTE 'SELECT /*+LABEL(vfts_attr)*/ COUNT(DISTINCT node_name) FROM (SELECT vfts.tattr(r.doc_id, r.v USING PARAMETERS ' || params
+        || ') OVER(PARTITION NODES) FROM (SELECT /*+SYNTACTIC_JOIN*/ s.* FROM (SELECT doc_id, ' || val || ' AS v FROM vfts.attr_values WHERE slot = ' || sl
+        || ' UNION ALL SELECT NULL::INT, ' || nul || ' FROM vfts.indexes WHERE index_id = ' || iid
+        || ') s CROSS JOIN /*+DISTRIB(L,L)*/ (SELECT vfts.tnode(k) OVER(PARTITION NODES) FROM vfts.probe) p) r) l WHERE status = ''loaded''';
+    IF got <> want THEN
+        RAISE EXCEPTION 'vfts: attribute % of index % was loaded on % of % nodes', attr, nm, got, want;
+    END IF;
+END;
+$$;
+
+-- Copies the attribute's column again (a new slot), loads it on the nodes, then drops the old copy.
+CREATE OR REPLACE PROCEDURE vfts.refresh_attribute(nm VARCHAR, attr VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT; src VARCHAR(300); kc VARCHAR(128); vc VARCHAR(128); typ VARCHAR(8); prev_sl INT; sl INT; n INT; d INT; np INT; w INT;
+    t0 TIMESTAMPTZ; expr VARCHAR(600); secs FLOAT;
+BEGIN
+    SELECT a.index_id, a.source_table, a.key_col, a.value_col, a.attr_type, a.slot INTO iid, src, kc, vc, typ, prev_sl
+      FROM vfts.attributes a JOIN vfts.indexes i ON i.index_id = a.index_id WHERE i.index_name = nm AND a.attr_name = attr;
+    IF iid IS NULL THEN
+        RAISE EXCEPTION 'vfts: index % has no attribute % (CALL vfts.add_attribute)', nm, attr;
+    END IF;
+    t0 := (SELECT CLOCK_TIMESTAMP());
+    -- a policy added after add_attribute: the copy would show values the policy hides (only a
+    -- superuser and the table's owner see policies)
+    IF (SELECT COUNT(*) FROM v_catalog.users WHERE user_name = CURRENT_USER() AND is_super_user) = 0
+       AND COALESCE((SELECT MAX(owner_name) FROM v_catalog.tables WHERE LOWER(table_schema || '.' || table_name) = LOWER(src)), '') <> CURRENT_USER() THEN
+        RAISE EXCEPTION 'vfts: only a superuser or the owner of % sees its access policies: refresh attributes as one of them', src;
+    END IF;
+    np := (SELECT COUNT(*) FROM v_catalog.access_policy WHERE LOWER(table_name) = LOWER(src)
+           AND (is_policy_enabled::VARCHAR ILIKE 'enabled' OR is_policy_enabled::VARCHAR ILIKE 't%'));
+    IF np > 0 THEN
+        RAISE EXCEPTION 'vfts: % has access policies: an attribute copy would show values they hide, so vfts refuses it (README: Attributes)', src;
+    END IF;
+    IF typ = 'text' THEN
+        w := EXECUTE 'SELECT COALESCE(MAX(OCTET_LENGTH(' || vc || ')), 0) FROM ' || src;
+        IF w > 1024 THEN
+            RAISE EXCEPTION 'vfts: attribute values are at most 1024 bytes; %.% has one of % bytes', src, vc, w;
+        END IF;
+    END IF;
+    expr := CASE typ WHEN 'int' THEN vc || '::INT'
+                     WHEN 'bool' THEN 'CASE WHEN ' || vc || ' THEN 1 ELSE 0 END'
+                     WHEN 'date' THEN '(' || vc || ' - ''2000-01-01''::DATE)'
+                     ELSE vc || '::VARCHAR(1024)' END;
+    sl := (SELECT NEXTVAL('vfts.attr_seq'));
+    EXECUTE 'INSERT INTO vfts.attr_values (slot, doc_id, ' || CASE WHEN typ = 'text' THEN 'sval' ELSE 'ival' END || ') SELECT '
+         || sl || ', ' || kc || ', ' || expr || ' FROM ' || src || ' WHERE ' || kc || ' IS NOT NULL AND ' || vc || ' IS NOT NULL';
+    PERFORM COMMIT;
+    SELECT COUNT(*), COUNT(DISTINCT doc_id) INTO n, d FROM vfts.attr_values WHERE slot = sl;
+    IF n <> d THEN
+        PERFORM SELECT DROP_PARTITIONS('vfts.attr_values', sl, sl);
+        RAISE EXCEPTION 'vfts: %.% is not unique (% rows share a value): an attribute needs one value per document', src, kc, n - d;
+    END IF;
+    PERFORM UPDATE vfts.attributes SET slot = sl, version = version + 1, n_rows = n WHERE index_id = iid AND attr_name = attr;
+    PERFORM COMMIT;
+    PERFORM CALL vfts.load_attribute(nm, attr);
+    IF prev_sl IS NOT NULL THEN
+        PERFORM SELECT DROP_PARTITIONS('vfts.attr_values', prev_sl, prev_sl);
+    END IF;
+    secs := (SELECT DATEDIFF('millisecond', t0, CLOCK_TIMESTAMP()) / 1000.0);
+    PERFORM UPDATE vfts.attributes SET refreshed_at = CLOCK_TIMESTAMP(), refresh_seconds = secs WHERE index_id = iid AND attr_name = attr;
+    PERFORM COMMIT;
+    RAISE NOTICE 'vfts: attribute % of index % refreshed: % values in % s', attr, nm, n, ROUND(secs, 3);
+END;
+$$;
+
+-- CALL vfts.add_attribute('emails', 'custodian', 'app.email_meta', 'doc_id', 'custodian')
+-- A column of a table with one row per document (key_col: the index's doc_id) becomes attribute
+-- <attr> of the index: searches filter and count by it while they match (filter='custodian IN (3,
+-- 17)', tcount by='custodian'). INT, BOOLEAN, DATE or VARCHAR (at most 1024 bytes). Copied now;
+-- after the table changes, CALL vfts.refresh_attributes('<index>'). Tables with access policies
+-- are refused.
+CREATE OR REPLACE PROCEDURE vfts.add_attribute(nm VARCHAR, attr VARCHAR, src VARCHAR, kc VARCHAR, vc VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    ident VARCHAR(64) := '^[A-Za-z_][A-Za-z0-9_]*$';
+    qual VARCHAR(100) := '^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$';
+    iid INT; sch VARCHAR(128); tbl VARCHAR(128); t VARCHAR(128); typ VARCHAR(8); sup INT; own VARCHAR(256); np INT;
+BEGIN
+    iid := (SELECT MAX(index_id) FROM vfts.indexes WHERE index_name = nm);
+    IF iid IS NULL THEN
+        RAISE EXCEPTION 'vfts.add_attribute: index % does not exist', nm;
+    END IF;
+    IF attr IS NULL OR NOT REGEXP_LIKE(attr, '^[A-Za-z0-9_]{1,64}$') THEN
+        RAISE EXCEPTION 'vfts.add_attribute: attribute name must be 1 to 64 letters, digits or underscores';
+    END IF;
+    IF (SELECT COUNT(*) FROM vfts.attributes WHERE index_id = iid AND attr_name = attr) > 0 THEN
+        RAISE EXCEPTION 'vfts.add_attribute: index % has an attribute % already (vfts.refresh_attributes or vfts.drop_attribute)', nm, attr;
+    END IF;
+    IF src IS NULL OR NOT REGEXP_LIKE(src, qual) THEN
+        RAISE EXCEPTION 'vfts.add_attribute: the table must be given as schema.table';
+    END IF;
+    IF kc IS NULL OR vc IS NULL OR NOT REGEXP_LIKE(kc, ident) OR NOT REGEXP_LIKE(vc, ident) THEN
+        RAISE EXCEPTION 'vfts.add_attribute: column names must be plain identifiers';
+    END IF;
+    sch := SPLIT_PART(src, '.', 1);
+    tbl := SPLIT_PART(src, '.', 2);
+    t := (SELECT MAX(data_type) FROM v_catalog.columns WHERE table_schema ILIKE sch AND table_name ILIKE tbl AND column_name ILIKE kc);
+    IF t IS NULL THEN
+        RAISE EXCEPTION 'vfts.add_attribute: table % or its column % does not exist', src, kc;
+    END IF;
+    IF NOT t ILIKE 'int%' THEN
+        RAISE EXCEPTION 'vfts.add_attribute: key column % must be INT (the index''s doc_id), not %', kc, t;
+    END IF;
+    t := (SELECT MAX(data_type) FROM v_catalog.columns WHERE table_schema ILIKE sch AND table_name ILIKE tbl AND column_name ILIKE vc);
+    typ := CASE WHEN t ILIKE 'int%' THEN 'int' WHEN t ILIKE 'boolean' THEN 'bool' WHEN t ILIKE 'date' THEN 'date'
+                WHEN (t ILIKE 'varchar%' OR t ILIKE 'char%') THEN 'text' END;
+    IF typ IS NULL THEN
+        RAISE EXCEPTION 'vfts.add_attribute: column % must exist and be INT, BOOLEAN, DATE or VARCHAR (found %)', vc, COALESCE(t, 'nothing');
+    END IF;
+    -- access policies are visible to a superuser and to the table's owner only
+    sup := (SELECT COUNT(*) FROM v_catalog.users WHERE user_name = CURRENT_USER() AND is_super_user);
+    own := (SELECT MAX(owner_name) FROM v_catalog.tables WHERE LOWER(table_schema || '.' || table_name) = LOWER(src));
+    IF sup = 0 AND COALESCE(own, '') <> CURRENT_USER() THEN
+        RAISE EXCEPTION 'vfts.add_attribute: only a superuser or the owner of % sees its access policies: run this as one of them', src;
+    END IF;
+    np := (SELECT COUNT(*) FROM v_catalog.access_policy WHERE LOWER(table_name) = LOWER(src)
+           AND (is_policy_enabled::VARCHAR ILIKE 'enabled' OR is_policy_enabled::VARCHAR ILIKE 't%'));
+    IF np > 0 THEN
+        RAISE EXCEPTION 'vfts.add_attribute: % has access policies: an attribute copy would show values they hide, so vfts refuses it (README: Attributes)', src;
+    END IF;
+    -- checked before anything is written (refresh_attribute checks again)
+    np := EXECUTE 'SELECT COUNT(*) - COUNT(DISTINCT ' || kc || ') FROM ' || src || ' WHERE ' || kc || ' IS NOT NULL AND ' || vc || ' IS NOT NULL';
+    IF np > 0 THEN
+        RAISE EXCEPTION 'vfts.add_attribute: %.% is not unique (% rows share a value): an attribute needs one value per document', src, kc, np;
+    END IF;
+    IF typ = 'text' THEN
+        np := EXECUTE 'SELECT COALESCE(MAX(OCTET_LENGTH(' || vc || ')), 0) FROM ' || src;
+        IF np > 1024 THEN
+            RAISE EXCEPTION 'vfts.add_attribute: attribute values are at most 1024 bytes; %.% has one of % bytes', src, vc, np;
+        END IF;
+    END IF;
+    PERFORM INSERT INTO vfts.attributes (index_id, attr_name, source_table, key_col, value_col, attr_type, version)
+            VALUES (iid, attr, src, kc, vc, typ, 0);
+    PERFORM COMMIT;
+    PERFORM CALL vfts.refresh_attribute(nm, attr);
+END;
+$$;
+
+-- Copies every attribute of an index again (after the tables changed).
+CREATE OR REPLACE PROCEDURE vfts.refresh_attributes(nm VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT; n INT; i INT; a VARCHAR(64);
+BEGIN
+    iid := (SELECT MAX(index_id) FROM vfts.indexes WHERE index_name = nm);
+    IF iid IS NULL THEN
+        RAISE EXCEPTION 'vfts.refresh_attributes: index % does not exist', nm;
+    END IF;
+    n := (SELECT COUNT(*) FROM vfts.attributes WHERE index_id = iid);
+    i := 0;
+    WHILE i < n LOOP
+        a := (SELECT MAX(attr_name) FROM (SELECT attr_name, ROW_NUMBER() OVER(ORDER BY attr_name) AS rn FROM vfts.attributes WHERE index_id = iid) x
+              WHERE rn = i + 1);
+        PERFORM CALL vfts.refresh_attribute(nm, a);
+        i := i + 1;
+    END LOOP;
+    IF n = 0 THEN
+        RAISE NOTICE 'vfts: index % has no attributes', nm;
+    END IF;
+END;
+$$;
+
+-- Removes an attribute: its node files, its copy and its row.
+CREATE OR REPLACE PROCEDURE vfts.drop_attribute(nm VARCHAR, attr VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT; cdir VARCHAR(1024); sl INT; n INT; params VARCHAR(2000);
+BEGIN
+    SELECT i.index_id, i.cache_dir, a.slot INTO iid, cdir, sl
+      FROM vfts.attributes a JOIN vfts.indexes i ON i.index_id = a.index_id WHERE i.index_name = nm AND a.attr_name = attr;
+    IF iid IS NULL THEN
+        RAISE EXCEPTION 'vfts.drop_attribute: index % has no attribute %', nm, attr;
+    END IF;
+    params := 'index=' || QUOTE_LITERAL(nm) || ', name=' || QUOTE_LITERAL(attr) || ', remove=true'
+           || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
+    n := EXECUTE 'SELECT COUNT(*) FROM (SELECT vfts.tattr(k, k USING PARAMETERS ' || params || ') OVER(PARTITION NODES) FROM vfts.probe) d';
+    IF sl IS NOT NULL THEN
+        PERFORM SELECT DROP_PARTITIONS('vfts.attr_values', sl, sl);
+    END IF;
+    PERFORM DELETE FROM vfts.attributes WHERE index_id = iid AND attr_name = attr;
+    PERFORM COMMIT;
+    RAISE NOTICE 'vfts: attribute % of index % dropped (files removed on % nodes of this subcluster)', attr, nm, n;
 END;
 $$;

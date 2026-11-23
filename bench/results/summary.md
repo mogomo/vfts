@@ -219,13 +219,47 @@ One client, mean ms per query (best of 3 runs per query, median of the rounds):
 | Wikipedia he | 0.58 | 3.17 | 1.09 | 1.06 |
 | Wikipedia ar | 0.66 | 3.22 | 1.07 | 1.09 |
 
-## Search next to other data (Enron, bench/join_test.py)
+## Search next to other data (attributes, vfts 0.4.0)
 
-An attribute custodian (150 values) for every document; 10 custodians on hold. vfts: a table joined at query time; the engines: a field in every document (_update_by_query on a clone of the index). J3 and J4: 40 queries, one client, best of 3 per query, mean.
+An attribute custodian (150 values) for every document; 10 custodians on hold. vfts: `add_attribute`
+(a copy of the table's column in the index), filters and counts inside the search; the engines: a
+field in every document (`_update_by_query` on a clone of the index). Method, caches, answers and
+the plain SQL join: [joins.md](joins.md); every line: joins.jsonl.
 
-| Test | vfts (Vertica) | Elasticsearch | OpenSearch |
-|---|---:|---:|---:|
-| J1 add the attribute to every document (s) | 0.028 | 223.016 | 228.425 |
-| J2 change it for 1% of the documents (s) | 0.015 | 2.777 | 8.909 |
-| J3 top 10 among the custodians on hold (ms) | 16.81 | 2.92 | 2.74 |
-| J4 matches per custodian (ms) | 18.74 | 1.37 | 1.23 |
+#### Enron, 517,401 emails, 40 queries
+
+| Test | vfts, one SQL statement | vfts, tserve | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|---:|
+| J1 add the attribute to every document (s) | 0.425 | (same) | 231.491 | 240.056 |
+| J2 move 1% of the documents to another custodian (s) | 0.324 | (same) | 2.727 | 2.720 |
+| J3 top 10 among the custodians on hold, 1 client (ms) | 3.38 | 0.97 | 2.01 | 1.74 |
+| J3 top 10 among the custodians on hold, 32 clients (q/s) | 1,263 | 13,907 | 8,345 | 8,559 |
+| J3 top 10 among the custodians on hold, caches off, 1 client (ms) | | 0.96 | 1.34 | 1.45 |
+| J3 top 10 among the custodians on hold, caches off, 32 clients (q/s) | | 13,459 | 7,806 | 7,804 |
+| J4 matches per custodian, 1 client (ms) | 4.10 | 0.05 | 0.51 | 0.40 |
+| J4 matches per custodian, 32 clients (q/s) | 1,183 | 85,195 | 39,910 | 39,355 |
+| J4 matches per custodian, caches off, 1 client (ms) | | 1.08 | 2.29 | 2.22 |
+| J4 matches per custodian, caches off, 32 clients (q/s) | | 5,885 | 4,500 | 4,745 |
+
+vfts through vsql, one client (statement time as vsql reports it): J3 3.13 ms (3.15 ms without the filter cache), J4 3.83 ms; J1 = table 0.022 s + add_attribute 0.403 s; J2 = UPDATE 0.013 s + refresh_attributes 0.311 s.
+Elasticsearch through its Python client, one client: J3 2.93 ms, J4 1.32 ms (caches off: 2.43 / 2.92 ms); force merge after the updates 53.3 s.
+OpenSearch through its Python client, one client: J3 2.61 ms, J4 1.25 ms (caches off: 2.36 / 3.07 ms); force merge after the updates 34.8 s.
+
+#### MS MARCO, 8,841,823 passages, the first 40 questions of the dev set
+
+| Test | vfts, one SQL statement | vfts, tserve | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|---:|
+| J1 add the attribute to every document (s) | 3.214 | (same) | 888.303 | 955.758 |
+| J2 move 1% of the documents to another custodian (s) | 3.022 | (same) | 12.115 | 11.891 |
+| J3 top 10 among the custodians on hold, 1 client (ms) | 4.07 | 2.52 | 3.69 | 3.32 |
+| J3 top 10 among the custodians on hold, 32 clients (q/s) | 935 | 3,914 | 3,881 | 4,336 |
+| J3 top 10 among the custodians on hold, caches off, 1 client (ms) | | 3.75 | 3.95 | 3.63 |
+| J3 top 10 among the custodians on hold, caches off, 32 clients (q/s) | | 2,787 | 2,625 | 2,858 |
+| J4 matches per custodian, 1 client (ms) | 9.84 | 0.07 | 0.45 | 0.39 |
+| J4 matches per custodian, 32 clients (q/s) | 214 | 57,621 | 40,651 | 42,030 |
+| J4 matches per custodian, caches off, 1 client (ms) | | 5.44 | 76.30 | 93.52 |
+| J4 matches per custodian, caches off, 32 clients (q/s) | | 238 | 136 | 118 |
+
+vfts through vsql, one client (statement time as vsql reports it): J3 3.96 ms (4.38 ms without the filter cache), J4 9.04 ms; J1 = table 0.292 s + add_attribute 2.923 s; J2 = UPDATE 0.033 s + refresh_attributes 2.989 s.
+Elasticsearch through its Python client, one client: J3 4.53 ms, J4 1.13 ms (caches off: 4.84 / 72.97 ms); force merge after the updates 409.9 s.
+OpenSearch through its Python client, one client: J3 4.2 ms, J4 1.03 ms (caches off: 4.76 / 88.97 ms); force merge after the updates 160.0 s.

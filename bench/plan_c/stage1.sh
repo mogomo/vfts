@@ -2,7 +2,8 @@
 # Plan-C stage 1: measurements for 32-client throughput (one query per request). Nothing in the
 # database or in vfts changes, except a resource pool that C6 creates and drops again.
 #
-#   bench/plan_c/stage1.sh [step ...]      steps: c0 c1 c2 c4 c5 c6 c3 c12 (default: all, this order)
+#   bench/plan_c/stage1.sh [step ...]      steps: c0 c1 c2 c4 c5 c6 c3 c12 (default: all, this order);
+#                                          also v1 e2 f1 f1v s1 p1, and j1 (joins with attributes, 0.4.0)
 #
 # Every result is one JSON line in bench/out/plan_c/results.jsonl, with the CPU used (cpuwrap.py).
 # Datasets and query files as in bench/run_all.sh (indexes loaded by its step vfts).
@@ -10,7 +11,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 O=bench/out/plan_c
 mkdir -p "$O/q"
-RES=$O/results.jsonl
+RES=${STAGE1_RES:-$O/results.jsonl}     # STAGE1_RES: another file (smoke runs)
 DATA=${VFTS_DATA:-$HOME/vfts_data}
 PYV=${VFTS_VENV_PY:-$HOME/vfts_venv/bin/python}       # python with vertica_python (C5)
 STEPS=${*:-c0 c1 c2 c4 c5 c6 c3 c12}
@@ -365,6 +366,63 @@ step_c12() {   # fuzzy and phrase gaps: the engine alone (no SQL) against Elasti
         bench/engines/engines.sh stop es > /dev/null
     fi
     python3 -I bench/plan_c/c12_report.py "$O" $C12SETS 2>> "$RES" | tee "$O/c12_table.md"
+}
+
+# ---- joins with attributes (vfts 0.4.0): J1-J4 of bench/join_test.py for vfts (attributes: SQL,
+# one statement per query, and tserve) and for Elasticsearch / OpenSearch, 1 and 32 clients, the
+# same native HTTP client (tools/httpload) for tserve, one statement per query and the engines.
+#   J_SETS (default: enron msmarco); MS MARCO: the first 40 questions of the dev set, plain syntax
+jq_of() { case $1 in msmarco) head -40 "$DATA/msmarco/queries.dev.small.tsv" > "$O/q/msmarco_q40.tsv"; echo "$O/q/msmarco_q40.tsv" ;; *) echo "bench/queries/$1.tsv" ;; esac; }
+J() {   # test command...: like W, with room for J1 of the engines on MS MARCO (about an hour)
+    local t=$1; shift; timeout 14400 python3 -I bench/plan_c/cpuwrap.py "$RES" "$t" -- "$@"
+}
+j_load() {   # test port reqfile: 1 client (each request once, best of 3) and 32 clients (cycled to MINREQ)
+    local t=$1 port=$2 f=$3
+    J "${t}_c1" timeout 1800 build/tools/httpload "$port" "$f" --clients 1 --repeat 3 --times "$O/${t}_c1.times"
+    cycle "$f" "$MINREQ" "$O/q/$(basename "$f" .req)_cycled.req"
+    J "${t}_c32" timeout 3600 build/tools/httpload "$port" "$O/q/$(basename "$f" .req)_cycled.req" --clients 32 --repeat 3
+}
+step_j1() {
+    timeout 900 make tools > /dev/null || return 1
+    local old; old=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2> /dev/null || echo none)
+    governor performance
+    for ds in ${J_SETS:-enron msmarco}; do
+        local qf; qf=$(jq_of "$ds")
+        local px=""; [ "$ds" = msmarco ] && px="--plain"
+        bench/engines/engines.sh stop all > /dev/null 2>&1
+        log "j1: vfts $ds"
+        # shellcheck disable=SC2086
+        J "j1_vfts_attr_${ds}_sql_c1" python3 -I bench/join_test.py vfts_attr --dataset "$ds" --queries "$qf" $px
+        for m in serve servenc single; do
+            local extra="--mode serve"
+            # caches off: no filter sets kept (J3), no answers of counts kept (J4), as the engines' clones
+            [ "$m" = servenc ] && extra="--mode serve --param filter_cache=false --param request_cache=false"
+            [ "$m" = single ] && extra="--mode sql --sessions 32 --max-batch 1"
+            pkill -x vfts_broker 2> /dev/null; sleep 0.5
+            # shellcheck disable=SC2046
+            build/tools/vfts_broker --port 9300 --schema bench $extra $(broker_params "$ds") > "$O/j1_broker.log" 2>&1 &
+            local bp=$!
+            sleep 1
+            kill -0 $bp 2> /dev/null || { log "j1: broker did not start: $(cat "$O/j1_broker.log")"; continue; }
+            for j in j3 j4; do j_load "j1_vfts_attr_${ds}_${m}_$j" 9300 "bench/out/join_vfts_attr_${ds}_$j.req"; done
+            kill $bp 2> /dev/null; wait $bp 2> /dev/null
+        done
+        for e in ${J_ENGINES-es os}; do     # J_ENGINES="" (or none): vfts only
+            [ "$e" = none ] && continue
+            local port=9200; [ "$e" = os ] && port=9201
+            bench/engines/engines.sh stop all > /dev/null 2>&1
+            timeout 600 bench/engines/engines.sh start "$e" > /dev/null || { log "j1: $e did not start"; continue; }
+            log "j1: $e $ds"
+            # shellcheck disable=SC2086
+            J "j1_${e}_${ds}_c1" python3 -I bench/join_test.py "$e" --dataset "$ds" --queries "$qf" $px --keep
+            # as they come, then with their caches off (the clone <ds>_jnc, see bench/join_test.py)
+            for j in j3 j4 j3nc j4nc; do j_load "j1_${e}_${ds}_$j" "$port" "bench/out/join_${e}_${ds}_$j.req"; done
+            curl -s -XDELETE "localhost:$port/${ds}_j" > /dev/null
+            curl -s -XDELETE "localhost:$port/${ds}_jnc" > /dev/null
+            bench/engines/engines.sh stop "$e" > /dev/null
+        done
+    done
+    governor "$old"
 }
 
 for s in $STEPS; do

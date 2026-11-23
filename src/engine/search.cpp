@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <queue>
@@ -178,6 +179,13 @@ struct It {
     // Top level only (set by the collector): the score a document must reach to enter the top k.
     // Phrases and w/N skip reading positions of documents whose bound stays below it.
     double threshold = -1e300;
+    // Documents that are no result anyway (deleted, or left out by a filter): phrases and w/N do not
+    // read their positions (Lucene's two-phase iteration: the cheap checks first). Safe at any depth:
+    // such a document is dropped at the top, and other documents do not change.
+    const DocSet *ex = nullptr;
+    const DocFilter *exf = nullptr;
+    std::size_t ex_si = 0;
+    bool excluded(std::uint32_t d) const { return (ex && ex->test(d)) || (exf && !exf->keep(ex_si, d)); }
 };
 
 // The documents of one leaf: one term, or the union of several (stem group, expansion).
@@ -331,6 +339,7 @@ struct PhraseIt : It {
         if (positioned && (doc == NO_DOC || doc >= target)) return doc;
         positioned = true;
         for (std::uint32_t d = conjunction(conj, target); d != NO_DOC; d = conjunction(conj, d + 1)) {
+            if (excluded(d)) continue;
             if (threshold > -1e299) {
                 // the phrase occurs at most min(tf) times: when even that cannot reach the
                 // threshold, the positions are not read (the top k is the same)
@@ -481,6 +490,7 @@ struct NearIt : It {
         if (positioned && (doc == NO_DOC || doc >= target)) return doc;
         positioned = true;
         for (std::uint32_t d = conjunction(conj, target); d != NO_DOC; d = conjunction(conj, d + 1)) {
+            if (excluded(d)) continue;
             if (threshold > -1e299) {
                 // every match counts at most 1, and there are at most spans(a) + spans(b) matches
                 const std::uint64_t f = static_cast<std::uint64_t>(a->max_spans()) + b->max_spans();
@@ -631,7 +641,10 @@ struct Searcher::Impl {
     Searcher &s;
     const SearchOptions &o;
     std::vector<const Segment *> segs;
-    std::vector<const DocSet *> dead;
+    std::vector<const DocSet *> dead;           // deleted and masked: statistics and iteration
+    std::vector<const DocSet *> skip;           // dead plus the filter's: iteration only
+    const DocFilter *lf = nullptr;              // a filter asked per candidate (iteration only)
+    std::vector<std::shared_ptr<DocSet>> own;   // unions made for this search
     std::vector<const DeadCounts *> dcs;
     std::vector<const std::vector<std::uint32_t> *> masked;
     std::vector<Leaf> leaves;
@@ -650,7 +663,26 @@ struct Searcher::Impl {
             masked.push_back(&s.masked_[i]);
         }
         for (auto &t : s.tail_segs_) { segs.push_back(t.get()); dead.push_back(nullptr); dcs.push_back(nullptr); masked.push_back(&none); }
-        (void)n;
+        skip = dead;
+        lf = o.doc_filter;
+        if (o.exclude) {
+            if (o.exclude->size() != n) throw std::runtime_error("searcher: filter for " + std::to_string(o.exclude->size()) +
+                                                                 " segments, the search has " + std::to_string(n));
+            for (std::size_t i = 0; i < n; ++i) {
+                const DocSet *x = (*o.exclude)[i].get();
+                if (!x || x->count == 0) continue;
+                if (x->bits.size() != (segs[i]->n_docs() + 63) / 64) throw std::runtime_error("searcher: filter of another segment");
+                if (!dead[i] || dead[i]->count == 0) { skip[i] = x; continue; }
+                auto u = std::make_shared<DocSet>(*x);
+                u->count = 0;
+                for (std::size_t w = 0; w < u->bits.size(); ++w) {
+                    u->bits[w] |= dead[i]->bits[w];
+                    u->count += static_cast<std::uint32_t>(__builtin_popcountll(u->bits[w]));
+                }
+                own.push_back(u);
+                skip[i] = u.get();
+            }
+        }
         boost = o.classic ? 1.0f + o.k1 : 1.0f;
         const float avgdl = s.stats_.avgdl();
         for (int i = 0; i < 256; ++i)
@@ -663,7 +695,10 @@ struct Searcher::Impl {
         return static_cast<float>(std::log(1.0 + (N - static_cast<double>(df) + 0.5) / (static_cast<double>(df) + 0.5)));
     }
 
+    // deleted (statistics count without them)
     bool is_dead(std::size_t si, std::uint32_t d) const { return dead[si] && dead[si]->test(d); }
+    // not a result: deleted, or left out by the filter
+    bool is_skipped(std::size_t si, std::uint32_t d) const { return (skip[si] && skip[si]->test(d)) || (lf && !lf->keep(si, d)); }
 
     // Live documents of segment si that contain at least one of ids.
     std::uint64_t live_df(std::size_t si, const std::vector<std::uint32_t> &ids, std::int64_t stem_entry)
@@ -932,6 +967,9 @@ struct Searcher::Impl {
             it->slop = p.slop;
             it->weight = p.weight;
             it->sc = sc;
+            it->ex = skip[si];
+            it->exf = lf;
+            it->ex_si = si;
             it->init();
             return std::unique_ptr<It>(it.release());
         }
@@ -943,6 +981,9 @@ struct Searcher::Impl {
             it->ordered = p.ordered;
             it->weight = p.weight;
             it->sc = sc;
+            it->ex = skip[si];
+            it->exf = lf;
+            it->ex_si = si;
             it->init();
             return std::unique_ptr<It>(it.release());
         }
@@ -1141,7 +1182,9 @@ struct Searcher::Impl {
         std::vector<double> acc;
         std::vector<std::uint64_t> bits;
         if (n >= 2) { acc.assign(TW, 0.0); bits.assign(TW / 64, 0); }
-        const DocSet *dset = dead[si];
+        const DocSet *dset = skip[si];
+        const DocFilter *dfl = lf;
+        auto out_of = [&](std::uint32_t d) { return (dset && dset->test(d)) || (dfl && !dfl->keep(si, d)); };
         std::vector<double> wb(n), wp(n + 1, 0.0);
         std::vector<std::size_t> perm(n);       // lists by window bound, ascending
         for (std::size_t i = 0; i < n; ++i) perm[i] = i;
@@ -1194,7 +1237,7 @@ struct Searcher::Impl {
                 std::uint32_t d = x.doc;
                 while (d <= we) {
                     ++c_cand;
-                    if (!(dset && dset->test(d))) {
+                    if (!out_of(d)) {
                         const float c = w - w / (1.0f + static_cast<float>(it.tf()) * cache[norms[d]]);
                         if ((c + wp[ne]) * slack >= th) {
                             ++c_scored;
@@ -1247,7 +1290,7 @@ struct Searcher::Impl {
                             acc[o] = 0.0;
                             const std::uint32_t d = ws + o;
                             ++c_cand;
-                            if (dset && dset->test(d)) continue;
+                            if (out_of(d)) continue;
                             if ((sc + wp[nw]) * slack < th) continue;
                             bool out = false;
                             for (std::size_t j = nw; j-- > 0;) {
@@ -1278,7 +1321,7 @@ struct Searcher::Impl {
                 for (std::size_t j = ne; j < n; ++j) d = std::min(d, m[perm[j]].doc);
                 if (d > we) break;
                 ++c_cand;
-                if (!(dset && dset->test(d))) {
+                if (!out_of(d)) {
                     double sc = 0;
                     for (std::size_t j = ne; j < n; ++j) {
                         MLeaf &x = m[perm[j]];
@@ -1359,7 +1402,7 @@ struct Searcher::Impl {
         It *ph = o.pruning && (p.kind == QKind::Phrase || p.kind == QKind::Near) ? root.get() : nullptr;
         if (!ph) {
             for (std::uint32_t d = root->advance(lo); d < hi; d = root->next()) {
-                if (is_dead(si, d)) continue;
+                if (is_skipped(si, d)) continue;
                 top.offer(root->score(), seg.doc_id(d));
             }
             return;
@@ -1373,7 +1416,7 @@ struct Searcher::Impl {
             if (th > -1e299 && !bounds.empty() && phrase_bound(bounds, p.weight, ws, we) * slack < th) { ws = we + 1; continue; }
             if (ph) ph->threshold = th;
             for (std::uint32_t d = root->advance(ws); d <= we; d = root->next()) {
-                if (is_dead(si, d)) continue;
+                if (is_skipped(si, d)) continue;
                 top.offer(root->score(), seg.doc_id(d));
                 if (top.heap.size() >= top.k) {
                     const float kth = top.heap.front().score;
@@ -1426,6 +1469,61 @@ struct Searcher::Impl {
     {
         const std::function<void(std::size_t)> fn = f;
         Pool::instance().run(t.size(), static_cast<std::size_t>(std::max(o.threads, 1)), fn);
+    }
+
+    // The matches of p among docnos [lo, hi) of segment si that are not skipped, in docno order:
+    // f(d) for each (unless count_only); returns how many. Without scores (counts, tmatch). An OR of
+    // clauses is collected window by window in a bit set, each clause's documents in a row, then
+    // the skipped documents are taken out a word at a time (Lucene's BooleanScorer does this for
+    // counts and aggregations): the work follows the postings read, not documents x clauses.
+    template <class F> std::uint64_t each_match(std::size_t si, const PNode &p, std::uint32_t lo, std::uint32_t hi, bool count_only, F f)
+    {
+        std::uint64_t n = 0;
+        if (hi <= lo) return 0;
+        Scoring sc{cache, segs[si]->norms()};
+        if (!(p.kind == QKind::Bool && p.must.empty() && p.must_not.empty() && p.should.size() > 1)) {
+            std::unique_ptr<It> root = build(si, p, sc);
+            for (std::uint32_t d = root->advance(lo); d < hi; d = root->next())
+                if (!is_skipped(si, d)) { ++n; if (!count_only) f(d); }
+            return n;
+        }
+        std::vector<std::unique_ptr<It>> kids;
+        for (const PNode &k : p.should) {
+            std::unique_ptr<It> c = build(si, k, sc);
+            if (!dynamic_cast<EmptyIt *>(c.get())) kids.push_back(std::move(c));
+        }
+        constexpr std::uint32_t W = 1u << 15;       // docnos per window: a 4 KB bit set
+        std::uint64_t bits[W / 64];
+        const DocSet *sk = skip[si] && !skip[si]->bits.empty() ? skip[si] : nullptr;
+        std::uint32_t w0 = lo & ~63u;
+        while (w0 < hi && !kids.empty()) {
+            std::uint32_t m = NO_DOC;
+            for (auto &c : kids) m = std::min(m, c->advance(std::max(w0, lo)));
+            if (m >= hi) break;
+            w0 = std::max(w0, m & ~63u);                // no window over documents nothing matches
+            const std::uint32_t w1 = static_cast<std::uint32_t>(std::min<std::uint64_t>(hi, static_cast<std::uint64_t>(w0) + W));
+            const std::uint32_t nw = (w1 - w0 + 63) / 64;
+            std::memset(bits, 0, nw * sizeof(std::uint64_t));
+            for (auto &c : kids)
+                for (std::uint32_t d = c->doc; d < w1; d = c->next()) bits[(d - w0) >> 6] |= 1ull << ((d - w0) & 63);
+            if (sk) {
+                const std::size_t b0 = w0 >> 6, ns = sk->bits.size();
+                for (std::uint32_t i = 0; i < nw && b0 + i < ns; ++i) bits[i] &= ~sk->bits[b0 + i];
+            }
+            if (count_only && !lf) {
+                for (std::uint32_t i = 0; i < nw; ++i) n += static_cast<std::uint64_t>(__builtin_popcountll(bits[i]));
+            } else {
+                for (std::uint32_t i = 0; i < nw; ++i)
+                    for (std::uint64_t x = bits[i]; x; x &= x - 1) {
+                        const std::uint32_t d = w0 + i * 64 + static_cast<std::uint32_t>(__builtin_ctzll(x));
+                        if (lf && !lf->keep(si, d)) continue;
+                        ++n;
+                        if (!count_only) f(d);
+                    }
+            }
+            w0 = w1;
+        }
+        return n;
     }
 };
 
@@ -1534,6 +1632,19 @@ std::vector<Hit> Searcher::search(const std::string &query, const SearchOptions 
     return run_search(parse_query(query, analyzer, opts.query), opts);
 }
 
+std::uint64_t Searcher::count(const std::string &query, const SearchOptions &opts, Analyzer &analyzer)
+{
+    if (!prepared_) throw std::runtime_error("searcher: ready() before searching from several threads");
+    return run_count(parse_query(query, analyzer, opts.query), opts);
+}
+
+std::vector<std::uint64_t> Searcher::count_by(const std::string &query, const SearchOptions &opts, const std::vector<const std::uint32_t *> &codes,
+                                              std::uint32_t n_codes, Analyzer &analyzer)
+{
+    if (!prepared_) throw std::runtime_error("searcher: ready() before searching from several threads");
+    return run_count_by(parse_query(query, analyzer, opts.query), opts, codes, n_codes);
+}
+
 std::vector<Hit> Searcher::run_search(const QNode &q, const SearchOptions &opts_in)
 {
     if (q.kind == QKind::None || opts_in.k == 0) return {};
@@ -1591,12 +1702,9 @@ std::vector<std::int64_t> Searcher::matches(const std::string &query, const Sear
     std::vector<std::vector<std::int64_t>> per(tasks.size());
     im.each_task(tasks, [&](std::size_t ti) {
         const Impl::Task &t = tasks[ti];
-        if (t.hi <= t.lo) return;
-        Scoring sc{im.cache, im.segs[t.si]->norms()};
-        std::unique_ptr<It> root = im.build(t.si, p, sc);
         const Segment &seg = *im.segs[t.si];
-        for (std::uint32_t d = root->advance(t.lo); d < t.hi; d = root->next())
-            if (!im.is_dead(t.si, d)) per[ti].push_back(seg.doc_id(d));
+        std::vector<std::int64_t> &out = per[ti];
+        im.each_match(t.si, p, t.lo, t.hi, false, [&](std::uint32_t d) { out.push_back(seg.doc_id(d)); });
     });
     std::vector<std::int64_t> out;
     for (auto &v : per) out.insert(out.end(), v.begin(), v.end());
@@ -1614,16 +1722,62 @@ std::uint64_t Searcher::run_count(const QNode &q, const SearchOptions &opts_in)
     std::vector<std::uint64_t> per(tasks.size(), 0);
     im.each_task(tasks, [&](std::size_t ti) {
         const Impl::Task &t = tasks[ti];
-        if (t.hi <= t.lo) return;
-        Scoring sc{im.cache, im.segs[t.si]->norms()};
-        std::unique_ptr<It> root = im.build(t.si, p, sc);
-        std::uint64_t c = 0;
-        for (std::uint32_t d = root->advance(t.lo); d < t.hi; d = root->next()) c += !im.is_dead(t.si, d);
-        per[ti] = c;
+        per[ti] = im.each_match(t.si, p, t.lo, t.hi, true, [](std::uint32_t) {});
     });
     std::uint64_t total = 0;
     for (std::uint64_t c : per) total += c;
     return total;
+}
+
+std::vector<std::uint64_t> Searcher::count_by(const std::string &query, const SearchOptions &opts,
+                                              const std::vector<const std::uint32_t *> &codes, std::uint32_t n_codes)
+{
+    prepare();
+    const QNode q = parse_query(query, *analyzer_, opts.query);
+    return run_count_by(q, opts, codes, n_codes);
+}
+
+std::vector<std::uint64_t> Searcher::run_count_by(const QNode &q, const SearchOptions &opts_in,
+                                                  const std::vector<const std::uint32_t *> &codes, std::uint32_t n_codes)
+{
+    std::vector<std::uint64_t> total(n_codes, 0);
+    if (q.kind == QKind::None) return total;
+    SearchOptions opts = opts_in;
+    opts.threads = static_cast<int>(Pool::instance().share(static_cast<std::size_t>(std::max(opts.threads, 1))));
+    Impl im(*this, opts);
+    if (codes.size() != im.segs.size()) throw std::runtime_error("count_by: codes for " + std::to_string(codes.size()) +
+                                                                 " segments, the search has " + std::to_string(im.segs.size()));
+    const PNode p = im.plan(q);
+    const std::vector<Impl::Task> tasks = im.tasks();
+    // a count array per task when the values are few; else one map per task
+    const bool dense = n_codes <= (1u << 20);
+    std::vector<std::vector<std::uint64_t>> per(tasks.size());
+    std::vector<std::unordered_map<std::uint32_t, std::uint64_t>> sparse(dense ? 0 : tasks.size());
+    im.each_task(tasks, [&](std::size_t ti) {
+        const Impl::Task &t = tasks[ti];
+        if (t.hi <= t.lo) return;
+        const std::uint32_t *c = codes[t.si];
+        if (!c) return;
+        if (dense) {
+            std::vector<std::uint64_t> &v = per[ti];
+            v.assign(n_codes, 0);
+            im.each_match(t.si, p, t.lo, t.hi, false, [&](std::uint32_t d) { if (c[d] < n_codes) ++v[c[d]]; });
+        } else {
+            auto &m = sparse[ti];
+            im.each_match(t.si, p, t.lo, t.hi, false, [&](std::uint32_t d) { if (c[d] < n_codes) ++m[c[d]]; });
+        }
+    });
+    for (auto &v : per) for (std::size_t i = 0; i < v.size(); ++i) total[i] += v[i];
+    for (auto &m : sparse) for (auto &kv : m) total[kv.first] += kv.second;
+    return total;
+}
+
+std::vector<const Segment *> Searcher::all_segments() const
+{
+    std::vector<const Segment *> v;
+    for (const SegmentRef &r : segs_) v.push_back(r.seg);
+    for (const auto &t : tail_segs_) v.push_back(t.get());
+    return v;
 }
 
 // A batch: the queries are parsed here, one after another (the analyzer is not shared), planned in

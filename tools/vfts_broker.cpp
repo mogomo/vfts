@@ -5,8 +5,11 @@
 //                sql:   [--sessions 4] [--max-batch 32]
 //                serve: [--channels 1] [--workers 0] [--socket /tmp/vfts_broker.<port>.sock]
 //
-// Request:  POST /<index>/_search  {"query": "<vfts query>"}   (HTTP/1.1, keep-alive)
+// Request:  POST /<index>/_search  {"query": "<vfts query>"[, "filter": "<filter>"][, "k": <n>]}   (HTTP/1.1, keep-alive)
 // Response: {"took": <ms>, "batch": <queries in the statement>, "hits": [{"id": <doc_id>, "score": <s>}, ...]}
+// Request:  POST /<index>/_count   {"query": "<vfts query>"[, "filter": "<filter>"][, "by": "<attribute>"]}
+// Response: {"count": <n>}, or with by: {"buckets": [{"value": "<v>", "count": <n>}, ...]}
+// filter and by: the index's attributes (README: Attributes).
 //
 // Every user gets their own Vertica sessions: the credentials of the request (HTTP Basic) are the
 // ones vsql logs in with, so Vertica checks the password, the grants, the access policies and the
@@ -159,6 +162,11 @@ bool safe_name(const std::string &s)
 
 struct Pending {
     std::string query;
+    int op = 0;                 // 0 search, 1 count, 2 count by
+    std::string filter, by;
+    long k = 0;                 // 0: --k
+    // requests with the same options can share one statement
+    std::string group() const { return std::to_string(op) + "\x1f" + filter + "\x1f" + by + "\x1f" + std::to_string(k); }
     std::mutex mu;
     std::condition_variable cv;
     bool done = false;
@@ -199,7 +207,9 @@ public:
             close(in[1]);
             close(out[0]);
             if (!user.empty()) { setenv("VSQL_USER", user.c_str(), 1); setenv("VSQL_PASSWORD", password.c_str(), 1); }
-            execlp("vsql", "vsql", "-X", "-A", "-t", "-q", "-F", "\t", "-v", "ON_ERROR_STOP=0", static_cast<char *>(nullptr));
+            // no ON_ERROR_STOP: vsql takes any value of it (also 0) as on, and would end the session
+            // at the first failing statement; errors come on the same pipe, before the marker
+            execlp("vsql", "vsql", "-X", "-A", "-t", "-q", "-F", "\t", static_cast<char *>(nullptr));
             _exit(127);
         }
         close(in[0]);
@@ -287,9 +297,10 @@ class SqlLane : public Lane {
             {
                 std::unique_lock<std::mutex> l(mu_);
                 cv_.wait(l, [&] { return !queue_.empty(); });
-                while (!queue_.empty() && batch.size() < static_cast<std::size_t>(cfg.max_batch)) {
-                    batch.push_back(queue_.front());
-                    queue_.pop_front();
+                const std::string g = queue_.front()->group();
+                for (auto it = queue_.begin(); it != queue_.end() && batch.size() < static_cast<std::size_t>(cfg.max_batch);) {
+                    if ((*it)->group() == g) { batch.push_back(*it); it = queue_.erase(it); }
+                    else ++it;
                 }
             }
             if (!s) { for (auto &p : batch) p->finish(503, "{\"error\": \"" + json_escape(error_) + "\"}"); continue; }
@@ -299,9 +310,14 @@ class SqlLane : public Lane {
                 for (char &c : q) if (c == '\n' || c == '\t' || c == '\r') c = ' ';
                 qs += std::to_string(i) + "\t" + q + "\n";
             }
-            std::string sql = "SELECT /*+LABEL(vfts_broker)*/ qid, doc_id, score FROM (SELECT vfts.tsearch(* USING PARAMETERS index=" + lit(index_) +
-                              ", queries=" + lit(qs) + ", k=" + std::to_string(cfg.k);
-            for (const std::string &p : cfg.params) sql += ", " + p;
+            const Pending &b0 = *batch[0];
+            const char *cols = b0.op == 0 ? "qid, doc_id, score" : b0.op == 1 ? "qid, count" : "qid, value, count";
+            std::string sql = std::string("SELECT /*+LABEL(vfts_broker)*/ ") + cols + " FROM (SELECT vfts." + (b0.op == 0 ? "tsearch" : "tcount") +
+                              "(* USING PARAMETERS index=" + lit(index_) + ", queries=" + lit(qs);
+            if (b0.op == 0) sql += ", k=" + std::to_string(b0.k ? b0.k : cfg.k);
+            if (!b0.filter.empty()) sql += ", filter=" + lit(b0.filter);
+            if (b0.op == 2) sql += ", by=" + lit(b0.by);
+            for (const std::string &p : cfg.params) if (b0.op == 0 || p.rfind("k=", 0) != 0) sql += ", " + p;
             sql += ") OVER() FROM " + cfg.schema + "." + index_ + "_" + cfg.view + ") r;";
             const auto t0 = Clock::now();
             const bool ok = s->run(sql, lines);
@@ -310,19 +326,23 @@ class SqlLane : public Lane {
             std::string err;
             for (const std::string &l : lines) {
                 const std::size_t a = l.find('\t'), b = a == std::string::npos ? a : l.find('\t', a + 1);
-                if (b == std::string::npos) { if (err.empty() && !l.empty()) err = l; continue; }
+                if (a == std::string::npos || (b0.op != 1 && b == std::string::npos)) { if (err.empty() && !l.empty()) err = l; continue; }
                 const std::size_t qi = std::strtoull(l.c_str(), nullptr, 10);
                 if (qi >= batch.size()) continue;
                 std::string &h = hits[qi];
+                if (b0.op == 1) { h = l.substr(a + 1); continue; }
                 if (!h.empty()) h += ", ";
-                h += "{\"id\": " + l.substr(a + 1, b - a - 1) + ", \"score\": " + l.substr(b + 1) + "}";
+                if (b0.op == 0) h += "{\"id\": " + l.substr(a + 1, b - a - 1) + ", \"score\": " + l.substr(b + 1) + "}";
+                else h += "{\"value\": \"" + json_escape(l.substr(a + 1, b - a - 1)) + "\", \"count\": " + l.substr(b + 1) + "}";
             }
             if (!ok) err = "the Vertica session ended";
             char took[64];
             std::snprintf(took, sizeof took, "%.3f", ms);
             for (std::size_t i = 0; i < batch.size(); ++i) {
                 if (!err.empty()) batch[i]->finish(err.find("ERROR") != std::string::npos ? 400 : 500, "{\"error\": \"" + json_escape(err) + "\"}");
-                else batch[i]->finish(200, std::string("{\"took\": ") + took + ", \"batch\": " + std::to_string(batch.size()) + ", \"hits\": [" + hits[i] + "]}");
+                else if (b0.op == 0) batch[i]->finish(200, std::string("{\"took\": ") + took + ", \"batch\": " + std::to_string(batch.size()) + ", \"hits\": [" + hits[i] + "]}");
+                else if (b0.op == 1) batch[i]->finish(200, std::string("{\"took\": ") + took + ", \"batch\": " + std::to_string(batch.size()) + ", \"count\": " + (hits[i].empty() ? "0" : hits[i]) + "}");
+                else batch[i]->finish(200, std::string("{\"took\": ") + took + ", \"batch\": " + std::to_string(batch.size()) + ", \"buckets\": [" + hits[i] + "]}");
             }
             if (!ok) { std::fprintf(stderr, "session %d of %s ended; reconnecting\n", no, index_.c_str()); try { s.reset(new Session(user_, password_)); } catch (...) { s.reset(); } }
         }
@@ -467,6 +487,23 @@ class Channel {
                 if (p) {
                     if (n < 0) {
                         p->finish(400, "{\"error\": \"" + json_escape(buf.substr(at + 12, len - 8)) + "\"}");
+                    } else if (p->op != 0) {
+                        // buckets: (u64 count, u16 length, value)
+                        std::string body = p->op == 1 ? "{\"count\": " : "{\"buckets\": [";
+                        std::size_t q = at + 12;
+                        for (std::int32_t i = 0; i < n && q + 10 <= at + 4 + len; ++i) {
+                            std::uint64_t c;
+                            std::uint16_t vl;
+                            std::memcpy(&c, buf.data() + q, 8);
+                            std::memcpy(&vl, buf.data() + q + 8, 2);
+                            const std::string v = buf.substr(q + 10, vl);
+                            q += 10 + vl;
+                            if (p->op == 1) body += std::to_string(c);
+                            else body += std::string(i ? ", " : "") + "{\"value\": \"" + json_escape(v) + "\", \"count\": " + std::to_string(c) + "}";
+                        }
+                        if (p->op == 1 && n == 0) body += "0";
+                        body += p->op == 1 ? "}" : "]}";
+                        p->finish(200, std::move(body));
                     } else {
                         std::string body = "{\"hits\": [";
                         char item[96];
@@ -534,11 +571,27 @@ public:
             id = next_++;
             waiting_[id] = p;
         }
+        std::string payload;
+        if (p->op == 0 && p->filter.empty() && p->k == 0) {
+            payload = p->query;
+        } else {
+            // options before the query (src/udx/tserve.cpp)
+            payload.push_back('\0');
+            payload.push_back(static_cast<char>(p->op));
+            const std::uint32_t k = static_cast<std::uint32_t>(p->k);
+            payload.append(reinterpret_cast<const char *>(&k), 4);
+            for (const std::string *x : {&p->filter, &p->by}) {
+                const std::uint16_t l = static_cast<std::uint16_t>(x->size());
+                payload.append(reinterpret_cast<const char *>(&l), 2);
+                payload += *x;
+            }
+            payload += p->query;
+        }
         std::string f(8, '\0');
-        const std::uint32_t len = static_cast<std::uint32_t>(4 + p->query.size());
+        const std::uint32_t len = static_cast<std::uint32_t>(4 + payload.size());
         std::memcpy(&f[0], &len, 4);
         std::memcpy(&f[4], &id, 4);
-        f += p->query;
+        f += payload;
         std::lock_guard<std::mutex> l(wmu_);
         std::size_t off = 0;
         while (off < f.size()) {
@@ -641,7 +694,8 @@ void connection(int fd)
         const std::string index = sl == std::string::npos ? "" : path.substr(1, sl - 1);
         const std::string action = sl == std::string::npos ? "" : path.substr(sl + 1);
         if (!safe_name(index) || (action != "_search" && action != "_count")) { reply(fd, 404, "{\"error\": \"POST /<index>/_search\"}"); continue; }
-        if (action == "_count") { reply(fd, 200, "{\"count\": 0}"); continue; }      // connection check of the load generator
+        std::string probe;
+        if (action == "_count" && !json_string(body, "query", probe)) { reply(fd, 200, "{\"count\": 0}"); continue; }      // connection check of a load generator
         std::string user, password;
         const std::size_t au = lower.find("\r\nauthorization: basic ");
         if (au != std::string::npos) {
@@ -654,6 +708,18 @@ void connection(int fd)
         }
         auto p = std::make_shared<Pending>();
         if (!json_string(body, "query", p->query)) { reply(fd, 400, "{\"error\": \"body: {\\\"query\\\": \\\"...\\\"}\"}"); continue; }
+        json_string(body, "filter", p->filter);
+        if (action == "_count") p->op = json_string(body, "by", p->by) ? 2 : 1;
+        else if (json_string(body, "by", p->by)) { reply(fd, 400, "{\"error\": \"by: POST /<index>/_count\"}"); continue; }
+        {
+            const std::size_t kp = body.find("\"k\"");
+            if (kp != std::string::npos) {
+                const std::size_t c = body.find(':', kp);
+                p->k = c == std::string::npos ? -1 : std::strtol(body.c_str() + c + 1, nullptr, 10);
+                if (p->k < 1 || p->k > 1000000) { reply(fd, 400, "{\"error\": \"k must be 1 to 1000000\"}"); continue; }
+            }
+        }
+        if (p->filter.size() > 65000 || p->by.size() > 64) { reply(fd, 400, "{\"error\": \"filter or by too long\"}"); continue; }
         Lane *lane = lane_for(user, password, index);
         const std::string err = lane->error();
         if (!err.empty()) { reply(fd, 401, "{\"error\": \"" + json_escape(err) + "\"}"); continue; }

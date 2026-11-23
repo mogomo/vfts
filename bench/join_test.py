@@ -2,7 +2,20 @@
 """Search next to other data: vfts (a join in Vertica) against Elasticsearch / OpenSearch (an
 attribute stored in every document), on Enron.
 
-    python3 -I bench/join_test.py <vfts|es|os> [--dataset enron] [--queries bench/queries/enron.tsv]
+    python3 -I bench/join_test.py <vfts|vfts_attr|es|os> [--dataset enron] [--queries FILE] [--plain] [--limit N]
+
+    --plain    the queries are plain text (MS MARCO questions): syntax='plain' / a match query
+    --limit N  the first N queries only
+    --keep     engines: keep the clones <ds>_j and <ds>_jnc (for tools/httpload with many clients)
+
+The engines are measured twice: as they come (their caches on) and on a second clone <ds>_jnc with
+the node query cache and the shard request cache off (fields *_nocache_*, requests *nc.req): the
+queries repeat, and those caches return the matches or the whole answer of a repeated query. vfts
+keeps no matches and no answers; J3 is measured with and without its filter cache.
+
+J3 and J4 requests are also written as bench/out/join_<engine>_<ds>_j3.req / _j4.req ("path<TAB>body"
+lines for tools/httpload): the engines' clone, and for vfts_attr the requests of vfts_broker
+(POST /<ds>/_search with filter and k, POST /<ds>/_count with by).
 
 Every document gets an attribute custodian (150 values: doc_id % 150, like the custodians of an
 e-discovery case); 10 custodians are on legal hold (table / terms list).
@@ -17,6 +30,13 @@ e-discovery case); 10 custodians are on legal hold (table / terms list).
         engines: bool query with a terms filter on custodian
     J4  number of matches per custodian, for each query
         vfts: tmatch (every match, no scores) JOIN <ds>_meta GROUP BY custodian; engines: terms aggregation
+
+vfts_attr: the same table, made an attribute of the index (vfts 0.4.0, README: Attributes), so that
+the search filters and counts while it matches, as the engines do:
+    J1  CREATE TABLE <ds>_meta AS ... + CALL vfts.add_attribute (copied into every node's cache)
+    J2  UPDATE <ds>_meta ... + CALL vfts.refresh_attributes
+    J3  tsearch(filter='custodian IN (<hold>)', k=10)
+    J4  tcount(by='custodian')
 
 The engines work on a clone of the dataset's index (<ds>_j, _clone API: no copy of the data),
 deleted at the end; J3 and J4 are measured after a force merge of the clone into one segment, as
@@ -38,6 +58,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PORTS = {"es": int(os.environ.get("ES_PORT", 9200)), "os": int(os.environ.get("OS_PORT", 9201))}
 CUSTODIANS, HOLD = 150, [3, 17, 29, 42, 58, 71, 86, 99, 113, 140]
 REPEAT = 3
+PLAIN = "--plain" in sys.argv
+PARAMS = "mode='stem', max_expansions=100000, bm25='classic'" + (", syntax='plain'" if PLAIN else "")
 
 
 def arg(name, default=None):
@@ -80,7 +102,7 @@ def vsql_timed(stmts):
 class Conn:
     def __init__(self, port):
         self.port = port
-        self.c = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
+        self.c = http.client.HTTPConnection("127.0.0.1", port, timeout=14400)   # J1 on MS MARCO: about an hour
 
     def req(self, method, path, body=None):
         data = json.dumps(body).encode() if body is not None else None
@@ -98,7 +120,7 @@ def queries(path):
 
 def run_vfts(ds, qs, out_dir):
     res = {"engine": "vfts", "dataset": ds}
-    vsql(f"DROP TABLE IF EXISTS bench.{ds}_meta; DROP TABLE IF EXISTS bench.{ds}_hold;")
+    vsql(f"DROP TABLE IF EXISTS bench.{ds}_meta CASCADE; DROP TABLE IF EXISTS bench.{ds}_hold CASCADE;")
     _, t = vsql(f"CREATE TABLE bench.{ds}_meta AS SELECT doc_id, (doc_id % {CUSTODIANS})::INT AS custodian FROM bench.{ds} "
                 f"ORDER BY doc_id SEGMENTED BY HASH(doc_id) ALL NODES; COMMIT;")
     res["j1_add_attribute_s"] = round(t, 3)
@@ -107,7 +129,7 @@ def run_vfts(ds, qs, out_dir):
     _, t = vsql(f"UPDATE bench.{ds}_meta SET custodian = (custodian + 1) % {CUSTODIANS} WHERE doc_id % 100 = 7; COMMIT;")
     res["j2_update_1pct_s"] = round(t, 3)
     res["j2_rows"] = int(vsql(f"SELECT COUNT(*) FROM bench.{ds}_meta WHERE doc_id % 100 = 7")[0])
-    p = "mode='stem', max_expansions=100000, bm25='classic'"
+    p = PARAMS
     j3 = [f"SELECT r.doc_id, r.score FROM (SELECT vfts.tsearch(* USING PARAMETERS index='{ds}', query={lit(q)}, k=1000000, {p}) OVER() "
           f"FROM bench.{ds}_snap) r JOIN bench.{ds}_meta m USING (doc_id) JOIN bench.{ds}_hold h USING (custodian) "
           f"ORDER BY r.score DESC, r.doc_id LIMIT 10;" for _, q in qs]
@@ -129,13 +151,70 @@ def run_vfts(ds, qs, out_dir):
     return res
 
 
+def run_vfts_attr(ds, qs, out_dir):
+    res = {"engine": "vfts_attr", "dataset": ds}
+    have = vsql(f"SELECT COUNT(*) FROM vfts.attributes a JOIN vfts.indexes i USING (index_id) WHERE i.index_name = '{ds}' "
+                f"AND a.attr_name = 'custodian'")[0].strip()
+    if have != "0":
+        vsql(f"CALL vfts.drop_attribute('{ds}', 'custodian')")
+    vsql(f"DROP TABLE IF EXISTS bench.{ds}_meta CASCADE;")
+    _, t1 = vsql(f"CREATE TABLE bench.{ds}_meta AS SELECT doc_id, (doc_id % {CUSTODIANS})::INT AS custodian FROM bench.{ds} "
+                 f"ORDER BY doc_id SEGMENTED BY HASH(doc_id) ALL NODES; COMMIT;")
+    _, t2 = vsql(f"CALL vfts.add_attribute('{ds}', 'custodian', 'bench.{ds}_meta', 'doc_id', 'custodian')")
+    res["j1_table_s"] = round(t1, 3)
+    res["j1_attribute_s"] = round(t2, 3)
+    res["j1_add_attribute_s"] = round(t1 + t2, 3)
+    _, t1 = vsql(f"UPDATE bench.{ds}_meta SET custodian = (custodian + 1) % {CUSTODIANS} WHERE doc_id % 100 = 7; COMMIT;")
+    _, t2 = vsql(f"CALL vfts.refresh_attributes('{ds}')")
+    res["j2_table_s"] = round(t1, 3)
+    res["j2_refresh_s"] = round(t2, 3)
+    res["j2_update_1pct_s"] = round(t1 + t2, 3)
+    res["j2_rows"] = int(vsql(f"SELECT COUNT(*) FROM bench.{ds}_meta WHERE doc_id % 100 = 7")[0])
+    hold = ", ".join(str(c) for c in HOLD)
+    j3 = [f"SELECT doc_id, score FROM (SELECT vfts.tsearch(* USING PARAMETERS index='{ds}', query={lit(q)}, k=10, "
+          f"filter='custodian IN ({hold})', {PARAMS}) OVER() FROM bench.{ds}_snap) r;" for _, q in qs]
+    with open(os.path.join(out_dir, f"join_vfts_attr_{ds}_j3.req"), "w") as f:
+        for _, q in qs:
+            f.write(f"/{ds}/_search\t" + json.dumps({"query": q, "filter": f"custodian IN ({hold})", "k": 10}) + "\n")
+    with open(os.path.join(out_dir, f"join_vfts_attr_{ds}_j4.req"), "w") as f:
+        for _, q in qs:
+            f.write(f"/{ds}/_count\t" + json.dumps({"query": q, "by": "custodian"}) + "\n")
+    j4 = [f"SELECT value, count FROM (SELECT vfts.tcount(* USING PARAMETERS index='{ds}', query={lit(q)}, by='custodian', {PARAMS}) OVER() "
+          f"FROM bench.{ds}_snap) r;" for _, q in qs]
+    for name, stmts in (("j3", j3), ("j4", j4)):
+        best, outs = [1e18] * len(stmts), None
+        vsql_timed(stmts)   # warm-up
+        for _ in range(REPEAT):
+            o, ms = vsql_timed(stmts)
+            outs = outs or o
+            best = [min(b, m) if m is not None else b for b, m in zip(best, ms)]
+        res[f"{name}_mean_ms"] = round(sum(best) / len(best), 2)
+        with open(os.path.join(out_dir, f"join_vfts_attr_{ds}_{name}.tsv"), "w") as f:
+            for (qid, _), rows in zip(qs, outs):
+                if name == "j4":
+                    rows = sorted(rows, key=lambda r: int(r.split("\t")[0]))
+                for r in rows:
+                    a = r.split("\t")
+                    f.write(f"{qid}\t{a[0]}\t{float(a[1]):.4f}\n" if name == "j3" else f"{qid}\t{a[0]}\t{a[1]}\n")
+    # J3 again without the filter cache (the engines' caches off: see run_engine)
+    j3n = [s.replace("filter='custodian", "filter_cache=false, filter='custodian") for s in j3]
+    best = [1e18] * len(j3n)
+    vsql_timed(j3n)
+    for _ in range(REPEAT):
+        _, ms = vsql_timed(j3n)
+        best = [min(b, m) if m is not None else b for b, m in zip(best, ms)]
+    res["j3_nocache_mean_ms"] = round(sum(best) / len(best), 2)
+    return res
+
+
 def run_engine(engine, ds, qpath, qs, out_dir):
     res = {"engine": engine, "dataset": ds}
     port = PORTS[engine]
     c = Conn(port)
     dump = os.path.join(out_dir, f"join_{engine}_{ds}.req")
-    subprocess.run([sys.executable, "-I", os.path.join(HERE, "run_engines.py"), engine, ds, qpath, "--mode", "stem", "--dump", dump], check=True)
-    bodies = [json.loads(l.split("\t", 1)[1])["query"] for l in open(dump, encoding="utf-8")]
+    subprocess.run([sys.executable, "-I", os.path.join(HERE, "run_engines.py"), engine, ds, qpath, "--mode", "stem", "--dump", dump]
+                   + (["--plain"] if PLAIN else []), check=True)
+    bodies = [json.loads(l.split("\t", 1)[1])["query"] for l in open(dump, encoding="utf-8")][:len(qs)]
     j = f"{ds}_j"
     try:
         c.req("DELETE", f"/{j}")
@@ -166,6 +245,9 @@ def run_engine(engine, ds, qpath, qs, out_dir):
     j4 = [{"query": b, "size": 0, "track_total_hits": False, "aggs": {"c": {"terms": {"field": "custodian", "size": CUSTODIANS}}}}
           for b in bodies]
     for name, reqs in (("j3", j3), ("j4", j4)):
+        with open(os.path.join(out_dir, f"join_{engine}_{ds}_{name}.req"), "w") as f:
+            for b in reqs:
+                f.write(f"/{j}/_search\t" + json.dumps(b) + "\n")
         best, outs = [1e18] * len(reqs), [None] * len(reqs)
         for run in range(REPEAT + 1):
             for i, b in enumerate(reqs):
@@ -184,7 +266,36 @@ def run_engine(engine, ds, qpath, qs, out_dir):
                 else:
                     for bkt in sorted(o["aggregations"]["c"]["buckets"], key=lambda x: x["key"]):
                         f.write(f"{qid}\t{bkt['key']}\t{bkt['doc_count']}\n")
-    c.req("DELETE", f"/{j}")
+    # The same on a clone with the engine's caches off (index.queries.cache.enabled: the node query
+    # cache keeps the matches of a query run without scores, as J4 is, once it is seen often;
+    # index.requests.cache.enable / request_cache=false: the shard request cache keeps whole answers
+    # of size-0 requests). The benchmark repeats its queries, so these caches answer most of them.
+    jn = f"{ds}_jnc"
+    try:
+        c.req("DELETE", f"/{jn}")
+    except RuntimeError:
+        pass
+    c.req("PUT", f"/{j}/_settings", {"index.blocks.write": True})
+    c.req("POST", f"/{j}/_clone/{jn}", {"settings": {"index.blocks.write": None, "index.number_of_replicas": 0,
+                                                     "index.queries.cache.enabled": False, "index.requests.cache.enable": False}})
+    c.req("PUT", f"/{j}/_settings", {"index.blocks.write": None})
+    c.req("GET", f"/_cluster/health/{jn}?wait_for_status=green&timeout=120s")
+    for name, reqs in (("j3", j3), ("j4", j4)):
+        with open(os.path.join(out_dir, f"join_{engine}_{ds}_{name}nc.req"), "w") as f:
+            for b in reqs:
+                f.write(f"/{jn}/_search?request_cache=false\t" + json.dumps(b) + "\n")
+        best = [1e18] * len(reqs)
+        for run in range(REPEAT + 1):
+            for i, b in enumerate(reqs):
+                t0 = time.perf_counter()
+                c.req("POST", f"/{jn}/_search?request_cache=false", b)
+                ms = (time.perf_counter() - t0) * 1000
+                if run:
+                    best[i] = min(best[i], ms)
+        res[f"{name}_nocache_mean_ms"] = round(sum(best) / len(best), 2)
+    if "--keep" not in sys.argv:
+        c.req("DELETE", f"/{j}")
+        c.req("DELETE", f"/{jn}")
     return res
 
 
@@ -195,7 +306,9 @@ def main():
     out_dir = os.path.join(HERE, "out")
     os.makedirs(out_dir, exist_ok=True)
     qs = queries(qpath)
-    res = run_vfts(ds, qs, out_dir) if engine == "vfts" else run_engine(engine, ds, qpath, qs, out_dir)
+    qs = qs[:int(arg("--limit", len(qs)))]
+    res = (run_vfts(ds, qs, out_dir) if engine == "vfts" else run_vfts_attr(ds, qs, out_dir) if engine == "vfts_attr"
+           else run_engine(engine, ds, qpath, qs, out_dir))
     res["queries"] = len(qs)
     print(json.dumps(res))
 

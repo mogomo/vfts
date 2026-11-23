@@ -128,6 +128,35 @@ CREATE TABLE IF NOT EXISTS vfts.index_stats (
     created     TIMESTAMPTZ NOT NULL
 ) UNSEGMENTED ALL NODES;
 
+-- Attributes (docs/design.md "Attributes"): a column of another table copied into the index, so
+-- that searches filter and count by it (parameters filter and by). The table stays the place of
+-- the value; CALL vfts.refresh_attributes copies it into vfts.attr_values and every node's cache.
+-- slot: the partition of the current copy in vfts.attr_values (a new one at every refresh).
+CREATE TABLE IF NOT EXISTS vfts.attributes (
+    index_id        INT NOT NULL,
+    attr_name       VARCHAR(64) NOT NULL,
+    source_table    VARCHAR(300) NOT NULL,     -- schema.table
+    key_col         VARCHAR(128) NOT NULL,     -- the index's doc_id
+    value_col       VARCHAR(128) NOT NULL,
+    attr_type       VARCHAR(8) NOT NULL,       -- int, bool, date or text
+    version         INT NOT NULL,              -- refreshes so far
+    slot            INT,
+    n_rows          INT,
+    refreshed_at    TIMESTAMPTZ,
+    refresh_seconds FLOAT
+) UNSEGMENTED ALL NODES;
+
+-- The copies: (doc_id, value) with the value as an integer (int, bool 0/1, date: days since
+-- 2000-01-01) or as text. Replicated like the index tables, so every node loads locally.
+CREATE TABLE IF NOT EXISTS vfts.attr_values (
+    slot   INT NOT NULL,
+    doc_id INT NOT NULL,
+    ival   INT,
+    sval   VARCHAR(1024)
+) ORDER BY slot, doc_id UNSEGMENTED ALL NODES PARTITION BY slot;
+
+CREATE SEQUENCE IF NOT EXISTS vfts.attr_seq CACHE 1;
+
 -- Index and segment ids: never reused, so a cache file of a dropped index is never taken for a
 -- newer one.
 CREATE SEQUENCE IF NOT EXISTS vfts.index_seq CACHE 1;
@@ -162,14 +191,16 @@ CREATE OR REPLACE TRANSFORM FUNCTION vfts.tnode    AS LANGUAGE 'C++' NAME 'TNode
 CREATE OR REPLACE TRANSFORM FUNCTION vfts.tinfo    AS LANGUAGE 'C++' NAME 'TInfoFactory'    LIBRARY vfts.vfts :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vfts.thave    AS LANGUAGE 'C++' NAME 'THaveFactory'    LIBRARY vfts.vfts :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vfts.tdrop    AS LANGUAGE 'C++' NAME 'TDropFactory'    LIBRARY vfts.vfts :fenced;
+CREATE OR REPLACE TRANSFORM FUNCTION vfts.tattr    AS LANGUAGE 'C++' NAME 'TAttrIntFactory'  LIBRARY vfts.vfts :fenced;
+CREATE OR REPLACE TRANSFORM FUNCTION vfts.tattr    AS LANGUAGE 'C++' NAME 'TAttrTextFactory' LIBRARY vfts.vfts :fenced;
 
 GRANT USAGE ON SCHEMA vfts TO PUBLIC;
-GRANT SELECT ON vfts.indexes, vfts.segments, vfts.index_stats, vfts.probe TO PUBLIC;
+GRANT SELECT ON vfts.indexes, vfts.segments, vfts.index_stats, vfts.probe, vfts.attributes TO PUBLIC;
 
 \i sql/procedures.sql
 
 -- Users get the search functions only. The functions that write node caches (tbuild, tmerge,
--- tload, thave, tdrop) and the procedures that manage indexes are for the index owner
+-- tload, thave, tdrop, tattr) and the procedures that manage indexes are for the index owner
 -- (a superuser); vfts 0.1.0 granted every function to PUBLIC, this takes that back.
 REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA vfts FROM PUBLIC;
 GRANT EXECUTE ON TRANSFORM FUNCTION vfts.tversion() TO PUBLIC;

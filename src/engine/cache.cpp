@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "attribute.h"
 
 #include <algorithm>
 #include <atomic>
@@ -454,6 +455,19 @@ static bool gen_file_id(const std::string &dir, std::int64_t gen, dev_t &dev, in
     return true;
 }
 
+void CacheWriter::write_attribute(const std::string &name, const std::string &bytes)
+{
+    if (!valid_index_name(name)) throw std::runtime_error("invalid attribute name '" + name + "'");
+    Attribute check(bytes.data(), bytes.size());
+    write_atomic(dir_, attr_file_name(name), bytes.data(), bytes.size());
+}
+
+void CacheWriter::remove_attribute(const std::string &name)
+{
+    if (!valid_index_name(name)) throw std::runtime_error("invalid attribute name '" + name + "'");
+    ::unlink((dir_ + "/" + attr_file_name(name)).c_str());
+}
+
 std::shared_ptr<const LoadedIndex> open_index(const std::string &cache_dir, const std::string &index, std::int64_t min_gen, bool exact)
 {
     const std::string dir = index_dir(cache_dir, index);
@@ -489,6 +503,14 @@ std::shared_ptr<const LoadedIndex> open_index(const std::string &cache_dir, cons
     }
     auto li = load_generation(r, dir, gen, index);
     r.indexes[dir] = {li, now, dev, ino};
+    // forget generations that are no longer active (an index dropped or rebuilt, or another
+    // generation activated by a statement in another process): their segment files may be
+    // deleted, and a mapping kept here would hold their memory (a tmpfs cache) until a restart
+    for (auto e = r.indexes.begin(); e != r.indexes.end();) {
+        std::int64_t g2;
+        if (e->first != dir && (!read_active(e->first, g2) || g2 != e->second.idx->gen)) e = r.indexes.erase(e);
+        else ++e;
+    }
     // forget mappings that nobody uses any more
     for (auto m = r.mappings.begin(); m != r.mappings.end();) m = m->second.expired() ? r.mappings.erase(m) : std::next(m);
     return li;
@@ -519,11 +541,12 @@ void drop_cache(const std::string &cache_dir, const std::string &index)
         std::lock_guard<std::mutex> lock(r.mu);
         r.indexes.erase(dir);
     }
+    forget_attributes(cache_dir, index);
     DIR *d = ::opendir(dir.c_str());
     if (!d) return;
     while (dirent *e = ::readdir(d)) {
         const std::string n = e->d_name;
-        if (n == "ACTIVE" || n.rfind("seg_", 0) == 0 || n.rfind("gen_", 0) == 0) ::unlink((dir + "/" + n).c_str());
+        if (n == "ACTIVE" || n.rfind("seg_", 0) == 0 || n.rfind("gen_", 0) == 0 || n.rfind("attr_", 0) == 0) ::unlink((dir + "/" + n).c_str());
     }
     ::closedir(d);
     ::rmdir(dir.c_str());

@@ -88,6 +88,7 @@ refuse to search, rather than search the masked text ([Access policies](#access-
 | Scale | segments searched in parallel; global statistics, so scores do not depend on segments or nodes; Enterprise and Eon (also secondary subclusters) |
 | Storage | the index is in Vertica tables (backed up with the database); every node keeps a memory-mapped copy |
 | Many clients | `tserve` with `tools/vfts_broker`: an HTTP front end, each user's own Vertica sessions, searches over a channel instead of one statement each; with 32 clients 1.1 to 2.0 times the queries per second of Elasticsearch and OpenSearch on the benchmark ([tserve](#tserve-and-vfts_broker-many-clients)) |
+| Attributes | a column of another table (custodian, status, date) copied into the index with `add_attribute`: searches filter by it (`filter='custodian IN (3, 17)'`) and count by it (`tcount ... by='custodian'`) while they match, as search engines do with doc values; `refresh_attributes` after the table changes ([Attributes](#add_attribute-refresh_attributes-drop_attribute)) |
 | Extras | `tcount` (matches only), `tmatch` (every matching doc_id, for joins), `tsnippet` (marked fragments), `hybrid` (BM25 + vectors with Reciprocal Rank Fusion), `tokenize` |
 
 ## How it was tested
@@ -337,6 +338,10 @@ geresh used as a quotation mark stayed on the word: in ׳תיאטרון מסך׳
 which a search for תיאטרון did not find. An index whose text has these characters: run
 `CALL vfts.rebuild(index)` after the upgrade.
 
+vfts 0.4.0 adds attributes (filters and counts by another table's column): the upgrade adds the
+tables `vfts.attributes` and `vfts.attr_values` and the function `tattr`; indexes need nothing.
+It also fixes `vfts_broker --mode sql`, whose vsql session ended at the first failing statement.
+
     ./install.sh --uninstall             # removes library, functions and procedures; indexes stay
     ./install.sh --uninstall --drop      # also drops every index (views, node caches) and the schema vfts
 
@@ -497,7 +502,7 @@ from a session on each secondary subcluster afterwards, as after a refresh.
 
 [Full example with output](#example-info)
 
-Segments, documents, the live tail, the last refresh and the caches of the subcluster, as notices.
+Segments, documents, the live tail, the last refresh, the attributes and the caches of the subcluster, as notices.
 
     CALL vfts.info(index);
 
@@ -508,9 +513,40 @@ Tables to read: `vfts.indexes` (the manifest), `vfts.segments`, `vfts.index_stat
 
 [Full example with output](#example-drop_index)
 
-Removes the index: its rows (partitions), the views and the node caches of the subcluster.
+Removes the index: its rows (partitions), its attributes, the views and the node caches of the subcluster.
 
     CALL vfts.drop_index(index);
+
+#### add_attribute, refresh_attributes, drop_attribute
+
+[Full example with output](#example-add_attribute-a-column-of-another-table-copied-into-the-index-for-filters-and-counts)
+
+A column of another table (a custodian, a status, a date) copied into the index, so that searches
+filter and count by it while they match (`filter`, `tcount ... by`), as search engines do with
+doc values. The table stays the place where the value lives and is changed.
+
+    CALL vfts.add_attribute(index, attribute, 'schema.table', key_column, value_column);
+    CALL vfts.refresh_attributes(index);          -- after the table changed: copy every attribute again
+    CALL vfts.refresh_attribute(index, attribute); -- or one of them
+    CALL vfts.drop_attribute(index, attribute);
+
+| | |
+|---|---|
+| key_column | the index's doc_id: INT, unique in the table (a key twice is refused) |
+| value_column | INT, BOOLEAN, DATE or VARCHAR (at most 1,024 bytes) |
+| attribute | the name in filters and in `by`: 1 to 64 letters, digits or underscores |
+| documents without a row, or NULL | no value: a comparison with them is unknown (SQL), so a filter leaves them out; `by` does not count them; `IS NULL` finds them |
+
+- **A copy, made by a statement.** `add_attribute` and `refresh_attributes` copy the column into
+  `vfts.attr_values` (replicated) and into every node's cache. Between an `UPDATE` of the table and
+  `refresh_attributes`, searches see the old values (a running `tserve` sees a refresh within
+  0.2 s). A refresh copies the whole column: Enron (517,401 values) 0.3 s, MS MARCO (8.8 million)
+  2.6 to 3.0 s on the test machine. The text index is not touched.
+- **Tables with access policies are refused** (row or column policies, also when one is added
+  later: every refresh checks): a copy would show values that the policy hides from a user. Only a
+  superuser or the table's owner sees policies, so only they can add or refresh an attribute.
+- `CALL vfts.info(index)` lists the attributes; `vfts.attributes` is the table of them (readable by
+  every user); `load_all` writes them on new nodes; `drop_index` removes them.
 
 #### The views _live and _snap
 
@@ -580,6 +616,8 @@ table with `USING (doc_id)`.
 | bm25 | lucene | `lucene`: the scores of Lucene and OpenSearch; `classic`: times (1 + k1), the scores of Elasticsearch (its LegacyBM25 scale) |
 | threads | 0 | threads for this query (0: one per core). A large segment is cut into slices of documents, so one query can use every core; while many queries run, each gets its share |
 | cache_dir | /tmp/vfts | node cache directory (or the session parameter) |
+| filter | | only the matches the filter accepts ([Filter syntax](#filter-syntax)); scores unchanged |
+| filter_cache | true | keep the filter's set of left-out documents per segment; `false`: ask the filter per candidate |
 
 Many queries in one statement (a batch saves the per-statement cost of Vertica, about 2 ms): the
 parameter `queries`, one query per line,
@@ -606,12 +644,15 @@ functions from the library's internal factories). With `ALTER SESSION SET UDPARA
 
 [Full example with output](#example-tcount)
 
-The number of matching documents (no scoring).
+The number of matching documents (no scoring), or with `by` the number per value of an
+[attribute](#add_attribute-refresh_attributes-drop_attribute), counted while matching.
 
-    SELECT vfts.tcount(* USING PARAMETERS index='name', query='...' [, mode, syntax, operator, lang, ...]) OVER()
+    SELECT vfts.tcount(* USING PARAMETERS index='name', query='...' [, filter, by, mode, syntax, operator, lang, ...]) OVER()
     FROM <schema>.<index>_live;
 
-Output: `(qid, count)`.
+Output: `(qid, count)`; with `by='<attribute>'`: `(qid, value, count)`, one row per value that has
+matches, in value order; `value` is VARCHAR (cast it: `value::INT`, `value::DATE`). Documents
+without a value are not counted. [Example](#example-tcount-with-by-matches-per-attribute-value-counted-while-matching)
 
 #### tmatch
 
@@ -623,7 +664,8 @@ all matches (a report of matches per owner, per month).
     SELECT vfts.tmatch(* USING PARAMETERS index='name', query='...' [, mode, syntax, operator, lang, ...]) OVER()
     FROM <schema>.<index>_live;
 
-Output: `(qid, doc_id)`. Same parameters as `tcount`.
+Output: `(qid, doc_id)`. Same parameters as `tcount` (`filter` too, not `by`). For counts per
+value of an attribute, `tcount ... by` is faster: no row per match.
 
 #### tserve and vfts_broker: many clients
 
@@ -638,6 +680,12 @@ sending SQL itself:
     build/tools/vfts_broker --port 9300 --schema bench --mode serve [--param "mode='stem'" ...]
     curl -XPOST localhost:9300/enron/_search -u alice:secret -d '{"query": "fraud AND (audit OR sec)"}'
     # {"hits": [{"id": 134348, "score": 5.11062765}, ...]}
+    curl -XPOST localhost:9300/enron/_search -d '{"query": "fraud", "filter": "custodian IN (3, 17)", "k": 20}'
+    curl -XPOST localhost:9300/enron/_count  -d '{"query": "fraud"}'                    # {"count": <matches>}
+    curl -XPOST localhost:9300/enron/_count  -d '{"query": "fraud", "by": "custodian"}'
+    # {"buckets": [{"value": "<custodian>", "count": <matches>}, ...]}
+
+`filter` and `k` per request; `_count` with `by` counts per attribute value (both modes).
 
 - **Every user has their own Vertica sessions.** The broker logs in with the credentials of the
   request (HTTP Basic; without them, the `VSQL_*` environment). Vertica checks the password, the
@@ -654,9 +702,14 @@ sending SQL itself:
   which connects to the broker's Unix socket (mode 0600) with a token made for that statement only,
   and answers searches until the broker closes it or the statement is canceled. A search is then no
   statement of its own. `tserve` takes the parameters of `tsearch` plus `workers` (search threads,
-  default one per core; each search uses one). It reads the view when it starts, so it answers from
-  that snapshot: the broker starts a new statement when one ends; restart it after a refresh. It
-  accepts only an endpoint named `vfts_broker.<name>.sock`.
+  default one per core; each search uses one; a count uses its fair share of the cores: all of them
+  when it runs alone, about one each under load, unless `threads` is given) and `request_cache`
+  (default true: the answers of counts are kept while the statement runs and a repeated count is
+  answered from memory, as Elasticsearch's shard request cache does; searches with hits are never
+  kept). It reads the view when it starts, so it answers from that snapshot: the broker starts a
+  new statement when one ends; restart it after a refresh. A kept answer names the attribute files
+  it read, so a `refresh_attribute` while the statement runs is seen at once. It accepts only an
+  endpoint named `vfts_broker.<name>.sock`.
 
 Both modes give the same hits and scores as `tsearch` (tests/sql/test_serve.sh). Searches through
 `tserve` are not rows of `query_requests`: Vertica records the session and the `tserve` statement,
@@ -765,8 +818,9 @@ CALL vfts.create_index('notes', 'ex.notes', 'lang=en journal=ex.notes_journal ma
 ```sql
 CALL vfts.info('notes');
    NOTICE 2005:  index notes: source ex.notes, generation 1, 1 segments, 5 documents (0 deleted), 0.0 MB
-   NOTICE 2005:  boundary TIMESTAMPTZ '2026-11-21 18:18:04.487319+00'; live tail 0 rows (ex.notes_live); last refresh: full build: 5 rows into 1 segments, 0 tombstones, 0 journal rows
+   NOTICE 2005:  boundary TIMESTAMPTZ '2026-11-23 15:32:06.155201+00'; live tail 0 rows (ex.notes_live); last refresh: full build: 5 rows into 1 segments, 0 tombstones, 0 journal rows
    NOTICE 2005:  access: open (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)
+   NOTICE 2005:  attributes: (none)
    NOTICE 2005:  node caches: 1 of 1 nodes of this subcluster have generation 1 (details: SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;)
     info 
    ------
@@ -844,6 +898,64 @@ GROUP BY o.owner ORDER BY o.owner;
    (3 rows)
 ```
 
+#### Example: add_attribute: a column of another table, copied into the index for filters and counts
+
+```sql
+CALL vfts.add_attribute('notes', 'owner', 'ex.owners', 'doc_id', 'owner');
+    add_attribute 
+   ---------------
+                0
+   (1 row)
+```
+
+#### Example: tsearch with filter: only the matches whose attribute passes (scores unchanged)
+
+```sql
+SELECT doc_id, ROUND(score, 4) AS score, rank
+FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract* OR indemn*', filter='owner IN (''legal'', ''sales'')') OVER()
+      FROM ex.notes_live) r
+ORDER BY rank;
+    doc_id | score | rank 
+   --------+-------+------
+         1 |     2 |    1
+         2 |     2 |    2
+         5 |     1 |    3
+   (3 rows)
+```
+
+#### Example: tcount with by: matches per attribute value, counted while matching
+
+```sql
+SELECT value AS owner, count
+FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract*', by='owner') OVER() FROM ex.notes_live) c
+ORDER BY owner;
+     owner  | count 
+   ---------+-------
+    legal   |     1
+    sales   |     1
+    trading |     1
+   (3 rows)
+```
+
+#### Example: refresh_attributes: after the table changes, copy it again
+
+```sql
+UPDATE ex.owners SET owner = 'legal' WHERE doc_id = 3; COMMIT;
+   COMMIT
+CALL vfts.refresh_attributes('notes');
+    refresh_attributes 
+   --------------------
+                     0
+   (1 row)
+SELECT value AS owner, count
+FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract*', by='owner', filter='owner <> ''sales''') OVER() FROM ex.notes_live) c
+ORDER BY owner;
+    owner | count 
+   -------+-------
+    legal |     2
+   (1 row)
+```
+
 #### Example: tsnippet
 
 ```sql
@@ -885,15 +997,16 @@ SELECT 'snap' AS view, doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index
 
 ```sql
 CALL vfts.merge('notes', 1);
-   NOTICE 2005:  vfts: index notes merged in 1 steps (0.3 s); 1 segments now
+   NOTICE 2005:  vfts: index notes merged in 1 steps (0.4 s); 1 segments now
     merge 
    -------
         0
    (1 row)
 CALL vfts.info('notes');
    NOTICE 2005:  index notes: source ex.notes, generation 3, 1 segments, 6 documents (0 deleted), 0.0 MB
-   NOTICE 2005:  boundary TIMESTAMPTZ '2026-11-21 18:18:05.071819+00'; live tail 0 rows (ex.notes_live); last refresh: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows
+   NOTICE 2005:  boundary TIMESTAMPTZ '2026-11-23 15:32:07.325828+00'; live tail 0 rows (ex.notes_live); last refresh: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows
    NOTICE 2005:  access: open (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)
+   NOTICE 2005:  attributes: owner text from ex.owners.owner (5 values, refreshed 2026-11-23 17:32:07)
    NOTICE 2005:  node caches: 1 of 1 nodes of this subcluster have generation 3 (details: SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;)
     info 
    ------
@@ -921,7 +1034,7 @@ SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION 
 
 ```sql
 CALL vfts.load_all('notes');
-   NOTICE 2005:  vfts: index notes generation 3 (1 segments) loaded on the nodes of this subcluster in 0.100000000000000 s
+   NOTICE 2005:  vfts: index notes generation 3 (1 segments) loaded on the nodes of this subcluster in 0.200000000000000 s
     load_all 
    ----------
            0
@@ -991,7 +1104,7 @@ ORDER BY h.rank;
 SELECT version, build, icu FROM (SELECT vfts.tversion() OVER()) v;
     version |                       build                        | icu  
    ---------+----------------------------------------------------+------
-    0.3.1   | -O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0 | 79.1
+    0.4.0   | -O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0 | 79.1
    (1 row)
 ```
 
@@ -1001,6 +1114,10 @@ SELECT version, build, icu FROM (SELECT vfts.tversion() OVER()) v;
 build/tools/vfts_broker --port 9399 --schema ex --mode serve &
 curl -s -XPOST localhost:9399/notes/_search -d '{"query": "contract AND indemn*"}'
    {"hits": [{"id": 6, "score": 1.21872902}, {"id": 1, "score": 1.18564403}, {"id": 2, "score": 1.18564403}]}
+curl -s -XPOST localhost:9399/notes/_search -d '{"query": "contract*", "filter": "owner = '\''legal'\''", "k": 2}'
+   {"hits": [{"id": 1, "score": 1}, {"id": 3, "score": 1}]}
+curl -s -XPOST localhost:9399/notes/_count -d '{"query": "contract*", "by": "owner"}'
+   {"buckets": [{"value": "legal", "count": 2}, {"value": "sales", "count": 1}]}
 ```
 
 #### Example: drop_index
@@ -1049,6 +1166,29 @@ CALL vfts.drop_index('notes');
   constant 1 (as Elasticsearch's constant-score rewrite); fuzzy words like a stem group of the
   terms they match.
 
+### Filter syntax
+
+The parameter `filter` (of `tsearch`, `tcount`, `tmatch`, `tserve` and the broker's requests) is
+SQL's `WHERE` over the index's [attributes](#add_attribute-refresh_attributes-drop_attribute):
+
+| Syntax | Example |
+|---|---|
+| `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=` | `custodian = 17`, `sent >= '2001-06-01'`, `status <> 'closed'` |
+| `IN (...)`, `NOT IN (...)` | `custodian IN (3, 17, 29)` |
+| `BETWEEN a AND b` (both included) | `sent BETWEEN '2001-01-01' AND '2001-12-31'` |
+| `IS NULL`, `IS NOT NULL` | `owner IS NULL` (documents without a value) |
+| `AND`, `OR`, `NOT`, `( )` | `custodian IN (3, 17) AND NOT (status = 'closed' OR flag = TRUE)` |
+| values | integers; `'text'` (`''` for a quote); `TRUE`, `FALSE`; dates `'YYYY-MM-DD'` or `DATE 'YYYY-MM-DD'` |
+
+- Text compares byte by byte (Vertica's default, binary collation).
+- A document without a value makes a comparison unknown, and a document is kept only when the whole
+  filter is true: the result of `WHERE` with the same text on a `LEFT JOIN` of the attribute table
+  (tests/sql/test_attributes.sh checks exactly that).
+- A filter never changes a score: N, the average length and the document frequencies stay those of
+  the whole index (as in Elasticsearch, where a filter clause does not score).
+- The set of documents a filter leaves out is kept per segment and attribute version (512 MB, least
+  recently used first); `filter_cache=false` asks the filter for each candidate document instead.
+
 ## Search patterns
 
 **Join the hits to the table** (the function returns ids and scores; the text stays in your table):
@@ -1059,7 +1199,19 @@ CALL vfts.drop_index('notes');
     JOIN app.emails d USING (doc_id)
     ORDER BY r.rank;
 
-**Filter by other columns.** Search with a larger k, then filter in SQL; or count first:
+**Filter and count by other columns.** Make the column an attribute once; then every search filters
+and counts while it matches (no rows leave the search):
+
+    CALL vfts.add_attribute('emails', 'sent', 'app.emails', 'doc_id', 'sent');
+    CALL vfts.add_attribute('emails', 'custodian', 'app.custodians', 'doc_id', 'custodian');
+
+    SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='emails', query='fraud', k=10,
+                   filter='sent > ''2001-06-01'' AND custodian IN (3, 17)') OVER() FROM app.emails_live) r;
+    SELECT value AS custodian, count FROM (SELECT vfts.tcount(* USING PARAMETERS index='emails', query='fraud',
+                   by='custodian') OVER() FROM app.emails_live) c ORDER BY count DESC;
+
+For a column that changes all the time, or a condition that needs a join, join in SQL instead
+(every match leaves the search: `tmatch`, or `tsearch` with a large k):
 
     SELECT r.doc_id, r.score FROM (SELECT vfts.tsearch(* USING PARAMETERS index='emails', query='fraud', k=1000) OVER()
                                    FROM app.emails_live) r
@@ -1118,10 +1270,12 @@ tables: [bench/results/summary.md](bench/results/summary.md)), and one script ru
   syntax queries) and, query by query, the same top 10 with the same scores: 97% of the 6,980
   MS MARCO queries and 133 of 140 syntax queries have identical scores at every rank. Relevance on
   MS MARCO: MRR@10 0.1815 (vfts), 0.1815 (Elasticsearch), 0.1813 (OpenSearch).
-- **Search next to other data** (Enron, an attribute per document): adding it to all 517,401
-  documents takes 0.028 s in Vertica against 223 s and 228 s; changing it for 1% takes 0.015 s
-  against 2.8 s and 8.9 s. Filtering or counting matches by it is faster in the engines (1 to 3 ms
-  against 17 to 18 ms).
+- **Search next to other data** (an attribute per document, vfts 0.4.0): adding it to all
+  517,401 Enron emails takes 0.4 s against 231 s and 240 s (MS MARCO: 3.2 s against 888 s and
+  956 s); changing it for 1% takes 0.3 s against 2.7 s. Filtering and counting by it through
+  `tserve` is faster than both engines in every test but the filtered top 10 on MS MARCO at 32
+  clients (OpenSearch 4,336 against 3,914 per second); counting every match of a MS MARCO question
+  per custodian takes 5.4 ms against 76 and 94 ms with the caches off.
 - **Proximity**: `w/N` over OR groups is where vfts is fastest; `california w/5 (energy OR power OR
   electricity)` on Enron: 10.5 ms against 26.3 ms (Elasticsearch) and 34.7 ms (OpenSearch).
 - **Index size**: vfts's node cache is half to two thirds of the engines' store (the engines also
@@ -1204,31 +1358,77 @@ The first run of the benchmark (vsql as the client, one statement per query, liv
 before the engine changes that made phrases and patterns faster) is in
 [bench/results/summary.md](bench/results/summary.md) with every query's time.
 
-### Search next to other data (joins)
+### Search next to other data (attributes)
 
-Enron, 517,401 emails. Every email gets an attribute, its custodian (150 values, as in an
-e-discovery case); 10 custodians are on legal hold. vfts keeps the attribute in its own table and
-joins at query time; Elasticsearch and OpenSearch, which have no joins, keep it in every document
-([bench/join_test.py](bench/join_test.py); the engines work on a clone of their index).
+Every document gets an attribute, its custodian (150 values, as in an e-discovery case); 10
+custodians are on legal hold. vfts keeps the attribute in a table and copies it into the index with
+`add_attribute` ([attributes](#add_attribute-refresh_attributes-drop_attribute)); Elasticsearch and
+OpenSearch, which have no joins, keep it in every document (`_update_by_query` on a clone of their
+index). J1 adds it to every document; J2 moves 1% of the documents to another custodian; J3 is the
+top 10 of a query among the custodians on hold (`filter=`); J4 counts the matches of a query per
+custodian (`tcount ... by=`). J3 and J4 run through the same native HTTP client: one client (40
+queries, best of 3 each, mean) and 32 clients (20,000 requests, best of 3 runs). Method, every
+number and the answers: [bench/results/joins.md](bench/results/joins.md).
 
-| Test | vfts (Vertica) | Elasticsearch | OpenSearch |
-|---|---:|---:|---:|
-| J1 add the attribute to every document | **0.028 s** (`CREATE TABLE AS`) | 223 s (`_update_by_query`) | 228 s |
-| J2 move 1% of the documents (5,174) to another custodian | **0.015 s** (`UPDATE`) | 2.8 s | 8.9 s |
-| J3 top 10 of a query among the custodians on hold (mean of 40 queries) | 16.8 ms | 2.9 ms | **2.7 ms** |
-| J4 matches per custodian, every match (mean of 40 queries) | 18.7 ms | 1.4 ms | **1.2 ms** |
+Both engines keep answers by default, and a benchmark that repeats its queries measures those
+caches: the shard request cache answers a repeated J4 from memory, the node query cache keeps the
+matches of the J3 filter. So every test runs twice: as shipped, and with the caches off (the
+engines: `index.queries.cache.enabled=false`, `index.requests.cache.enable=false`; vfts:
+`filter_cache=false`, `request_cache=false`). vfts has the same two kinds of cache: the documents a
+filter leaves out, per segment, and `tserve`'s answers of counts while the statement runs.
 
-- **Changing data around the text is where Vertica wins**, by 3 to 4 orders of magnitude: an
-  attribute is a column, so `UPDATE` touches only it. A search engine stores it inside each
-  document, so every change rewrites and re-analyzes whole documents (and needs a merge afterwards
-  for full speed: 21 to 42 s here).
-- **Filtering and aggregating inside the search is where the engines win.** They keep the
-  attribute next to the postings (doc values) and filter or count while they search. vfts hands
-  every match to Vertica's join (`tmatch`, `tsearch` with a large k), which costs 17 to 18 ms when
-  thousands of documents match.
-- The answers are the same: J4's counts are identical for all 40 queries and 150 custodians; J3's
-  top 10 is identical for 31 to 32 of 40 queries, and the others differ only among documents tied
-  at the 10th score.
+Enron, 517,401 emails, 40 queries:
+
+| Test | vfts, one SQL statement | vfts, tserve | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|---:|
+| J1 add the attribute to every document (s) | 0.425 | (same) | 231.491 | 240.056 |
+| J2 move 1% of the documents to another custodian (s) | 0.324 | (same) | 2.727 | 2.720 |
+| J3 top 10 among the custodians on hold, 1 client (ms) | 3.38 | 0.97 | 2.01 | 1.74 |
+| J3 top 10 among the custodians on hold, 32 clients (q/s) | 1,263 | 13,907 | 8,345 | 8,559 |
+| J3 top 10 among the custodians on hold, caches off, 1 client (ms) | | 0.96 | 1.34 | 1.45 |
+| J3 top 10 among the custodians on hold, caches off, 32 clients (q/s) | | 13,459 | 7,806 | 7,804 |
+| J4 matches per custodian, 1 client (ms) | 4.10 | 0.05 | 0.51 | 0.40 |
+| J4 matches per custodian, 32 clients (q/s) | 1,183 | 85,195 | 39,910 | 39,355 |
+| J4 matches per custodian, caches off, 1 client (ms) | | 1.08 | 2.29 | 2.22 |
+| J4 matches per custodian, caches off, 32 clients (q/s) | | 5,885 | 4,500 | 4,745 |
+
+MS MARCO, 8,841,823 passages, the first 40 questions of the dev set:
+
+| Test | vfts, one SQL statement | vfts, tserve | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|---:|
+| J1 add the attribute to every document (s) | 3.214 | (same) | 888.303 | 955.758 |
+| J2 move 1% of the documents to another custodian (s) | 3.022 | (same) | 12.115 | 11.891 |
+| J3 top 10 among the custodians on hold, 1 client (ms) | 4.07 | 2.52 | 3.69 | 3.32 |
+| J3 top 10 among the custodians on hold, 32 clients (q/s) | 935 | 3,914 | 3,881 | 4,336 |
+| J3 top 10 among the custodians on hold, caches off, 1 client (ms) | | 3.75 | 3.95 | 3.63 |
+| J3 top 10 among the custodians on hold, caches off, 32 clients (q/s) | | 2,787 | 2,625 | 2,858 |
+| J4 matches per custodian, 1 client (ms) | 9.84 | 0.07 | 0.45 | 0.39 |
+| J4 matches per custodian, 32 clients (q/s) | 214 | 57,621 | 40,651 | 42,030 |
+| J4 matches per custodian, caches off, 1 client (ms) | | 5.44 | 76.30 | 93.52 |
+| J4 matches per custodian, caches off, 32 clients (q/s) | | 238 | 136 | 118 |
+
+- **Changing data around the text**: an attribute of every document in 0.4 s (Enron) and 3.2 s (MS
+  MARCO) against 231 to 956 s; 1% of it changed in 0.3 s and 3.0 s against 2.7 to 12.1 s (and a
+  force merge of 35 to 410 s afterwards for the engines' full speed). An attribute is a column:
+  `UPDATE` touches only it, `refresh_attributes` copies it again. A search engine rewrites and
+  re-analyzes every document it changes.
+- **Filtering and counting through `tserve`**: faster than both engines in every J3 and J4 test,
+  except J3 on MS MARCO, where OpenSearch leads at 32 clients (4,336 against 3,914 searches per
+  second as shipped, 2,858 against 2,787 with the caches off) and, with the caches off, with one
+  client too (3.63 against 3.75 ms; as shipped vfts is faster, 2.52 against 3.32).
+  With the caches off, counting every match of the MS MARCO questions (up to 7.8 million each) takes
+  5.4 ms against 76 and 94 ms, and 32 clients get 238 counts per second against 136 and 118.
+  As shipped, repeated counts come from the caches on both sides: 0.05 to 0.07 ms in vfts against
+  0.39 to 0.51 ms, 57,621 to 85,195 per second against 39,355 to 42,030.
+- **As one SQL statement per search**, vfts takes 3.4 to 4.1 ms (J3) and 4.1 to 9.8 ms (J4) with
+  one client: the statement's own cost (see [the wall](#where-elasticsearch-and-opensearch-win-and-why)),
+  while the engines take 1.7 to 3.7 ms (J3) and, from their caches, 0.4 to 0.5 ms (J4). Without
+  attributes, the same questions as a plain SQL join (every match a row, joined and grouped in
+  Vertica) took 16.8 and 18.7 ms on Enron and 906 and 835 ms on MS MARCO.
+- **The same answers** as the plain SQL join, query by query; against the engines, J4's counts are
+  identical for all 40 Enron queries and for 29 of 40 MS MARCO questions (the others within
+  0.097% of the matches: words the analyzers see differently), and J3 has the same documents above
+  the 10th score for 40 of 40 and 39 of 40 queries.
 
 ### Index build and size
 
@@ -1323,8 +1523,12 @@ by doc_id in vfts and by internal order in the engines.
   searches, 19.2 and 16.0 ms).
 - **PubMed's 99th percentile with one client**: OpenSearch 2.8 ms against vfts `tserve` 4.9 ms
   (the mean is lower in vfts: 1.01 against 1.07 ms).
-- **Filtering or aggregating matches by an attribute**: 1.2 to 2.9 ms against vfts's 17 to 18 ms
-  (the engines read the attribute while they search; vfts joins every match in Vertica).
+- **Filtering by an attribute on MS MARCO at 32 clients** (J3, the top 10 among 10 of 150
+  custodians): OpenSearch 4,336 searches per second against `tserve`'s 3,914 (2,858 against 2,787
+  with the caches off). Filtered or counted as one SQL statement per search, vfts pays the
+  statement (3.4 to 9.8 ms against the engines' 0.4 to 3.7 ms with one client). Until vfts 0.4.0,
+  filtering and counting by an attribute was a join in Vertica (17 to 19 ms on Enron); attributes
+  inside the index turned that around ([Search next to other data](#search-next-to-other-data-attributes)).
 - **Phrases of very frequent words and single fuzzy words**: Lucene's phrase matching and its
   Levenshtein automaton are faster for these (vfts's engine: "case report" on PubMed 3.0 ms; fuzzy
   words about 1.7 ms against about 1.4 ms in Elasticsearch's profile).
@@ -1342,8 +1546,11 @@ by doc_id in vfts and by internal order in the engines.
 - **Proximity over OR groups** (`w/N`, `pre/N`): on Enron `california w/5 (energy OR power OR
   electricity)` 10.5 ms against 26.3 and 34.7 ms, `(stock OR shares) w/3 (sell OR sold OR selling)`
   4.3 ms against 13.3 and 10.0 ms (first run, through vsql).
-- **Changing data around the text**: an attribute of every document added in 0.028 s against
-  223 s; 1% of it changed in 0.015 s against 2.8 s (`UPDATE` against rewriting documents).
+- **Search next to other data**: an attribute of every document added in 0.4 s (Enron) and 3.2 s
+  (MS MARCO) against 231 to 956 s, 1% of it changed in 0.3 to 3.0 s against 2.7 to 12.1 s; and
+  filtering and counting by it through `tserve` faster than both engines in every test but one
+  (MS MARCO's filtered top 10 at 32 clients): counting every match per custodian with the caches
+  off, MS MARCO 5.4 ms against 76 and 94 ms, Enron 1.08 against 2.22 and 2.29 ms.
 - **Size**: half to two thirds of the engines' store; the text is not copied.
 - **Freshness**: every committed row is searchable without a refresh; a refresh of 88,418 rows
   takes 3.1 s against about 8.5 s.
@@ -1508,7 +1715,8 @@ SQL (UNION ALL, `vfts.hybrid` with weights).
   scales as in doc_id order).
 - Row policies without a join per statement (allowed-document bitmaps per user and role set,
   kept between statements).
-- Filters from other tables pushed into the search (today: every match, then the join).
+- Attributes from tables with access policies (per-user copies), attributes kept current without a
+  refresh statement, TIMESTAMP and FLOAT attributes, and `by` over two attributes at once.
 
 - Dictionary-based lemmatization.
 - German compound splitting.
@@ -1529,15 +1737,16 @@ SQL (UNION ALL, `vfts.hybrid` with weights).
 | `query.*`, `expand.*` | query parser; prefix, wildcard, fuzzy and stem expansion over the term dictionary |
 | `search.*`, `parallel.h` | BM25 top k (MaxScore, phrase and w/N bounds), counting, batches; the process-wide thread pool |
 | `cache.*`, `table_codec.*` | the per-node memory-mapped cache; segments to and from table rows |
+| `attribute.*` | attributes: their cache files, the filter language, the filter cache, codes per segment |
 | `snippet.*`, `md5.h`, `version.h` | snippets; MD5 for the access tokens; version |
 | **Vertica functions** `src/udx/` | thin adapters from the SDK to the engine |
 | `tsearch.cpp`, `tserve.cpp`, `tsnippet.cpp`, `tokenize.cpp`, `hybrid.cpp`, `tversion.cpp` | the search functions of the [Reference](#reference) |
-| `tbuild.cpp`, `tload.cpp`, `tmerge.cpp`, `nodes.cpp` | used by the procedures: build, load node caches, merge, node information |
+| `tbuild.cpp`, `tload.cpp`, `tmerge.cpp`, `nodes.cpp`, `tattr.cpp` | used by the procedures: build, load node caches, merge, node information, attribute files |
 | `udx_common.h`, `search_options.h`, `view_input.h`, `library.cpp` | parameters and shared code; the views' rows and the access check; `tprobe.cpp`: scalar probes for the statement-cost measurements |
 | **SQL** `sql/` | `install.sql` (schema, tables, functions), `procedures.sql` (create_index, refresh_index, ...), `uninstall.sql` |
 | **Tools** `tools/` | `vfts_broker.cpp` (HTTP front end, `tserve` / batches), `httpload.cpp` (load generator of the benchmark), `vfts_cli.cpp` (the engine without Vertica: build, search, merge, explain) |
-| **Tests** `tests/engine/`, `tests/sql/` | unit tests against brute-force models; SQL tests against plain SQL, freshness, languages, snippets, hybrid, serve, access; `digest.sql` for comparing systems |
-| **Benchmark** `bench/` | `run_all.sh` runs everything; `data/` download and preparation; `engines/` Elasticsearch and OpenSearch install and start; `load_*`, `run_*` loaders and runners; `join_test.py` search next to other data; `report.py` tables and charts; `plan_c/` throughput measurements (also `reorder_ab.sh`: document order, `access_cost.sh`: access policies); `results/` every recorded number |
+| **Tests** `tests/engine/`, `tests/sql/` | unit tests against brute-force models; SQL tests against plain SQL, freshness, languages, snippets, hybrid, serve, access, attributes; `digest.sql` for comparing systems |
+| **Benchmark** `bench/` | `run_all.sh` runs everything; `data/` download and preparation; `engines/` Elasticsearch and OpenSearch install and start; `load_*`, `run_*` loaders and runners; `join_test.py` search next to other data; `report.py` tables and charts; `plan_c/` throughput measurements (`stage1.sh j1`: joins with attributes at 1 and 32 clients; also `reorder_ab.sh`: document order, `access_cost.sh`: access policies); `results/` every recorded number |
 | `scripts/` | `deploy.sh` (used by make deploy), `demo.sh` (every function on a small table, one command) |
 | `docs/` | `design.md`, `format.md` (index layout), `VERTICA_NOTES.md` (measured Vertica behavior), `PLAN.md` (milestones) |
 | `blog/` | the article, with its charts |

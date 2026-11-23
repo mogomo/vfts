@@ -25,6 +25,15 @@ namespace vfts {
 
 enum class MatchMode : std::uint8_t { Stem, Exact };
 
+struct DocSet;
+
+// A filter checked document by document while searching (attribute.h, without its cache): keep(i, d)
+// for docno d of segment i of Searcher::all_segments().
+struct DocFilter {
+    virtual ~DocFilter() = default;
+    virtual bool keep(std::size_t seg, std::uint32_t docno) const = 0;
+};
+
 struct SearchOptions {
     MatchMode match = MatchMode::Stem;
     QueryOptions query;                 // lang, implicit operator, stopwords
@@ -36,6 +45,13 @@ struct SearchOptions {
     int threads = 1;                    // segments searched in parallel
     bool pruning = true;                // MaxScore for OR queries (false: score every match; same result)
     std::uint32_t window = 0;           // MaxScore window in docnos (0: 8192)
+    // A filter (attribute.h): per segment (Searcher::all_segments() order) the documents to leave
+    // out, or null for none. A filter only hides documents: N, avgdl and document frequencies stay
+    // those of the whole collection, so a document's score never depends on the filter.
+    const std::vector<std::shared_ptr<const DocSet>> *exclude = nullptr;
+    // The same, asked per candidate document instead of a set made in advance (cost per match, not
+    // per document of the collection). Both may be set.
+    const DocFilter *doc_filter = nullptr;
     struct Stats {                      // filled when set (debugging and measurements)
         double plan_us = 0, exec_us = 0;
         std::uint64_t candidates = 0, scored = 0, windows_skipped = 0, probes = 0, terms = 0;
@@ -98,10 +114,19 @@ public:
     std::uint64_t count(const std::string &query, const SearchOptions &opts);
     // The doc_ids of every match (no scores, no order): for joins and GROUP BY over all matches.
     std::vector<std::int64_t> matches(const std::string &query, const SearchOptions &opts);
+    // Matches counted by a value code per document: codes[i] holds one code per docno of
+    // all_segments()[i] (ATTR_NONE: no value, not counted). Returns n_codes counts.
+    std::vector<std::uint64_t> count_by(const std::string &query, const SearchOptions &opts,
+                                        const std::vector<const std::uint32_t *> &codes, std::uint32_t n_codes);
+    // The segments a search reads, in order: the index's, then the live tail's.
+    std::vector<const Segment *> all_segments() const;
     // For searches from several threads at once: call ready() first (after mask / add_tail), then
     // each thread passes its own analyzer (Analyzer is not shared between threads).
     void ready() { prepare(); }
     std::vector<Hit> search(const std::string &query, const SearchOptions &opts, Analyzer &analyzer);
+    std::uint64_t count(const std::string &query, const SearchOptions &opts, Analyzer &analyzer);
+    std::vector<std::uint64_t> count_by(const std::string &query, const SearchOptions &opts, const std::vector<const std::uint32_t *> &codes,
+                                        std::uint32_t n_codes, Analyzer &analyzer);
     // Many queries at once, searched in parallel (one thread each); results in query order.
     std::vector<std::vector<Hit>> search_many(const std::vector<std::string> &queries, const SearchOptions &opts);
     std::vector<std::uint64_t> count_many(const std::vector<std::string> &queries, const SearchOptions &opts);
@@ -116,6 +141,8 @@ private:
     void prepare();
     std::vector<Hit> run_search(const QNode &q, const SearchOptions &opts);
     std::uint64_t run_count(const QNode &q, const SearchOptions &opts);
+    std::vector<std::uint64_t> run_count_by(const QNode &q, const SearchOptions &opts,
+                                            const std::vector<const std::uint32_t *> &codes, std::uint32_t n_codes);
     AnalyzerOptions aopts_;
     std::vector<SegmentRef> segs_;
     std::vector<std::shared_ptr<const std::string>> tail_bytes_;

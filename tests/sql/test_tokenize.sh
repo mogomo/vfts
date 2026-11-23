@@ -4,7 +4,9 @@ set -uo pipefail
 cd "$(dirname "$0")"; source ./lib.sh
 echo "$TEST_NAME"
 
-expect "tversion" "$(q "SELECT version FROM (SELECT vfts.tversion() OVER()) v")" "0.3.1"
+# the version of the source tree (src/engine/version.h): the library installed must be this one
+want_version=$(sed -n 's/.*LIBRARY_VERSION = "\([^"]*\)".*/\1/p' ../../src/engine/version.h)
+expect "tversion" "$(q "SELECT version FROM (SELECT vfts.tversion() OVER()) v")" "$want_version"
 expect "snowball list has arabic and yiddish" \
        "$(q "SELECT (snowball LIKE '%arabic%' AND snowball LIKE '%yiddish%')::INT FROM (SELECT vfts.tversion() OVER()) v")" "1"
 

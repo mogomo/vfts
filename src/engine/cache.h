@@ -64,6 +64,9 @@ public:
     // from the previous generation when a segment's tombstones did not change), then ACTIVE.
     // Removes cache files that neither this nor the previous generation uses.
     void activate(const Generation &g);
+    // An attribute file (attribute.h), verified, written atomically; or removed.
+    void write_attribute(const std::string &name, const std::string &bytes);
+    void remove_attribute(const std::string &name);
 
 private:
     std::string dir_;

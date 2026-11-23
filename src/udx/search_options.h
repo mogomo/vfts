@@ -3,6 +3,7 @@
 #define VFTS_UDX_SEARCH_OPTIONS_H
 
 #include "udx_common.h"
+#include "../engine/attribute.h"
 #include "../engine/search.h"
 
 #include <thread>
@@ -61,7 +62,63 @@ inline void add_search_parameters(Vertica::SizedColumnTypes &p)
     p.addInt("max_expansions");
     p.addInt("threads");
     p.addVarchar(1024, "cache_dir");
+    p.addVarchar(65000, "filter");
+    p.addBool("filter_cache");
 }
+
+// A filter over the index's attributes (parameter filter, attribute.h) and the attribute to count
+// by (tcount's parameter by), opened from this node's cache and fitted to a searcher's segments.
+struct AttrSearch {
+    std::shared_ptr<const vfts::Filter> filter;
+    std::vector<std::shared_ptr<const vfts::DocSet>> exclude;
+    std::unique_ptr<vfts::DocFilter> view;
+    std::shared_ptr<const vfts::Attribute> by;
+    std::vector<std::shared_ptr<const std::vector<std::uint32_t>>> by_keep;
+    std::vector<const std::uint32_t *> by_codes;
+
+    // filter_text / by_name may be empty. Sets o.exclude (or o.doc_filter) when there is a filter.
+    void setup(const std::string &cache_dir, const std::string &index, const std::string &filter_text, const std::string &by_name,
+               bool use_cache, const vfts::Searcher &searcher, vfts::SearchOptions &o)
+    {
+        open(cache_dir, index, filter_text, by_name);
+        apply(use_cache, searcher, o);
+    }
+
+    // The two steps of setup: open parses the filter and opens the attributes (cheap: what a cache
+    // key needs); apply computes the filter's sets and the codes of the segments.
+    void open(const std::string &cache_dir, const std::string &index, const std::string &filter_text, const std::string &by_name)
+    {
+        if (!filter_text.empty())
+            filter = vfts::Filter::parse(filter_text, [&](const std::string &n) { return vfts::open_attribute(cache_dir, index, n); });
+        if (!by_name.empty()) by = vfts::open_attribute(cache_dir, index, by_name);
+    }
+
+    // The attribute files the answer depends on (empty without filter and by).
+    std::string key() const
+    {
+        std::string k = filter ? filter->key() : std::string();
+        if (by) k += "\x1e" + std::to_string(by->version()) + "#" + std::to_string(by->serial());
+        return k;
+    }
+
+    void apply(bool use_cache, const vfts::Searcher &searcher, vfts::SearchOptions &o)
+    {
+        const std::vector<const vfts::Segment *> segs = searcher.all_segments();
+        if (filter) {
+            if (use_cache) {
+                // a set of left-out documents per segment, kept in the filter cache
+                exclude = vfts::filter_segments(*filter, segs, true);
+                o.exclude = &exclude;
+            } else {
+                // asked per candidate: costs per match, not per document of the collection
+                view = filter->view(segs);
+                o.doc_filter = view.get();
+            }
+        }
+        if (by)
+            for (const vfts::Segment *g : segs) { by_keep.push_back(by->codes_for(*g)); by_codes.push_back(by_keep.back()->data()); }
+    }
+};
 
 } // namespace vfts_udx
 

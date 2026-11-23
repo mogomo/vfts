@@ -300,6 +300,68 @@ Who may search an index, and what the access policies of the source table do to 
 - Eon: a statement reaches the nodes of the session's subcluster only. Every subcluster keeps its
   own caches; `load_all` from a session on a secondary subcluster loads it (tested on 3 + 2 nodes).
 
+## Attributes (0.4.0)
+
+A search engine filters and counts by a field while it matches, because the field (doc values) is
+next to the postings. Before 0.4.0, vfts handed every match to Vertica (`tmatch`, `tsearch` with a
+large k) and Vertica joined and grouped them: on MS MARCO, where a question matches 4.4 million of
+8.8 million documents on average, that took about a second for one client and 15 seconds each for
+32 clients, although the engine found and counted the matches in 14 ms. Attributes bring the
+column to the engine instead of the matches to the column.
+
+- **The table stays the place of the value.** `vfts.add_attribute(index, attr, table, key, value)`
+  copies `(key, value)` into `vfts.attr_values` (replicated, a partition per copy: `slot`) and from
+  there into every node's cache (`attr_<attr>.vfa`, docs/format.md), with the same local join as
+  segment loads. After the table changes, `vfts.refresh_attributes` makes a new copy (a new slot;
+  the old partition is dropped). The copy is not live: between an `UPDATE` and the refresh,
+  searches see the old values. A refresh copies the whole column (Enron, 517,401 values: 0.32 s;
+  MS MARCO, 8.8 million: 2.6 s).
+- **Types.** INT, BOOLEAN (0/1), DATE (days since 2000-01-01, Vertica's DateADT) and VARCHAR (at
+  most 1,024 bytes). The file keeps a sorted dictionary of the distinct values and one code per
+  document, in value order, so a range of values is a range of codes.
+- **Documents without a value** (no row, or NULL) are missing: a comparison with them is unknown,
+  as in SQL, and a filter keeps a document only when it is true; `by` does not count them (an inner
+  join's `GROUP BY`). `IS NULL` finds them.
+- **Codes per segment.** The first search of a segment with an attribute builds an array docno ->
+  code (a direct table when the doc_ids are dense, else binary search), kept with the attribute file
+  in the process. A live tail's segment is built per statement.
+- **Filters** (parameter `filter`, SQL's WHERE syntax over attributes) become a bit set per segment
+  of the documents to leave out. The search skips them while it walks postings, as it skips
+  deleted documents, but the statistics (N, average length, document frequencies) stay those of
+  the whole collection: a filter never changes a score (as in Elasticsearch, where a filter clause
+  does not score either). The bit sets are cached (LRU, 512 MB) by filter text, segment and the
+  identity of the attribute files; `filter_cache=false` asks the filter for each candidate
+  document instead (one code lookup per candidate: the cost follows the matches, not the size of the
+  collection).
+- **Positions last.** Phrases and `w/N` / `pre/N` do not read the positions of a document that is no
+  result anyway (left out by the filter, or deleted): the cheap checks first, as Lucene's two-phase
+  iteration does. This is safe at any depth of the query, because such a document is dropped at the
+  top and no other document's answer changes. On Enron's J3 (top 10 among 10 of 150 custodians) it
+  halved the time of one client and doubled the searches per second of 32.
+- **Counting** (`tcount` with `by`) adds one to the value's counter for every match: no rows leave
+  the engine, one row per value comes out.
+- **Counting an OR** (`tcount`, `tcount` with `by`, `tmatch`): no scores are needed, so the clauses
+  are not walked together document by document. For each window of 32,768 docnos, each clause's
+  documents are set in a bit set, one clause after the other; the deleted and filtered documents
+  are taken out a 64-bit word at a time; then the bits are counted (or their values looked up).
+  The work follows the postings read, not documents times clauses (Lucene's BooleanScorer does the
+  same for counts and aggregations). On MS MARCO (questions of 5 to 10 words, up to 7.8 million
+  matches each) it brought a count by custodian from 15.4 to 8.7 ms as one SQL statement.
+- **tserve** takes filter, k and by per request (a request that starts with the byte 0, see
+  src/udx/tserve.cpp); `vfts_broker` passes them from its JSON (`filter`, `k`; `_count` with `by`).
+  A search runs on one thread (many run at once); a count reads every match, so it takes its fair
+  share of the engine's pool (all cores when it runs alone, about one each under load).
+- **Answer cache of tserve.** The answers of counts are kept while the statement runs (LRU, 64 MB),
+  as Elasticsearch's shard request cache keeps the answers of requests without hits until the next
+  refresh. A `tserve` statement searches one snapshot, so an answer cannot go stale while it runs;
+  the key holds the request and the attribute files it reads (name, version and the file's serial
+  in the process), because `refresh_attribute` may replace an attribute meanwhile. Searches with
+  hits are not kept (neither does Elasticsearch by default). `request_cache=false` turns it off.
+- **Access.** An attribute copy would show values that a row access policy or a mask hides from a
+  user, so tables with access policies are refused (checked at add and at every refresh; only a
+  superuser or the table's owner sees policies, so only they can add or refresh). The index's own
+  access mode still applies to every search.
+
 ## Snippets and hybrid search
 
 - `tsnippet(body, query)` analyzes the given text with the index's options, marks the words that

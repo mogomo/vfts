@@ -92,6 +92,27 @@ FROM (SELECT vfts.tmatch(* USING PARAMETERS index='notes', query='contract*') OV
 JOIN ex.owners o USING (doc_id)
 GROUP BY o.owner ORDER BY o.owner;"
 
+ex "add_attribute: a column of another table, copied into the index for filters and counts" \
+"CALL vfts.add_attribute('notes', 'owner', 'ex.owners', 'doc_id', 'owner');"
+
+ex "tsearch with filter: only the matches whose attribute passes (scores unchanged)" \
+"SELECT doc_id, ROUND(score, 4) AS score, rank
+FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract* OR indemn*', filter='owner IN (''legal'', ''sales'')') OVER()
+      FROM ex.notes_live) r
+ORDER BY rank;"
+
+ex "tcount with by: matches per attribute value, counted while matching" \
+"SELECT value AS owner, count
+FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract*', by='owner') OVER() FROM ex.notes_live) c
+ORDER BY owner;"
+
+ex "refresh_attributes: after the table changes, copy it again" \
+"UPDATE ex.owners SET owner = 'legal' WHERE doc_id = 3; COMMIT;" \
+"CALL vfts.refresh_attributes('notes');" \
+"SELECT value AS owner, count
+FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract*', by='owner', filter='owner <> ''sales''') OVER() FROM ex.notes_live) c
+ORDER BY owner;"
+
 ex "tsnippet" \
 "SELECT doc_id, vfts.tsnippet(body, 'indemnity contract' USING PARAMETERS index='notes', words=8) AS snippet
 FROM ex.notes WHERE doc_id IN (1, 2) ORDER BY doc_id;"
@@ -141,6 +162,14 @@ if [ -x build/tools/vfts_broker ] && command -v curl > /dev/null; then
     r=$(curl -s -m 20 -XPOST "localhost:9399/$I/_search" -d '{"query": "contract AND indemn*"}')
     echo "   $r"
     case "$r" in *'"hits"'*) ;; *) FAILS=$((FAILS + 1)) ;; esac
+    echo "curl -s -XPOST localhost:9399/$I/_search -d '{\"query\": \"contract*\", \"filter\": \"owner = '\\''legal'\\''\", \"k\": 2}'"
+    r=$(curl -s -m 20 -XPOST "localhost:9399/$I/_search" -d '{"query": "contract*", "filter": "owner = '\''legal'\''", "k": 2}')
+    echo "   $r"
+    case "$r" in *'"hits"'*) ;; *) FAILS=$((FAILS + 1)) ;; esac
+    echo "curl -s -XPOST localhost:9399/$I/_count -d '{\"query\": \"contract*\", \"by\": \"owner\"}'"
+    r=$(curl -s -m 20 -XPOST "localhost:9399/$I/_count" -d '{"query": "contract*", "by": "owner"}')
+    echo "   $r"
+    case "$r" in *'"buckets"'*) ;; *) FAILS=$((FAILS + 1)) ;; esac
     kill $bp 2> /dev/null; wait $bp 2> /dev/null
 fi
 

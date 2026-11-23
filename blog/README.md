@@ -185,6 +185,39 @@ Scores are Lucene's BM25, the scale of OpenSearch; `bm25='classic'` gives Elasti
 is k1 + 1 = 2.2 times larger: document 1 scores 0.6636 for `indemnity`, and 1.4600 with
 `bm25='classic'`.
 
+### Filter and count by another column: attributes
+
+A search engine filters and counts by a field of its documents. vfts does it by a column of any
+other table: `add_attribute` copies the column into the index once (`refresh_attributes` again
+after the table changes), and every search can then filter by it and count by it while it matches.
+On the README's example table (five notes, an owner per note in `ex.owners`):
+
+    CALL vfts.add_attribute('notes', 'owner', 'ex.owners', 'doc_id', 'owner');
+
+    SELECT doc_id, ROUND(score, 4) AS score, rank
+    FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract* OR indemn*', filter='owner IN (''legal'', ''sales'')') OVER()
+          FROM ex.notes_live) r
+    ORDER BY rank;
+     doc_id | score | rank
+    --------+-------+------
+          1 |     2 |    1
+          2 |     2 |    2
+          5 |     1 |    3
+
+    SELECT value AS owner, count
+    FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract*', by='owner') OVER() FROM ex.notes_live) c
+    ORDER BY owner;
+      owner  | count
+    ---------+-------
+     legal   |     1
+     sales   |     1
+     trading |     1
+
+The filter is SQL's `WHERE` (`=`, `<>`, `<`, `IN`, `BETWEEN`, `IS NULL`, `AND`, `OR`, `NOT`, with SQL's
+rule that a comparison with a missing value is unknown), and a filter never changes a score. The
+same works through the broker: `{"query": "contract*", "filter": "owner = 'legal'", "k": 2}` on
+`_search`, `{"query": "contract*", "by": "owner"}` on `_count`.
+
 ### Snippets: `vfts.tsnippet`
 
     SELECT r.rank, vfts.tsnippet(c.body, 'contract w/5 indemnity' USING PARAMETERS index='cases') AS snippet
@@ -250,6 +283,11 @@ runs them all).
 | tcount | `vfts.tcount(* USING PARAMETERS index, query [, ...]) OVER() FROM <view>` | `SELECT * FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract') OVER() FROM ex.notes_live) c;` |
 | tmatch | `vfts.tmatch(* USING PARAMETERS index, query [, ...]) OVER() FROM <view>` | `SELECT o.owner, COUNT(*) FROM (SELECT vfts.tmatch(* USING PARAMETERS index='notes', query='contract*') OVER() FROM ex.notes_live) m JOIN ex.owners o USING (doc_id) GROUP BY 1;` |
 | tserve | `vfts.tserve(* USING PARAMETERS index, endpoint, token [, workers, ...]) OVER() FROM <index>_snap` (run by `tools/vfts_broker`) | `curl -XPOST localhost:9300/notes/_search -d '{"query": "contract"}'` |
+| add_attribute | `CALL vfts.add_attribute(index, attribute, 'schema.table', key_column, value_column)` | `CALL vfts.add_attribute('notes', 'owner', 'ex.owners', 'doc_id', 'owner');` |
+| refresh_attributes | `CALL vfts.refresh_attributes(index)` (or `refresh_attribute(index, attribute)`) | `CALL vfts.refresh_attributes('notes');` |
+| drop_attribute | `CALL vfts.drop_attribute(index, attribute)` | `CALL vfts.drop_attribute('notes', 'owner');` |
+| tsearch with a filter | `vfts.tsearch(* USING PARAMETERS index, query, filter [, filter_cache]) OVER() FROM <view>` | `... tsearch(* USING PARAMETERS index='notes', query='contract*', filter='owner IN (''legal'', ''sales'')') ...` |
+| tcount by an attribute | `vfts.tcount(* USING PARAMETERS index, query, by [, filter]) OVER() FROM <view>` | `SELECT value, count FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract*', by='owner') OVER() FROM ex.notes_live) c;` |
 | tsnippet | `vfts.tsnippet(text, query [, lang] USING PARAMETERS index [, words, fragments, ...])` | `SELECT vfts.tsnippet(body, 'indemnity' USING PARAMETERS index='notes') FROM ex.notes;` |
 | hybrid | `vfts.hybrid(source, doc_id, rank, score USING PARAMETERS [k, method, ...]) OVER()` | fuse `tsearch` with a vector search: `... FROM (<tsearch list> UNION ALL <vsearch list>) u` |
 | tokenize | `vfts.tokenize(text [, lang] [USING PARAMETERS ...]) OVER()` | `SELECT * FROM (SELECT vfts.tokenize('Holmes'' contracts') OVER()) t;` |
@@ -408,22 +446,54 @@ frequent refreshes.
 
 Search rarely stands alone. In e-discovery every email belongs to a custodian, and custodians go on
 and off legal hold; in a research warehouse papers have journals, years and grants. A search engine
-has no joins, so each attribute is copied into every document. vfts leaves it in a table.
+has no joins, so each attribute is copied into every document. In vfts the attribute stays a column
+of its own table, and `add_attribute` keeps a copy of it inside the index, the way the engines keep
+doc values, so that a search filters and counts by it while it matches.
 
-Enron, 517,401 emails, an attribute *custodian* (150 values), 10 custodians on hold:
+The test: an attribute *custodian* (150 values) for every document, 10 custodians on hold. Add it,
+move 1% of the documents to another custodian, find the top 10 of a query among the custodians on
+hold, and count every match of a query per custodian. One detail first: both engines keep answers
+by default (a repeated count comes from the shard request cache, a repeated filter from the query
+cache), and a benchmark that repeats its queries measures those caches. So every test ran twice, as
+shipped and with the caches off, and `tserve` got the same kind of cache: the answers of counts,
+kept while its statement runs.
 
-| Test | vfts (Vertica) | Elasticsearch | OpenSearch |
+MS MARCO, 8.8 million passages, the first 40 questions of the dev set:
+
+| Test | vfts (`tserve`) | Elasticsearch | OpenSearch |
 |---|---:|---:|---:|
-| Add the attribute to every document | **0.028 s** | 223 s | 228 s |
-| Move 1% of the documents to another custodian | **0.015 s** | 2.8 s | 8.9 s |
-| Top 10 of a query among the custodians on hold | 16.8 ms | 2.9 ms | **2.7 ms** |
-| Matches per custodian, every match | 18.7 ms | 1.4 ms | **1.2 ms** |
+| Add the attribute to every document | **3.2 s** | 888 s | 956 s |
+| Move 1% of the documents to another custodian | **3.0 s** | 12.1 s | 11.9 s |
+| Top 10 among the custodians on hold, 32 clients, caches off | 2,787/s | 2,625/s | **2,858/s** |
+| Matches per custodian, one client, caches off | **5.4 ms** | 76.3 ms | 93.5 ms |
+| Matches per custodian, 32 clients, caches off | **238/s** | 136/s | 118/s |
+| Matches per custodian, 32 clients, as shipped (repeated: from the caches) | **57,621/s** | 40,651/s | 42,030/s |
 
-Both sides of this are real. Changing the data around the text is an `UPDATE` of one column in
-Vertica, and a rewrite and re-analysis of whole documents in a search engine: three to four orders
-of magnitude apart. Filtering and counting by an attribute during the search is faster in the
-engines, which keep it next to their postings; vfts passes every match to Vertica's join, which
-costs 17 to 18 ms when thousands of documents match. The answers are the same on both sides.
+Enron, 517,401 emails:
+
+| Test | vfts (`tserve`) | Elasticsearch | OpenSearch |
+|---|---:|---:|---:|
+| Add the attribute to every document | **0.4 s** | 231 s | 240 s |
+| Move 1% of the documents to another custodian | **0.3 s** | 2.7 s | 2.7 s |
+| Top 10 among the custodians on hold, one client, caches off | **0.96 ms** | 1.34 ms | 1.45 ms |
+| Top 10 among the custodians on hold, 32 clients, caches off | **13,459/s** | 7,806/s | 7,804/s |
+| Matches per custodian, one client, caches off | **1.08 ms** | 2.29 ms | 2.22 ms |
+| Matches per custodian, 32 clients, caches off | **5,885/s** | 4,500/s | 4,745/s |
+
+Changing the data around the text is an `UPDATE` of one column and a copy of it, against a rewrite
+and re-analysis of every changed document: adding the attribute is 280 to 580 times faster, moving
+1% of it 4 to 9 times, and the engines then need a force merge for full speed (35 to 410 s here).
+Filtering and counting is now faster through `tserve` in every test but one: on MS MARCO OpenSearch
+serves 3% to 11% more filtered top 10s per second at 32 clients.
+Counting every match of the MS MARCO questions (up to 7.8 million each) is where vfts gained most:
+it walks the query's words window by window in a bit set and adds one to the custodian's counter
+per match. The answers equal the plain SQL join, query by query, and the engines' (on MS MARCO,
+for 11 of 40 questions the counts differ by at most 0.1%, words the analyzers see differently).
+
+As one SQL statement per search, the same filter and count cost 3.4 to 9.8 ms, mostly the
+statement itself. Before attributes, a plain SQL join of every match took 17 to 19 ms on Enron and
+835 to 906 ms on MS MARCO. All numbers, both protocols, and how to run it again:
+bench/results/joins.md in the repository.
 
 ## Who may search what
 
@@ -447,8 +517,10 @@ Honestly, and with the reasons:
   answer for searches joined with other data.
 - **PubMed's 99th percentile with one client**: OpenSearch 2.8 ms against 4.9 ms (vfts's mean is
   lower: 1.01 against 1.07 ms).
-- **Filtering or counting matches by an attribute** during the search: 1 to 3 ms against 17 to
-  18 ms ([Search next to other data](#search-next-to-other-data)).
+- **A filtered top 10 on MS MARCO at 32 clients**: OpenSearch 4,336 per second against `tserve`'s
+  3,914 (2,858 against 2,787 with the caches off). And a filter or a count sent as one SQL
+  statement pays the statement: 3.4 to 9.8 ms against the engines' 0.4 to 3.7 ms
+  ([Search next to other data](#search-next-to-other-data)).
 - **Phrases of very frequent words and single fuzzy words**: Lucene's phrase matching and its
   Levenshtein automaton are faster for these.
 - **Building large collections**: OpenSearch builds fastest everywhere, Elasticsearch beats vfts
@@ -503,8 +575,10 @@ vfts puts a real search engine where the data already is. It returns the answers
 and OpenSearch return, with the same scores, from SQL, on rows committed a moment ago. Through
 `tserve`, many clients get more searches per second from it than from either engine on every
 collection measured here, as the user they logged in as and within the table's row access
-policies. Sent one SQL statement at a time, small
-searches cost what a database statement costs, and a dedicated search engine is faster.
+policies. With an attribute in the index, it filters and counts by another table's column faster
+than both engines in all but one of our tests, and that column still changes with one `UPDATE`.
+Sent one SQL statement at a time, small searches cost what a database statement costs, and a
+dedicated search engine is faster.
 
 If your text lives in Vertica and you search it with SQL next to your other data - e-discovery
 over email, literature in a research warehouse, logs and tickets, Arabic and Hebrew documents - you
