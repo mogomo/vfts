@@ -1,6 +1,6 @@
 # vfts: full-text search for Vertica
 
-Full-text search inside Vertica, as a C++ UDx library: BM25 ranking, boolean, phrase and
+- Full-text search inside Vertica, as a C++ UDx library: BM25 ranking, boolean, phrase and
 proximity search (with the e-discovery operators `w/N` and `pre/N`), prefix, wildcard and fuzzy
 words, every language written with spaces between words (Arabic and Hebrew included), new and
 changed rows searchable at once without a rebuild, snippets, and hybrid search with
