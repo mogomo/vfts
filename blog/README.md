@@ -84,6 +84,10 @@ database that already holds the text.
 - **The ranking is BM25** exactly as Lucene computes it (OpenSearch's scores; Elasticsearch's
   scale with `bm25='classic'`): the same idf, the same one-byte document lengths, the same float
   arithmetic, global statistics over all segments and nodes.
+- **It is a UDx**, Vertica's user-defined extension: C++ loaded as a library becomes part of the
+  engine, runs in parallel on every node next to the data, and is called from SQL like any built-in
+  function. vfts is a use case of that: a need that usually means a second system, answered inside
+  the Vertica that already holds the data.
 
 ## The functions in ten minutes
 
@@ -243,10 +247,29 @@ new ones and hides the old versions. `CALL vfts.refresh_index('cases')` then mak
 new segment (0.3 s), and `CALL vfts.merge('cases', 1)` merges the segments into one; the answers
 stay the same.
 
-### Hybrid search: BM25 and vectors
+### Hybrid and semantic search: words and meaning
 
-With [vvector](https://github.com/mogomo/vertica-vector-db) on the same table, `vfts.hybrid` fuses
-the two ranked lists with Reciprocal Rank Fusion:
+Full-text search finds the words of a question; semantic search finds its meaning, also in
+documents that share no word with it. vfts includes no language model: the vectors (embeddings)
+are computed outside Vertica by a model you choose, kept in an `ARRAY[FLOAT]` column next to the
+text, compared with Vertica's `COSINE_SIMILARITY` or searched with an approximate vector index such
+as [vvector](https://github.com/mogomo/vertica-vector-db), and `vfts.hybrid` fuses that ranked list
+with the BM25 list of `tsearch`. The README's [Semantic search](../README.md#semantic-search) runs every step
+on a small table (`scripts/semantic_example.sh`, a multilingual model with 384 dimensions). There,
+the English question *damage compensation* finds by its words only the note that says *compensate*;
+by meaning, the first hit is a Hebrew note, "the supplier will indemnify the buyer for any damage",
+without a word in common; `hybrid` returns both:
+
+     rank | doc_id |  score  |     sources     |                           body
+    ------+--------+---------+-----------------+----------------------------------------------------------
+        1 |      2 | 0.03252 | text:1 vector:2 | The vendor must compensate the purchaser for any losses.
+        2 |      6 | 0.01639 | vector:1        | הספק ישפה את הקונה על כל נזק.
+        3 |      3 | 0.01587 | vector:3        | Contract renewal: payment within 30 days.
+
+The quality of the meaning depends on the model (this small one ranks *shall indemnify the buyer*
+only fourth), and a vector exists only after the embedding step has run for a row; the gain on a
+real collection is not measured here yet. With vvector on the demo table, `vfts.hybrid` fuses the two
+ranked lists with Reciprocal Rank Fusion:
 
     SELECT h.rank, h.doc_id, h.sources FROM (SELECT vfts.hybrid(src, doc_id, rank, score USING PARAMETERS k=5) OVER() FROM (
         SELECT 'text' AS src, doc_id, rank, score FROM (SELECT vfts.tsearch(* USING PARAMETERS index='cases',
@@ -268,8 +291,12 @@ All of this is `scripts/demo.sh`: it creates the table, runs every step with an 
 
 ## Every function on one page
 
-The README has each one's parameters and a full example with its output (`scripts/examples.sh`
-runs them all).
+Procedures manage an index and are called with `CALL`. The search functions are what Vertica calls
+transform functions: they return rows, so they are called in a `FROM` subquery with `OVER()`, and
+their input is the index's view (`*` hands them its columns). `tsnippet` is a scalar function,
+called wherever a value goes. The [README's Reference](../README.md#reference) has each one in the layout of
+the Vertica documentation (syntax, arguments, parameters, result, privileges) with a real example
+and its output; `scripts/examples.sh` runs them all.
 
 | Function | Syntax | Example |
 |---|---|---|
@@ -279,6 +306,7 @@ runs them all).
 | rebuild | `CALL vfts.rebuild(index)` | `CALL vfts.rebuild('notes');` |
 | load_all | `CALL vfts.load_all(index)` | `CALL vfts.load_all('notes');` |
 | info | `CALL vfts.info(index)` | `CALL vfts.info('notes');` |
+| check_access | `CALL vfts.check_access(index)` | `CALL vfts.check_access('notes');` (after an access policy changed) |
 | drop_index | `CALL vfts.drop_index(index)` | `CALL vfts.drop_index('notes');` |
 | tsearch | `vfts.tsearch(* USING PARAMETERS index, query \| queries [, k, mode, syntax, ...]) OVER() FROM <view>` | `SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract w/5 indemn*', k=10) OVER() FROM ex.notes_live) r;` |
 | tcount | `vfts.tcount(* USING PARAMETERS index, query [, ...]) OVER() FROM <view>` | `SELECT * FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract') OVER() FROM ex.notes_live) c;` |
@@ -575,12 +603,14 @@ Honestly, and with the reasons:
 
 On a Vertica node (tested on 26.3), as dbadmin, with the vsql connection variables set:
 
-    git clone <the repository> && cd vfts
+    git clone https://github.com/mogomo/vfts.git && cd vfts
+    export VSQL_USER=dbadmin VSQL_PASSWORD='...' VSQL_DATABASE=...
     ./install.sh       # checks, builds (static: nothing to install on the nodes), tests, deploys to every node, verifies
 
-Then `CALL vfts.create_index('docs', 'app.docs', 'lang=en');` and search. The README's Install
-section covers fenced mode, Eon subclusters, grants for the users who search, the broker for many
-clients, upgrades and removal.
+Then index a table and search it. The README's [Quick start](../README.md#quick-start) does it in three
+steps with real output, and its [Install](../README.md#install) section covers the steps one by one, fenced
+mode, Eon subclusters, grants for the users who search, the broker for many clients, upgrades and
+removal.
 
 ## What is in the repository
 
@@ -592,15 +622,16 @@ clients, upgrades and removal.
 | `tools/` | `vfts_broker` (HTTP front end for many clients), `httpload` (the benchmark's load generator), `vfts_cli` (the engine without Vertica) |
 | `tests/` | engine unit tests against brute-force models; SQL tests against plain SQL |
 | `bench/` | the benchmark: data download, loaders, runners, join test, report; `results/` every number in this article |
-| `scripts/` | `demo.sh` (every function, one command), `examples.sh` (the README's examples), `deploy.sh` |
+| `scripts/` | `demo.sh` (every function, one command), `examples.sh` (the README's examples), `semantic_example.sh` and `embed.py` (semantic search), `deploy.sh` |
 | `docs/` | design, index format, measured Vertica behavior |
 
 ## Run it yourself
 
-Everything above comes from one script, and the README explains every step. On a Linux machine with
-Vertica (one node is enough), 32 GB of RAM and about 40 GB of free disk:
+Everything above comes from one script, and the README's [Run the benchmark yourself](../README.md#run-the-benchmark-yourself)
+explains every step. On a Linux machine with Vertica (one node is enough), 32 GB of RAM and about
+40 GB of free disk:
 
-    git clone <the repository> && cd vfts
+    git clone https://github.com/mogomo/vfts.git && cd vfts
     export VSQL_HOST=localhost VSQL_PORT=5433 VSQL_USER=dbadmin VSQL_PASSWORD=... VSQL_DATABASE=...
     ./install.sh
     bench/run_all.sh data                                       # downloads and prepares the five collections
@@ -630,3 +661,14 @@ notices, but one server answers fewer of them per second, and `tserve` takes tha
 If your text lives in Vertica and you search it with SQL next to your other data - e-discovery
 over email, literature in a research warehouse, logs and tickets, Arabic and Hebrew documents - you
 can now do it without copying the text into a second system and keeping the two in sync.
+
+vfts is also a use case of something Vertica has had for a long time: an extension written in C++
+runs inside the engine, in parallel on every node, as part of SQL. Search is one example; graphs,
+vectors and bitmaps are others, built the same way.
+
+---
+
+*Disclaimer: vfts is a personal demonstration, provided "as is", without warranty of any kind. It is
+not part of Rocket Software's Vertica offering and is not endorsed or supported by Rocket Software.
+All product names, trademarks and brands mentioned here belong to their respective owners and are
+used for identification and reference only.*

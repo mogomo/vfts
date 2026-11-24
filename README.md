@@ -54,196 +54,157 @@ Honest limits: a search engine is the better tool when every query is a tiny sin
 as its own request and nothing joins with it; and a column mask on the indexed text makes vfts
 refuse to search, rather than search the masked text ([Access policies](#access-policies)).
 
-<!-- toc -->
-- [Full-text search in brief](#full-text-search-in-brief)
-- [Why search inside Vertica](#why-search-inside-vertica)
-- [What it does](#what-it-does)
-- [How it was tested](#how-it-was-tested)
-- [Quick start](#quick-start)
-- [Languages](#languages)
-- [No rebuild after new loads, updates or upgrades](#no-rebuild-after-new-loads-updates-or-upgrades)
-- [Install](#install)
-- [Prepare a table](#prepare-a-table)
-- [Reference](#reference)
+**Contents**
+
+- Start: [Quick start](#quick-start) · [Install](#install) · [Prepare a table](#prepare-a-table)
+- Use: [Reference](#reference) ([how to call the functions](#how-to-call-the-functions), [at a glance](#every-procedure-and-function-at-a-glance))
   - [Index management](#index-management): [create_index](#create_index), [info](#info), [tinfo](#tinfo), [refresh_index](#refresh_index), [merge](#merge), [rebuild](#rebuild), [load_all](#load_all), [check_access](#check_access), [drop_index](#drop_index), [add_attribute](#add_attribute), [refresh_attributes](#refresh_attributes-refresh_attribute), [drop_attribute](#drop_attribute), [the views](#the-views-_live-and-_snap), [access policies](#access-policies)
   - [Search functions](#search-functions): [tsearch](#tsearch), [tcount](#tcount), [tmatch](#tmatch), [tserve and vfts_broker](#tserve-and-vfts_broker-many-clients), [tsnippet](#tsnippet), [hybrid](#hybrid), [tokenize](#tokenize), [tversion](#tversion)
   - [Query syntax](#query-syntax), [Filter syntax](#filter-syntax)
-- [Search patterns](#search-patterns)
-- [Performance](#performance)
-- [FAQ](#faq)
-- [Restrictions and future work](#restrictions-and-future-work)
-- [Files](#files)
-- [License](#license)
-- [Disclaimer](#disclaimer)
-
-## What it does
-
-| | |
-|---|---|
-| Ranking | BM25 (k1 = 1.2, b = 0.75) with the formula and float arithmetic of Lucene: the scores of OpenSearch by default, of Elasticsearch with `bm25='classic'`; phrases, `w/N` and `pre/N` scored as Lucene's phrase and span queries. The benchmark compares the top 10 of every query with both engines ([Performance](#performance)) |
-| Queries | words; `"exact phrases"`; `AND`, `OR`, `NOT`, `-word`, `+word`, `( )`; `"phrase"~N`; `a w/N b` (within N words, any order); `a pre/N b` (a before b, at most N words); `indemn*`; `te?t`; `holmse~`, `holmse~1` (Damerau-Levenshtein); or plain text (`syntax='plain'`) |
-| Matching | `mode='stem'` (default: running, runs, run) or `mode='exact'`; one index serves both |
-| Languages | every language written with spaces: ICU word boundaries, NFKC with case folding, accent folding, Snowball stemmers, Arabic/Persian normalization, Hebrew points and prefixes ([Languages](#languages)) |
-| Freshness | inserts, updates and deletes are searchable at once (the live tail); `refresh_index` adds segments incrementally; a tiered merge keeps their number small ([No rebuild](#no-rebuild-after-new-loads-updates-or-upgrades)) |
-| Scale | segments searched in parallel; global statistics, so scores do not depend on segments or nodes; Enterprise and Eon (also secondary subclusters) |
-| Storage | the index is in Vertica tables (backed up with the database); every node keeps a memory-mapped copy |
-| Many clients | `tserve` with `tools/vfts_broker`: an HTTP front end, each user's own Vertica sessions, searches over a channel instead of one statement each; with 32 clients 1.1 to 2.0 times the queries per second of Elasticsearch and OpenSearch on the benchmark ([tserve](#tserve-and-vfts_broker-many-clients)) |
-| Attributes | a column of another table (custodian, status, date) copied into the index with `add_attribute`: searches filter by it (`filter='custodian IN (3, 17)'`) and count by it (`tcount ... by='custodian'`) while they match, as search engines do with doc values; `refresh_attributes` after the table changes ([Attributes](#add_attribute)) |
-| Extras | `tcount` (matches only), `tmatch` (every matching doc_id, for joins), `tsnippet` (marked fragments), `hybrid` (BM25 + vectors with Reciprocal Rank Fusion), `tokenize` |
-
-## How it was tested
-
-- **Engine unit tests** (`make test`, no Vertica): the analyzer per language group (Latin,
-  Greek/Cyrillic/Armenian, Arabic, Hebrew, Indic, others) including the Sherlock Holmes
-  punctuation cases; the segment format against a brute-force model (140,000 documents, several
-  65,536-document chunks), with a byte-identical round trip through the table rows; 1,000 random
-  queries (boolean, phrase, w/N, pre/N, exact and stem) against a brute-force search (written
-  after Lucene's span classes for w/N and pre/N), on one segment and on three segments with
-  tombstones and a live tail; the pruned top 10 against the full result; 1,000 fuzzy expansions
-  against the edit distance of every term; merges, in doc_id order and reordered by graph
-  bisection (bit-identical scores before and after, the same counts and matches, the table round
-  trip, masks); the node cache; snippets.
-- **SQL tests** (`tests/sql/*.sh`, on Vertica): results of every operator equal plain SQL over a
-  table tokenized with the same analyzer; BM25 scores equal the formula computed in SQL (1e-4);
-  freshness (inserts, updates with and without a new version, deletes: searched without refresh,
-  after refreshes, merges and a rebuild, always equal to an index built from scratch; merged
-  segments leave no rows behind); session defaults; every
-  language group and the hand-written Arabic and Hebrew cases; snippets; hybrid fusion with known
-  answers and with vvector; `tserve` and the broker (both modes) equal to `tsearch`, batches equal
-  to single queries; access (`tests/sql/test_access.sh`): input not made by the views refused, a
-  copied token refused after `check_access`, with a row access policy every user's ids, ranks and
-  scores equal to an index of the rows that user sees (snap, live tail, after refresh and merge),
-  views with a hidden id left out or replayed by another user refused, a column mask refused,
-  internal functions refused to users.
-- **Systems**: Vertica 26.3.0-2 Enterprise (single node, Ubuntu 26.04, g++ 15.2, unfenced and
-  fenced) and Vertica 26.3.0-2 Eon (5 nodes: a primary subcluster of 3 and a secondary of 2, RHEL
-  8.10, g++ 8.5, fenced and unfenced). The same corpus and queries give identical ids, ranks and
-  scores on 1 node, on 3 nodes and on the secondary subcluster (`tests/sql/digest.sql`). Multi-node
-  Enterprise was not available for testing. Every hit and score of every benchmark query (k = 10
-  and 100) and every count are the same before and after the speed changes of the engine.
-- **Benchmark** against Elasticsearch 9.5.6 and OpenSearch 3.10.0 on the same machine with the
-  same data and equivalent analyzers ([Performance](#performance)): the same matches and, for 97%
-  of the MS MARCO queries and 133 of 140 syntax queries, the same top 10 with the same scores.
-  MS MARCO relevance: MRR@10 0.1815 (vfts), 0.1815 (Elasticsearch), 0.1813 (OpenSearch).
+  - [Search patterns](#search-patterns), [Semantic search](#semantic-search)
+- Understand: [What it does](#what-it-does) · [Languages](#languages) · [No rebuild after loads, updates or upgrades](#no-rebuild-after-new-loads-updates-or-upgrades) · [How it was tested](#how-it-was-tested)
+- Measure: [Performance](#performance) · [Run the benchmark yourself](#run-the-benchmark-yourself)
+- More: [FAQ](#faq) · [Changes](#changes) · [Restrictions and future work](#restrictions-and-future-work) · [Files](#files) · [License](#license) · [Disclaimer](#disclaimer)
 
 ## Quick start
 
-On a Vertica node, with the `vsql` connection variables of dbadmin set ([Install](#install)):
+Three steps on a Vertica node. The output shown is real (vfts 0.4.1, Vertica 26.3, one node).
 
-    ./install.sh             # checks, builds, tests, deploys and verifies
-    scripts/demo.sh          # every function on a small table, with explanations
+**1. Install.** As the Linux user that runs Vertica (dbadmin), in a directory whose path has no
+spaces, with a superuser's connection:
 
-By hand:
+    git clone https://github.com/mogomo/vfts.git
+    cd vfts
+    export VSQL_USER=dbadmin VSQL_PASSWORD='...' VSQL_DATABASE=...
+    ./install.sh
 
-    CREATE TABLE app.docs (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8),
-                           ver TIMESTAMPTZ NOT NULL DEFAULT CLOCK_TIMESTAMP());
-    INSERT INTO app.docs (doc_id, body) VALUES (1, 'The indemnity clause of the supply contract.');
-    INSERT INTO app.docs (doc_id, body) VALUES (2, 'Sherlock Holmes'' notes, Holmes-style.');
-    COMMIT;
-    CALL vfts.create_index('docs', 'app.docs', 'lang=en');
-    SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='contract w/5 indemnity', k=10) OVER()
-                   FROM app.docs_live) r;
+`install.sh` checks the environment, builds (the first time, ICU and the stemmers take 5 to 20
+minutes), runs the unit tests, deploys into the database and runs every function once. It stops at
+the first problem and says what to fix. It ends with:
 
-## Languages
+```
+== 4. Verify
+   ok    vfts 0.4.1 (-O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0, ICU 79.1)
+   ok    every function ran on a test table (schema vfts_selftest, then removed)
 
-**Which languages work, and why.** Every language written with spaces between words works with
-three generic steps, and no dictionary or thesaurus: ICU finds the words (Unicode word boundaries),
-ICU normalizes them (NFKC, case folding, accents), and a rule-based stemmer reduces them to a stem.
-BM25, phrases, proximity and fuzzy search need nothing more: only word positions, a few counts and
-the list of distinct words.
+== Installed
+```
 
-| Group | Examples | Stemming |
-|---|---|---|
-| Latin script | English, Italian, French, Spanish, Portuguese, German, Dutch, Nordic languages, Polish, Czech, Romanian, Hungarian, Finnish, Estonian, Lithuanian, Turkish, Indonesian, Irish, Basque, Catalan, Esperanto, Sesotho | Snowball |
-| Greek, Cyrillic, Armenian | Greek, Russian, Serbian, Ukrainian, Armenian | Snowball |
-| Arabic script | Arabic, Persian | Snowball, after Arabic/Persian normalization (diacritics, tatweel, alef forms, ى, ة, ك/ک, ي/ی); Arabic also removes the prefixes ال وال بال كال فال لل و first |
-| Hebrew script | Hebrew, Yiddish | Hebrew: points removed, light prefix stripping (up to two of ו ה ב כ ל מ ש while 3 letters remain); Yiddish: Snowball |
-| Indic | Hindi, Nepali, Tamil | Snowball |
-| Others with spaces | Georgian, Slovak, Croatian, Bulgarian, ... | none: exact words |
+**2. Index a table and search it.** In `vsql`: a table with an id, a text and a version column,
+then one call to index it:
 
-The Snowball stemmers linked in (libstemmer_c 3.2.0, `SELECT * FROM (SELECT vfts.tversion() OVER()) v;`):
-arabic, armenian, basque, catalan, czech, danish, dutch, english, esperanto, estonian, finnish,
-french, german, greek, hindi, hungarian, indonesian, irish, italian, lithuanian, nepali, norwegian,
-persian, polish, portuguese, romanian, russian, serbian, sesotho, spanish, swedish, tamil, turkish,
-ukrainian, yiddish.
+```sql
+CREATE SCHEMA quick;
+CREATE TABLE quick.docs (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8),
+                         ver TIMESTAMPTZ NOT NULL DEFAULT CLOCK_TIMESTAMP());
+INSERT INTO quick.docs (doc_id, body) VALUES (1, 'The supplier shall indemnify the buyer under this contract.');
+INSERT INTO quick.docs (doc_id, body) VALUES (2, 'Contract renewal: payment within 30 days.');
+INSERT INTO quick.docs (doc_id, body) VALUES (3, 'Sherlock Holmes'' notes on the Baskerville case.');
+COMMIT;
+   COMMIT
+CALL vfts.create_index('docs', 'quick.docs', 'lang=en');
+   NOTICE 2005:  vfts: index docs created on quick.docs. Search: SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='...', k=10) OVER() FROM quick.docs_live) r;
+    create_index
+   --------------
+               0
+   (1 row)
+```
 
-A word that runs across scripts without a space (`lewisi.הכנסת`, `لبنان.McCrudden`, common in
-Wikipedia) is cut where the script changes before the words are found, as Lucene's ICU tokenizer
-does: `הכנסת` is found.
+A ranked search, joined to the table for the text (*contracts* also finds *contract*):
 
-A document's language is its `lang` column (ISO 639-1), or the index language. Words in another
-script are stemmed with that script's default: an English word inside a Hebrew document is
-stemmed as English. Hebrew has no free stemmer; recall in Hebrew is good but below a full
-morphological analyser. Hybrid search with vvector covers most of that gap.
+```sql
+SELECT r.rank, r.doc_id, ROUND(r.score, 4) AS score, d.body
+FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='contracts', k=10) OVER() FROM quick.docs_live) r
+JOIN quick.docs d USING (doc_id)
+ORDER BY r.rank;
+    rank | doc_id | score  |                            body
+   ------+--------+--------+-------------------------------------------------------------
+       1 |      2 | 0.2308 | Contract renewal: payment within 30 days.
+       2 |      1 | 0.1955 | The supplier shall indemnify the buyer under this contract.
+   (2 rows)
+```
 
-**Excluded, and why.**
+A new row is searchable as soon as it is committed, without any refresh (`w/5`: within five words;
+`indemn*`: any word that starts with indemn):
 
-| Language | Reason |
-|---|---|
-| Chinese, Japanese | no spaces: words are found with a dictionary |
-| Thai, Lao, Khmer, Myanmar | no spaces: words are found with a dictionary |
-| Korean | spaces exist, but useful search needs a morphological analyser |
+```sql
+INSERT INTO quick.docs (doc_id, body) VALUES (4, 'The new contract has an indemnity cap.'); COMMIT;
+   COMMIT
+SELECT r.rank, r.doc_id, d.body
+FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='contract w/5 indemn*', k=10) OVER() FROM quick.docs_live) r
+JOIN quick.docs d USING (doc_id)
+ORDER BY r.rank;
+    rank | doc_id |                            body
+   ------+--------+-------------------------------------------------------------
+       1 |      4 | The new contract has an indemnity cap.
+       2 |      1 | The supplier shall indemnify the buyer under this contract.
+   (2 rows)
+```
 
-Text in these scripts raises a clear error. With the index option `on_unsupported=plain` it is
-indexed as ICU splits it, without stemming.
+How many documents match:
 
-**Stopwords** are never removed from the index (that would break exact phrases). A query can drop
-them with `stopwords=true`.
+```sql
+SELECT * FROM (SELECT vfts.tcount(* USING PARAMETERS index='docs', query='holmes OR contract*') OVER() FROM quick.docs_live) c;
+    qid | count
+   -----+-------
+      0 |     4
+   (1 row)
+```
 
-## No rebuild after new loads, updates or upgrades
+Remove it again:
 
-**An index is built once.** vfts works the way Lucene does:
+```sql
+CALL vfts.drop_index('docs');
+DROP SCHEMA quick CASCADE;
+   NOTICE 2005:  vfts: index docs dropped (caches removed on 1 nodes of this subcluster)
+   DROP SCHEMA
+```
 
-1. **New rows are searchable as soon as they are committed.** Rows written since the last refresh
-   are searched at query time: the view `<index>_live` returns them, and `tsearch` analyzes them on
-   the fly (the **live tail**). Results are exact without any refresh.
-2. **Changed and deleted rows** are hidden with a tombstone bitmap. An update is a delete plus an
-   insert.
-3. **`refresh_index` adds the live tail as small new segments.** Nothing indexed is rewritten. It
-   is needed for speed, not for correct answers: every query analyzes every tail row (a tail of
-   88,418 MS MARCO rows: 2.0 s per query), so run it often, every minute or every hour.
-4. **`refresh_index` then runs a tiered merge** that combines small segments and drops deleted
-   documents. Searches keep using the previous generation while it runs.
+The form `SELECT ... FROM (SELECT vfts.tsearch(* USING PARAMETERS ...) OVER() FROM <index>_live) r`
+is how Vertica calls this kind of function: [How to call the functions](#how-to-call-the-functions)
+explains each part.
 
-The one thing vfts needs from the source table is a version column (`ver`, the time a row was
-written) and, for deletes and for updates that keep `ver`, a journal table that records them
-([Prepare a table](#prepare-a-table)).
+**3. Next.**
 
-**Vertica upgrades.** The index is stored in ordinary Vertica tables (backed up and restored with
-the database) and in node cache files whose format belongs to vfts, not to Vertica, so an upgrade
-of Vertica keeps it. The library may need to be compiled again for the new Vertica version
-(`make && make deploy`); the index does not need a rebuild. Not tested yet: vfts was tested on
-Vertica 26.3.0-2 only.
-
-**vfts upgrades** (`git pull && make && make deploy`) keep the index too, unless a version changes
-the analyzer (how words are found, normalized and stemmed, for example a new Snowball release) or
-the file format. Such a version says so under [Upgrade and uninstall](#upgrade-and-uninstall), and
-the index is built again, so that old and new rows are analyzed the same way. 0.3.0 is one: it
-renamed vtext to vfts. 0.3.1 is one for text with typographic quote characters (see below).
-BM25 statistics (number of documents, average length, document frequencies) are computed over all
-segments, the live tail and all nodes, minus tombstones: scores do not depend on how rows are split
-into segments or nodes.
+- `scripts/demo.sh`: a guided tour of every function on a small table, with explanations.
+- [Prepare a table](#prepare-a-table): the columns your own table needs, and how updates and deletes
+  are recorded.
+- [Install](#install): what `install.sh` does step by step, grants for the users who search,
+  refresh schedules, several nodes and Eon, and the HTTP front end for many clients.
+- [Reference](#reference): every procedure and function, each with its syntax, arguments,
+  parameters, result and a real example.
 
 ## Install
 
-**One command, for any Vertica database** (one node or many, Enterprise or Eon). On a Vertica
-node, in a directory whose path has no spaces, with the connection of a superuser:
+Two ways to the same result: **A**, one command (recommended), or **B**, the same steps by hand
+(to see each part, or to build on another machine). Then, for both: index a table and let users
+search, nodes and subclusters, and the HTTP front end for many clients.
 
-    git clone <this repository> && cd vfts
-    export VSQL_USER=dbadmin VSQL_PASSWORD=... VSQL_DATABASE=...
+### A. One command
+
+For any Vertica database (one node or many, Enterprise or Eon). On a Vertica node, as the Linux user
+that runs Vertica, in a directory whose path has no spaces, with the connection of a superuser:
+
+    git clone https://github.com/mogomo/vfts.git && cd vfts
+    export VSQL_USER=dbadmin VSQL_PASSWORD='...' VSQL_DATABASE=...
     ./install.sh                 # or ./install.sh --fenced
 
 `install.sh` checks the environment (connection, superuser, Vertica version, SDK, compiler, that
 the session's node is this machine), builds the three static dependencies once and then vfts,
 runs the engine tests, deploys the library, functions and procedures (copied to every node),
-builds the tools, and runs every function on a test table to verify. It stops at the first
-problem and says what to fix. It can be run again (an upgrade); its test uses the schema
-`vfts_selftest` and never touches anything else. `./install.sh --check` only checks;
-`./install.sh --uninstall` removes the library, functions and procedures (the indexes stay), and
-`--uninstall --drop` also drops every index (views and node caches included) and the schema `vfts`. The steps below are what it does, for reference and for the parts that
-come after the install (indexing, grants, Eon subclusters, the broker).
+builds the tools, and runs every function on a test table to verify ([Quick start](#quick-start)
+shows its output). It stops at the first problem and says what to fix. It can be run again (an
+upgrade); its test uses the schema `vfts_selftest` and never touches anything else.
 
-### 1. Check the environment
+    ./install.sh --check                 # only check the environment
+    ./install.sh --uninstall             # remove the library, functions and procedures; indexes stay
+    ./install.sh --uninstall --drop      # also drop every index (views, node caches) and the schema vfts
+
+### B. Step by step
+
+What `install.sh` does, one part at a time.
+
+#### 1. Check the environment
 
 | Need | Check |
 |---|---|
@@ -256,15 +217,15 @@ come after the install (indexing, grants, Eon subclusters, the broker).
 Build on a Vertica node, or on a machine with the same Linux family and a glibc no newer than the
 nodes' (the library links ICU, Snowball and CRoaring statically: nothing else is installed on the nodes).
 
-### 2. Build and test
+#### 2. Build and test
 
-    git clone <this repository> && cd vfts
+    git clone https://github.com/mogomo/vfts.git && cd vfts
     make deps        # downloads and builds ICU 79.1, libstemmer_c 3.2.0, CRoaring 5.5.5 (pinned checksums)
     make             # build/libvfts.so
     make test        # engine unit tests, no database needed
     make tools       # optional: build/tools/vfts_broker (many clients), vfts_cli, httpload
 
-### 3. Deploy into the database
+#### 3. Deploy into the database
 
 On a Vertica node (with the built `build/libvfts.so` and the repository's `sql/` directory):
 
@@ -279,13 +240,13 @@ OS user (deploy.sh hands it a copy in /tmp) and copies it to every node of the c
 once per database. Nothing is stored in the
 scripts: the connection comes from the `VSQL_*` variables.
 
-### 4. Verify
+#### 4. Verify
 
     vsql -c "SELECT * FROM (SELECT vfts.tversion() OVER()) v;"   # version, build, ICU, stemmers
     scripts/examples.sh         # every function on a small table (the examples of the Reference)
     tests/sql/run_all.sh        # the SQL tests (create and drop their own schemas)
 
-### 5. Index a table and let users search
+### Index a table and let users search
 
 1. [Prepare the table](#prepare-a-table): `doc_id`, the text, optionally `lang`, and a version column `ver`.
 2. `CALL vfts.create_index('docs', 'app.docs', 'lang=en');` as dbadmin (or a user with write
@@ -304,7 +265,7 @@ Where the node caches live: `/tmp/vfts` by default. Use a directory that survive
 production: the index option `cache_dir=/data/vfts` at `create_index` (it must exist on every node,
 writable by the database's OS user). A lost cache is rebuilt from the index tables with `load_all`.
 
-### 6. Several nodes, Eon and subclusters
+### Several nodes, Eon and subclusters
 
 - **Enterprise, several nodes**: nothing more; `create_index` and `refresh_index` load every node.
 - **Eon**: run `create_index` and `refresh_index` on the primary subcluster; on each secondary
@@ -312,7 +273,7 @@ writable by the database's OS user). A lost cache is rebuilt from the index tabl
   refresh (a node that is behind refuses to answer, with that message).
 - **New node**: `CALL vfts.load_all('docs');`.
 
-### 7. Many clients (optional): vfts_broker
+### Many clients (optional): vfts_broker
 
 For many small searches at once, run `build/tools/vfts_broker` on a node, as the database's OS
 user, and send searches to it over HTTP ([tserve and vfts_broker](#tserve-and-vfts_broker-many-clients)):
@@ -325,26 +286,10 @@ own Vertica sessions.
 
 ### Upgrade and uninstall
 
-    git pull && make && make deploy      # replaces the library and functions; indexes and caches stay
+    git pull && ./install.sh             # or: git pull && make && make deploy
+                                         # replaces the library and functions; indexes and caches stay
 
-vfts was named vtext up to version 0.2.0 (version numbers before 0.3.0 in these documents are
-vtext's). vfts 0.3.0 only renames it: the schema, the library, the tools, the session parameters,
-the cache file names and the file formats' magic bytes. It does not read vtext's indexes: remove
-vtext with its own `./install.sh --uninstall --drop`, install vfts, and create the indexes again.
-
-vfts 0.3.1 fixes the analyzer for typographic quote characters: ’ ʼ ＇ ׳ ״ are now unified with
-' and " before the word boundaries are found, as they always were meant to be. Before, a Hebrew
-geresh used as a quotation mark stayed on the word: in ׳תיאטרון מסך׳ the word was ׳תיאטרון,
-which a search for תיאטרון did not find. An index whose text has these characters: run
-`CALL vfts.rebuild(index)` after the upgrade.
-
-vfts 0.4.0 adds attributes (filters and counts by another table's column): the upgrade adds the
-tables `vfts.attributes` and `vfts.attr_values` and the function `tattr`; indexes need nothing.
-It also fixes `vfts_broker --mode sql`, whose vsql session ended at the first failing statement.
-
-vfts 0.4.1 counts faster: `tcount`, `tcount ... by=` and `tmatch` read the documents of frequent
-words as bit sets, and a batch of counts (`queries`) shares the cores slice by slice. The answers
-do not change; nothing to do after the upgrade.
+What each version needs after the upgrade (most need nothing): [Changes](#changes).
 
     ./install.sh --uninstall             # removes library, functions and procedures; indexes stay
     ./install.sh --uninstall --drop      # also drops every index (views, node caches) and the schema vfts
@@ -408,10 +353,75 @@ what it does, **Syntax**, **Arguments** and **Parameters**, **Returns**, **Privi
 - Every example that shows output is real: `scripts/examples.sh` runs them all, one after the
   other, on a table of its own (schema `ex`, index `notes`; vfts 0.4.1, Vertica 26.3, one node),
   and the blocks show each statement, then what vsql printed. Run it yourself after an install
-  (`scripts/examples.sh`; `scripts/examples.sh --clean` removes it). The script runs them as a
-  story: create the index, search, add the attribute `owner`, change it, insert document 6 and
-  refresh, merge, and finally drop. So an example sees what the steps before it in the script did
-  (the hybrid example finds document 6; the merge example's `info` lists the attribute).
+  (`scripts/examples.sh`; `scripts/examples.sh --clean` removes it).
+
+### How to call the functions
+
+Three kinds of objects, three ways to call them:
+
+| Kind | Objects | How |
+|---|---|---|
+| Procedures: manage an index | create_index, refresh_index, merge, info, ... | `CALL vfts.create_index('docs', 'app.docs', 'lang=en');` |
+| Transform functions: return rows | tsearch, tcount, tmatch, tserve, hybrid, tokenize, tinfo, tversion | in a subquery, with `OVER()`: `SELECT ... FROM (SELECT vfts.tsearch(...) OVER() FROM ...) r` |
+| Scalar function: returns one value per row | tsnippet | anywhere a value goes: `SELECT vfts.tsnippet(body, 'query' USING PARAMETERS index='docs') FROM ...` |
+
+A search, part by part:
+
+    SELECT r.rank, d.doc_id, d.body                        -- 5. what to show
+    FROM (SELECT vfts.tsearch(*                            -- 1. the function, fed every column of ...
+                 USING PARAMETERS index='docs',            -- 2. its parameters, by name
+                                  query='contract w/5 indemn*', k=10)
+                 OVER()                                    -- 3. required by Vertica for this kind of function
+          FROM app.docs_live) r                            -- 4. ... the index's view: the input of every search
+    JOIN app.docs d USING (doc_id)                         -- 6. the text stays in your table: join it
+    ORDER BY r.rank;
+
+1. `tsearch` is a *transform function* (Vertica's term for a function that turns input rows into
+   any number of output rows), so it is called in a `FROM` subquery, with `OVER()`.
+2. `USING PARAMETERS` passes the settings by name: `index` always, then `query`, `k` and the rest.
+3. `*` hands it every column of the view `<index>_live` (every committed change) or `<index>_snap`
+   (the index as of the last refresh). The views are the only input a search accepts, so `SELECT`
+   on them is what allows a user to search ([The views](#the-views-_live-and-_snap)).
+4. The result is rows (`qid, doc_id, score, rank`): join them, filter them, group them like any
+   table.
+
+### Every procedure and function at a glance
+
+| Task | Procedure or function | Typical call |
+|---|---|---|
+| Create an index of a table | [create_index](#create_index) | `CALL vfts.create_index('docs', 'app.docs', 'lang=en');` |
+| Add the rows written since the last refresh | [refresh_index](#refresh_index) | `CALL vfts.refresh_index('docs');` (on a schedule) |
+| Fewer, larger segments | [merge](#merge) | `CALL vfts.merge('docs');` |
+| Look at an index | [info](#info), [tinfo](#tinfo) | `CALL vfts.info('docs');` |
+| Fill the cache of a new node or subcluster | [load_all](#load_all) | `CALL vfts.load_all('docs');` |
+| Read changed access policies | [check_access](#check_access) | `CALL vfts.check_access('docs');` |
+| Index everything again (recovery) | [rebuild](#rebuild) | `CALL vfts.rebuild('docs');` |
+| Remove an index | [drop_index](#drop_index) | `CALL vfts.drop_index('docs');` |
+| Filter and count by another table's column | [add_attribute](#add_attribute) | `CALL vfts.add_attribute('docs', 'owner', 'app.owners', 'doc_id', 'owner');` |
+| Copy changed attribute values | [refresh_attributes, refresh_attribute](#refresh_attributes-refresh_attribute) | `CALL vfts.refresh_attributes('docs');` |
+| Remove an attribute | [drop_attribute](#drop_attribute) | `CALL vfts.drop_attribute('docs', 'owner');` |
+| The best k documents, ranked | [tsearch](#tsearch) | `SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='...', k=10) OVER() FROM app.docs_live) r;` |
+| How many match (per attribute value) | [tcount](#tcount) | `... vfts.tcount(* USING PARAMETERS index='docs', query='...', by='owner') OVER() ...` |
+| Every match, for joins and reports | [tmatch](#tmatch) | `... vfts.tmatch(* USING PARAMETERS index='docs', query='...') OVER() ...` |
+| Many clients over HTTP | [tserve and vfts_broker](#tserve-and-vfts_broker-many-clients) | `build/tools/vfts_broker --port 9300 --schema app --mode serve` |
+| The matching passages, marked | [tsnippet](#tsnippet) | `SELECT vfts.tsnippet(body, '...' USING PARAMETERS index='docs') FROM app.docs ...` |
+| Words and vectors in one ranking | [hybrid](#hybrid) | [Semantic search](#semantic-search) |
+| What the analyzer makes of a text | [tokenize](#tokenize) | `SELECT * FROM (SELECT vfts.tokenize('text' USING PARAMETERS lang='en') OVER()) t;` |
+| Which build is installed | [tversion](#tversion) | `SELECT * FROM (SELECT vfts.tversion() OVER()) v;` |
+
+The query language is in [Query syntax](#query-syntax), the filters in [Filter syntax](#filter-syntax).
+
+### The examples
+
+The examples run as one story, in this order, on the example table below:
+[create_index](#create_index) and [info](#info); the searches ([tsearch](#tsearch),
+[tcount](#tcount), [tmatch](#tmatch)); [add_attribute](#add_attribute) `owner` and the searches by
+it; [refresh_attributes](#refresh_attributes-refresh_attribute) (note 3 moves to legal);
+[tsnippet](#tsnippet); [refresh_index](#refresh_index) (note 6 is added); [merge](#merge),
+[tinfo](#tinfo), [load_all](#load_all), [check_access](#check_access), [rebuild](#rebuild);
+[tokenize](#tokenize), [hybrid](#hybrid), [tversion](#tversion), the [broker](#tserve-and-vfts_broker-many-clients);
+then [drop_attribute](#drop_attribute) and [drop_index](#drop_index). An example that depends on an
+earlier one says so in a line *Example state*.
 
 ### The example table
 
@@ -473,6 +483,10 @@ every node of the session's subcluster.
 | access | auto | `auto`: follow the access policies of the source table ([Access policies](#access-policies)); `rows`: apply its row access policies to every search even before one exists |
 | reorder | true | merges number the documents by recursive graph bisection (smaller and faster index, same results); `false`: keep doc_id order |
 
+**Returns**
+
+0. What the procedure did is reported as `NOTICE` messages.
+
 **Privileges**
 
 Superuser, or the owner of the source table (vfts reads the table's access policies, which only
@@ -508,6 +522,16 @@ caches of the subcluster's nodes, as notices.
 
     CALL vfts.info ( 'index' )
 
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index name |
+
+**Returns**
+
+0. The facts are `NOTICE` messages, one line each.
+
 **Privileges**
 
 Any user (`EXECUTE` is granted to `PUBLIC`).
@@ -541,6 +565,16 @@ problem if the node's cache is missing or behind.
     SELECT * FROM ( SELECT vfts.tinfo ( USING PARAMETERS index='index' [, cache_dir='dir' ] )
                     OVER ( PARTITION NODES ) FROM vfts.probe ) i;
 
+`OVER (PARTITION NODES)` runs it once on every node; `vfts.probe` is a one-row table that gives each
+node a row to start from.
+
+**Parameters**
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| index | (required) | the index |
+| cache_dir | /tmp/vfts | the node cache directory, if the index uses another one |
+
 **Returns**
 
 `(node_name VARCHAR, gen INT, segments INT, docs INT, deleted INT, bytes INT, problem VARCHAR)`,
@@ -552,7 +586,9 @@ Any user (`EXECUTE` is granted to `PUBLIC`; `vfts.probe` is readable by `PUBLIC`
 
 **Examples**
 
-After the [merge](#merge) example (generation 3, one segment, six documents):
+*Example state:* after the [merge](#merge) example (generation 3, one segment, six documents).
+
+
 
 ```sql
 SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;
@@ -577,11 +613,23 @@ When to run it: whenever convenient - every minute, every hour, from cron or any
 Searches are exact without it (the live view reads the rows written since); a longer live tail
 only costs query time, because every tail row is analyzed per query.
 
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index name |
+
+**Returns**
+
+0. What the procedure did is reported as `NOTICE` messages.
+
 **Privileges**
 
 As [create_index](#create_index).
 
 **Examples**
+
+*Example state:* the five notes; this example adds note 6, which the later examples see.
 
 A new row is found at once through the live view; through the snap view only after
 `refresh_index`:
@@ -638,11 +686,17 @@ working on the previous generation while it runs.
 Fewer segments use less CPU per query; more segments are searched in parallel (lower latency for
 one query at a time). The benchmark shows both ([Performance](#performance)).
 
+**Returns**
+
+0. What the procedure did is reported as `NOTICE` messages.
+
 **Privileges**
 
 As [create_index](#create_index).
 
 **Examples**
+
+*Example state:* after [refresh_index](#refresh_index): two segments (the first build, and note 6).
 
 The tiered policy: two small segments are fewer than `merge_factor` (10), so nothing is merged:
 
@@ -689,6 +743,16 @@ For recovery only: indexes every row again as new segments and drops the old one
 
     CALL vfts.rebuild ( 'index' )
 
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index name |
+
+**Returns**
+
+0. What the procedure did is reported as `NOTICE` messages.
+
 **Privileges**
 
 As [create_index](#create_index).
@@ -716,6 +780,16 @@ not written again.
 On Eon, every subcluster keeps its own caches: run `load_all` from a session on each secondary
 subcluster after a refresh on the primary. A node whose cache is behind refuses to answer:
 `cache of index cases is stale on this node (generation 3, the view needs 4): run CALL vfts.load_all('cases')`.
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index name |
+
+**Returns**
+
+0. What the procedure did is reported as `NOTICE` messages.
 
 **Privileges**
 
@@ -745,6 +819,16 @@ on the views from someone (a token copied from a view before stops working). `re
 
 On Eon, the new key reaches the nodes of the session's subcluster: run `CALL vfts.load_all(index)`
 from a session on each secondary subcluster afterwards, as after a refresh.
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index name |
+
+**Returns**
+
+0. What the procedure did is reported as `NOTICE` messages.
 
 **Privileges**
 
@@ -777,6 +861,16 @@ subcluster. The source table is not touched.
 **Syntax**
 
     CALL vfts.drop_index ( 'index' )
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index name |
+
+**Returns**
+
+0. What the procedure did is reported as `NOTICE` messages.
 
 **Privileges**
 
@@ -827,6 +921,10 @@ SQL), so a filter leaves them out, `by` does not count them, and `IS NULL` finds
 - `CALL vfts.info(index)` lists the attributes; `vfts.attributes` is the table of them (readable by
   every user); `load_all` writes them on new nodes; `drop_index` removes them.
 
+**Returns**
+
+0. What the procedure did is reported as `NOTICE` messages.
+
 **Privileges**
 
 Superuser or the owner of the attribute table (the only users who see its policies), with
@@ -854,11 +952,24 @@ After the attribute table changed: copy every attribute of the index again, or o
     CALL vfts.refresh_attributes ( 'index' )
     CALL vfts.refresh_attribute ( 'index', 'attribute' )
 
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index |
+| attribute | `refresh_attribute` only: the attribute to copy again |
+
+**Returns**
+
+0. What the procedure did is reported as `NOTICE` messages.
+
 **Privileges**
 
 As [add_attribute](#add_attribute).
 
 **Examples**
+
+*Example state:* after the `owner` examples of [tsearch](#tsearch) and [tcount](#tcount).
 
 Document 3 moves from `trading` to `legal`; after the refresh, counts and filters see it:
 
@@ -904,6 +1015,17 @@ not touched.
 **Syntax**
 
     CALL vfts.drop_attribute ( 'index', 'attribute' )
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index |
+| attribute | the attribute to remove |
+
+**Returns**
+
+0. What the procedure did is reported as `NOTICE` messages.
 
 **Privileges**
 
@@ -987,6 +1109,12 @@ The k best documents of a query, by BM25.
 
 Call it in a subquery and join the result to the source table (`USING (doc_id)`) to show the text
 or to filter, group and aggregate with SQL.
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| * | every column of the index's view, `<index>_live` (every committed change) or `<index>_snap` (the index as of the last refresh): [The views](#the-views-_live-and-_snap) |
 
 **Parameters**
 
@@ -1094,6 +1222,8 @@ ORDER BY 1 DESC, 3;
    (5 rows)
 ```
 
+*Example state:* after [add_attribute](#add_attribute) gave every note an `owner` (1, 4, 5 legal; 2 sales; 3 trading).
+
 With a filter on an [attribute](#add_attribute): only the matches whose owner is legal or sales;
 the scores stay those of the whole index (prefix words score a constant 1 each):
 
@@ -1128,6 +1258,12 @@ The number of matching documents (no scoring), or with `by` the number per value
     SELECT vfts.tcount ( * USING PARAMETERS index='index' { , query='query' | , queries='lines' }
                          [, by='attribute' ] [, parameter=value [,...] ] ) OVER ()
     FROM schema.index_live | schema.index_snap
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| * | every column of the index's view, `<index>_live` (every committed change) or `<index>_snap` (the index as of the last refresh): [The views](#the-views-_live-and-_snap) |
 
 **Parameters**
 
@@ -1173,6 +1309,8 @@ ORDER BY qid;
    (4 rows)
 ```
 
+*Example state:* after [add_attribute](#add_attribute) (note 1 legal, 2 sales, 3 trading).
+
 Matches per value of the attribute `owner` (`by`), counted while matching:
 
 ```sql
@@ -1197,6 +1335,12 @@ all matches (a report of matches per owner, per month).
     SELECT vfts.tmatch ( * USING PARAMETERS index='index' { , query='query' | , queries='lines' }
                          [, parameter=value [,...] ] ) OVER ()
     FROM schema.index_live | schema.index_snap
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| * | every column of the index's view, `<index>_live` (every committed change) or `<index>_snap` (the index as of the last refresh): [The views](#the-views-_live-and-_snap) |
 
 **Parameters**
 
@@ -1259,7 +1403,9 @@ by hand):
                          [, any parameter of tsearch ] ) OVER ()
     FROM schema.index_snap
 
-**Broker options and tserve parameters**
+**Parameters**
+
+The broker's options, and the parameters of `tserve` (`*` is the snap view's columns, as for [tsearch](#tsearch)):
 
 | Option or parameter | Default | Meaning |
 |---|---|---|
@@ -1300,6 +1446,8 @@ numbers of both modes.
 
 **Examples**
 
+*Example state:* six notes (note 6 from [refresh_index](#refresh_index)); note 3's owner is now legal ([refresh_attributes](#refresh_attributes-refresh_attribute)).
+
 A search, a search with a filter on the attribute `owner`, and counts per owner, over HTTP:
 
 ```
@@ -1326,6 +1474,14 @@ the text (joined from the source table) and the query.
     vfts.tsnippet ( text, 'query' [, 'lang' ] USING PARAMETERS index='index'
                     [, mode='stem' | 'exact' ] [, words=n ] [, fragments=n ]
                     [, pre_tag='tag' ] [, post_tag='tag' ] [, separator='text' ] )
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| text | the document's text (join the source table) |
+| query | the query of the search ([Query syntax](#query-syntax)) |
+| lang | optional: the document's language (its `lang` column); without it, the index language |
 
 **Parameters**
 
@@ -1380,7 +1536,7 @@ ORDER BY r.rank;
 #### hybrid
 
 Fuses ranked lists by doc_id: BM25 from `tsearch` and vectors, for example from vvector's
-`vsearch`. Embeddings are computed outside Vertica; vfts includes no model.
+`vsearch`. Embeddings are computed outside Vertica; vfts includes no model ([Semantic search](#semantic-search): the whole recipe, with real output).
 
 **Syntax**
 
@@ -1417,6 +1573,8 @@ Fuses ranked lists by doc_id: BM25 from `tsearch` and vectors, for example from 
 `EXECUTE` (granted to `PUBLIC`), and the privileges of the searches that make the lists.
 
 **Examples**
+
+*Example state:* six notes (note 6 from [refresh_index](#refresh_index)).
 
 A text list from `tsearch` and a vector list (three fixed rows here), fused by rank:
 
@@ -1465,6 +1623,21 @@ try when a search does not find what you expected.
     SELECT vfts.tokenize ( text [, lang ] [ USING PARAMETERS [ lang='xx' ] [, accent_fold='latin' | 'none' | 'all' ]
                            [, on_unsupported='error' | 'plain' ] ] ) OVER () ...
     SELECT doc_id, vfts.tokenize ( text [, lang ] ) FROM table      -- beside other columns
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| text | any text |
+| lang | optional: its language (ISO 639-1), per row; overrides the parameter `lang` |
+
+**Parameters**
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| lang | en | the language when the argument `lang` is not given |
+| accent_fold | latin | as the index option of [create_index](#create_index) |
+| on_unsupported | error | as the index option of [create_index](#create_index) |
 
 **Returns**
 
@@ -1519,6 +1692,10 @@ Which build of vfts is installed.
 **Syntax**
 
     SELECT vfts.tversion() OVER ()
+
+**Arguments**
+
+None.
 
 **Returns**
 
@@ -1601,7 +1778,7 @@ SQL's `WHERE` over the index's [attributes](#add_attribute):
 
 **Join the hits to the table** (the function returns ids and scores; the text stays in your table):
 
-    SELECT r.rank, d.doc_id, LEFT(d.body, 80) AS body, r.score
+    SELECT r.rank, d.doc_id, LEFT(d.body::VARCHAR(1000), 80) AS body, r.score
     FROM (SELECT vfts.tsearch(* USING PARAMETERS index='emails', query='contract w/5 indemnity', k=20) OVER()
           FROM app.emails_live) r
     JOIN app.emails d USING (doc_id)
@@ -1641,7 +1818,7 @@ For a column that changes all the time, or a condition that needs a join, join i
     SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='news', query='الكتاب', lang='ar', k=10) OVER()
                    FROM app.news_live) r;
 
-**Hybrid: BM25 + vectors** (vvector index `kb_vec` on the same ids):
+**Hybrid: BM25 + vectors** with an approximate vector index (a sketch: a vvector index `kb_vec` on the same ids; the whole recipe, with exact vectors and real output, is [Semantic search](#semantic-search)):
 
     SELECT h.rank, h.doc_id, h.sources
     FROM (SELECT vfts.hybrid(src, doc_id, rank, score USING PARAMETERS k=10) OVER() FROM (
@@ -1651,6 +1828,282 @@ For a column that changes all the time, or a condition that needs a join, join i
             SELECT 'vector', id, rank, score FROM (SELECT vvector.vsearch(qid, qvec, id, vec, del, ver, snapshot_id
                    USING PARAMETERS index_name='kb_vec', query='[0.12, -0.03, ...]', k=50) OVER() FROM app.kb_vec_snap) v) u) h
     ORDER BY h.rank;
+
+## Semantic search
+
+Full-text search finds the words of a question; semantic search finds its meaning, also in
+documents that share no word with it, and across languages. The meaning is a vector (an
+embedding) that a language model computes for each document and for each question; similar
+meanings have similar vectors.
+
+vfts includes no language model. The recipe below computes the vectors outside Vertica with any
+[sentence-transformers](https://www.sbert.net/) model, keeps them in an `ARRAY[FLOAT]` column next
+to the text, compares them with Vertica's built-in `COSINE_SIMILARITY`, and fuses that list with
+the BM25 list of `tsearch` by [hybrid](#hybrid). For large tables, an approximate vector index
+([vvector](https://github.com/mogomo/vertica-vector-db), see [Search patterns](#search-patterns))
+replaces the exact comparison. Elasticsearch and OpenSearch can also run the model inside the
+engine, at index and at query time; here it is a step of the load job and of the application.
+
+`scripts/semantic_example.sh` runs every step below on a small table of its own and prints the
+output shown here (removed again with `--clean`). Run on Vertica 26.3, vfts 0.4.1, Python 3.14,
+sentence-transformers 6.3.0 (PyTorch 2.15 CPU), model
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, 50+ languages):
+
+    python3 -m venv ~/venv && ~/venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+    ~/venv/bin/pip install sentence-transformers
+    EMBED_PY=~/venv/bin/python scripts/semantic_example.sh
+
+**1. The text and its word index.** Note 2 has the meaning "compensation for losses"; note 6 says
+in Hebrew "the supplier will indemnify the buyer for any damage":
+
+```sql
+CREATE TABLE sem.kb (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8),
+                     ver TIMESTAMPTZ NOT NULL DEFAULT CLOCK_TIMESTAMP());
+INSERT INTO sem.kb (doc_id, body) VALUES (1, 'The supplier shall indemnify the buyer under this contract.');
+INSERT INTO sem.kb (doc_id, body) VALUES (2, 'The vendor must compensate the purchaser for any losses.');
+INSERT INTO sem.kb (doc_id, body) VALUES (3, 'Contract renewal: payment within 30 days.');
+INSERT INTO sem.kb (doc_id, body) VALUES (4, 'Meeting notes: mark to market accounting for the energy contracts.');
+INSERT INTO sem.kb (doc_id, body) VALUES (5, 'Holmes'' notes on the Baskerville case.');
+INSERT INTO sem.kb (doc_id, body, lang) VALUES (6, 'הספק ישפה את הקונה על כל נזק.', 'he');
+COMMIT;
+CALL vfts.create_index('kb_sem', 'sem.kb', 'lang=en');
+```
+
+**2. A table for the vectors, and one for the questions.** The array size is the model's:
+
+```sql
+CREATE TABLE sem.kb_vec (doc_id INT NOT NULL, vec ARRAY[FLOAT, 384]);
+CREATE TABLE sem.questions (qid INT NOT NULL, question VARCHAR(500), qvec ARRAY[FLOAT, 384]);
+INSERT INTO sem.questions (qid, question) VALUES (1, 'damage compensation');
+COMMIT;
+```
+
+**3. Embed the documents, and load the vectors.** `scripts/embed.py` reads `id<TAB>text` lines
+and writes `id|[v1,v2,...]` lines, which `COPY` loads into the array column as they are:
+
+```sh
+vsql -At -F $'\t' -c "SELECT doc_id, REGEXP_REPLACE(body, '\s+', ' ') FROM sem.kb" \
+    | python3 scripts/embed.py > kb_vec.txt
+   6 rows, 384 dimensions, model sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+vsql -c "COPY sem.kb_vec FROM LOCAL 'kb_vec.txt' DELIMITER '|' ABORT ON ERROR;"
+    Rows Loaded
+   -------------
+              6
+```
+
+**4. Embed the question with the same model** (an application does this per question and passes
+the vector as a parameter; the example stores it in `sem.questions.qvec`):
+
+```sh
+vsql -At -F $'\t' -c "SELECT qid, question FROM sem.questions" | python3 scripts/embed.py > q.txt
+vsql -c "CREATE LOCAL TEMP TABLE qv (qid INT, qvec ARRAY[FLOAT, 384]) ON COMMIT PRESERVE ROWS;
+         COPY qv FROM LOCAL 'q.txt' DELIMITER '|' ABORT ON ERROR;
+         UPDATE sem.questions q SET qvec = qv.qvec FROM qv WHERE q.qid = qv.qid; COMMIT;"
+```
+
+**5. Words only.** `tsearch` finds the one note that shares a word (`compensat*`) with the question:
+
+```sql
+SELECT r.rank, r.doc_id, ROUND(r.score, 4) AS score, LEFT(k.body::VARCHAR(500), 60) AS body
+FROM (SELECT vfts.tsearch(* USING PARAMETERS index='kb_sem', query='damage compensation', syntax='plain', k=10) OVER()
+      FROM sem.kb_sem_live) r JOIN sem.kb k USING (doc_id)
+ORDER BY r.rank;
+    rank | doc_id | score |                           body
+   ------+--------+-------+----------------------------------------------------------
+       1 |      2 |  0.66 | The vendor must compensate the purchaser for any losses.
+   (1 row)
+```
+
+**6. Meaning only.** Every vector compared with the question's. The Hebrew note comes first,
+found by an English question without a common word:
+
+```sql
+SELECT ROW_NUMBER() OVER (ORDER BY s.sim DESC) AS rank, s.doc_id, ROUND(s.sim, 4) AS similarity,
+       LEFT(k.body::VARCHAR(500), 60) AS body
+FROM (SELECT v.doc_id, COSINE_SIMILARITY(v.vec, q.qvec) AS sim
+      FROM sem.kb_vec v CROSS JOIN sem.questions q WHERE q.qid = 1) s JOIN sem.kb k USING (doc_id)
+ORDER BY rank;
+    rank | doc_id | similarity |                             body
+   ------+--------+------------+--------------------------------------------------------------
+       1 |      6 |     0.6348 | הספק ישפה את הקונה על כל נזק.
+       2 |      2 |      0.437 | The vendor must compensate the purchaser for any losses.
+       3 |      3 |     0.2124 | Contract renewal: payment within 30 days.
+       4 |      1 |     0.2015 | The supplier shall indemnify the buyer under this contract.
+       5 |      4 |     0.1813 | Meeting notes: mark to market accounting for the energy cont
+       6 |      5 |     0.0241 | Holmes' notes on the Baskerville case.
+   (6 rows)
+```
+
+**7. Both, fused by rank.** `sources` shows where each result came from: note 2 from both lists,
+note 6 from the meaning alone:
+
+```sql
+SELECT h.rank, h.doc_id, ROUND(h.score, 5) AS score, h.sources, LEFT(k.body::VARCHAR(500), 60) AS body
+FROM (SELECT vfts.hybrid(src, doc_id, rank, score USING PARAMETERS k=3) OVER() FROM (
+        SELECT 'text' AS src, doc_id, rank, score
+        FROM (SELECT vfts.tsearch(* USING PARAMETERS index='kb_sem', query='damage compensation', syntax='plain', k=50) OVER()
+              FROM sem.kb_sem_live) t
+        UNION ALL
+        SELECT 'vector', doc_id, ROW_NUMBER() OVER (ORDER BY sim DESC), sim
+        FROM (SELECT v.doc_id, COSINE_SIMILARITY(v.vec, q.qvec) AS sim
+              FROM sem.kb_vec v CROSS JOIN sem.questions q WHERE q.qid = 1
+              ORDER BY sim DESC LIMIT 50) s) u) h
+     JOIN sem.kb k USING (doc_id)
+ORDER BY h.rank;
+    rank | doc_id |  score  |     sources     |                           body
+   ------+--------+---------+-----------------+----------------------------------------------------------
+       1 |      2 | 0.03252 | text:1 vector:2 | The vendor must compensate the purchaser for any losses.
+       2 |      6 | 0.01639 | vector:1        | הספק ישפה את הקונה על כל נזק.
+       3 |      3 | 0.01587 | vector:3        | Contract renewal: payment within 30 days.
+   (3 rows)
+```
+
+**What to keep in mind.**
+
+- **One model for both sides.** Documents and questions must be embedded by the same model; a new
+  model means embedding every document again.
+- **Freshness.** A committed row is in the word index at once (the `_live` view). Its vector exists
+  only after the embedding step has run for it: run that step in the load job, for new and changed
+  rows. Until then the row is found by its words only.
+- **Security.** A row access policy on the text table does not cover the vector table. Give the
+  vector table the same policy, or join the vector list to the text table inside the vector list,
+  so that hidden rows are not ranked.
+- **Cost.** `COSINE_SIMILARITY` compares the question with every vector, so its time grows with the
+  table; for large tables use an approximate index such as vvector. Neither path is part of the
+  measured benchmark in [Performance](#performance).
+- **Quality depends on the model.** This small model ranks the note "shall indemnify the buyer"
+  only fourth for this question. Larger models, or models trained for your domain, change the order;
+  the gain in answer quality on a real collection has not been measured here yet.
+
+## What it does
+
+| | |
+|---|---|
+| Ranking | BM25 (k1 = 1.2, b = 0.75) with the formula and float arithmetic of Lucene: the scores of OpenSearch by default, of Elasticsearch with `bm25='classic'`; phrases, `w/N` and `pre/N` scored as Lucene's phrase and span queries. The benchmark compares the top 10 of every query with both engines ([Performance](#performance)) |
+| Queries | words; `"exact phrases"`; `AND`, `OR`, `NOT`, `-word`, `+word`, `( )`; `"phrase"~N`; `a w/N b` (within N words, any order); `a pre/N b` (a before b, at most N words); `indemn*`; `te?t`; `holmse~`, `holmse~1` (Damerau-Levenshtein); or plain text (`syntax='plain'`) |
+| Matching | `mode='stem'` (default: running, runs, run) or `mode='exact'`; one index serves both |
+| Languages | every language written with spaces: ICU word boundaries, NFKC with case folding, accent folding, Snowball stemmers, Arabic/Persian normalization, Hebrew points and prefixes ([Languages](#languages)) |
+| Freshness | inserts, updates and deletes are searchable at once (the live tail); `refresh_index` adds segments incrementally; a tiered merge keeps their number small ([No rebuild](#no-rebuild-after-new-loads-updates-or-upgrades)) |
+| Scale | segments searched in parallel; global statistics, so scores do not depend on segments or nodes; Enterprise and Eon (also secondary subclusters) |
+| Storage | the index is in Vertica tables (backed up with the database); every node keeps a memory-mapped copy |
+| Many clients | `tserve` with `tools/vfts_broker`: an HTTP front end, each user's own Vertica sessions, searches over a channel instead of one statement each; with 32 clients 1.1 to 2.0 times the queries per second of Elasticsearch and OpenSearch on the benchmark ([tserve](#tserve-and-vfts_broker-many-clients)) |
+| Attributes | a column of another table (custodian, status, date) copied into the index with `add_attribute`: searches filter by it (`filter='custodian IN (3, 17)'`) and count by it (`tcount ... by='custodian'`) while they match, as search engines do with doc values; `refresh_attributes` after the table changes ([Attributes](#add_attribute)) |
+| Extras | `tcount` (matches only), `tmatch` (every matching doc_id, for joins), `tsnippet` (marked fragments), `hybrid` (BM25 + vectors with Reciprocal Rank Fusion), `tokenize` |
+
+## Languages
+
+**Which languages work, and why.** Every language written with spaces between words works with
+three generic steps, and no dictionary or thesaurus: ICU finds the words (Unicode word boundaries),
+ICU normalizes them (NFKC, case folding, accents), and a rule-based stemmer reduces them to a stem.
+BM25, phrases, proximity and fuzzy search need nothing more: only word positions, a few counts and
+the list of distinct words.
+
+| Group | Examples | Stemming |
+|---|---|---|
+| Latin script | English, Italian, French, Spanish, Portuguese, German, Dutch, Nordic languages, Polish, Czech, Romanian, Hungarian, Finnish, Estonian, Lithuanian, Turkish, Indonesian, Irish, Basque, Catalan, Esperanto, Sesotho | Snowball |
+| Greek, Cyrillic, Armenian | Greek, Russian, Serbian, Ukrainian, Armenian | Snowball |
+| Arabic script | Arabic, Persian | Snowball, after Arabic/Persian normalization (diacritics, tatweel, alef forms, ى, ة, ك/ک, ي/ی); Arabic also removes the prefixes ال وال بال كال فال لل و first |
+| Hebrew script | Hebrew, Yiddish | Hebrew: points removed, light prefix stripping (up to two of ו ה ב כ ל מ ש while 3 letters remain); Yiddish: Snowball |
+| Indic | Hindi, Nepali, Tamil | Snowball |
+| Others with spaces | Georgian, Slovak, Croatian, Bulgarian, ... | none: exact words |
+
+The Snowball stemmers linked in (libstemmer_c 3.2.0, `SELECT * FROM (SELECT vfts.tversion() OVER()) v;`):
+arabic, armenian, basque, catalan, czech, danish, dutch, english, esperanto, estonian, finnish,
+french, german, greek, hindi, hungarian, indonesian, irish, italian, lithuanian, nepali, norwegian,
+persian, polish, portuguese, romanian, russian, serbian, sesotho, spanish, swedish, tamil, turkish,
+ukrainian, yiddish.
+
+A word that runs across scripts without a space (`lewisi.הכנסת`, `لبنان.McCrudden`, common in
+Wikipedia) is cut where the script changes before the words are found, as Lucene's ICU tokenizer
+does: `הכנסת` is found.
+
+A document's language is its `lang` column (ISO 639-1), or the index language. Words in another
+script are stemmed with that script's default: an English word inside a Hebrew document is
+stemmed as English. Hebrew has no free stemmer; recall in Hebrew is good but below a full
+morphological analyser. Hybrid search with vvector covers most of that gap.
+
+**Excluded, and why.**
+
+| Language | Reason |
+|---|---|
+| Chinese, Japanese | no spaces: words are found with a dictionary |
+| Thai, Lao, Khmer, Myanmar | no spaces: words are found with a dictionary |
+| Korean | spaces exist, but useful search needs a morphological analyser |
+
+Text in these scripts raises a clear error. With the index option `on_unsupported=plain` it is
+indexed as ICU splits it, without stemming.
+
+**Stopwords** are never removed from the index (that would break exact phrases). A query can drop
+them with `stopwords=true`.
+
+## No rebuild after new loads, updates or upgrades
+
+**An index is built once.** vfts works the way Lucene does:
+
+1. **New rows are searchable as soon as they are committed.** Rows written since the last refresh
+   are searched at query time: the view `<index>_live` returns them, and `tsearch` analyzes them on
+   the fly (the **live tail**). Results are exact without any refresh.
+2. **Changed and deleted rows** are hidden with a tombstone bitmap. An update is a delete plus an
+   insert.
+3. **`refresh_index` adds the live tail as small new segments.** Nothing indexed is rewritten. It
+   is needed for speed, not for correct answers: every query analyzes every tail row (a tail of
+   88,418 MS MARCO rows: 2.0 s per query), so run it often, every minute or every hour.
+4. **`refresh_index` then runs a tiered merge** that combines small segments and drops deleted
+   documents. Searches keep using the previous generation while it runs.
+
+The one thing vfts needs from the source table is a version column (`ver`, the time a row was
+written) and, for deletes and for updates that keep `ver`, a journal table that records them
+([Prepare a table](#prepare-a-table)).
+
+**Vertica upgrades.** The index is stored in ordinary Vertica tables (backed up and restored with
+the database) and in node cache files whose format belongs to vfts, not to Vertica, so an upgrade
+of Vertica keeps it. The library may need to be compiled again for the new Vertica version
+(`make && make deploy`); the index does not need a rebuild. Not tested yet: vfts was tested on
+Vertica 26.3.0-2 only.
+
+**vfts upgrades** (`git pull && make && make deploy`) keep the index too, unless a version changes
+the analyzer (how words are found, normalized and stemmed, for example a new Snowball release) or
+the file format. Such a version says so under [Changes](#changes), and
+the index is built again, so that old and new rows are analyzed the same way. 0.3.0 is one: it
+renamed vtext to vfts. 0.3.1 is one for text with typographic quote characters.
+BM25 statistics (number of documents, average length, document frequencies) are computed over all
+segments, the live tail and all nodes, minus tombstones: scores do not depend on how rows are split
+into segments or nodes.
+
+## How it was tested
+
+- **Engine unit tests** (`make test`, no Vertica): the analyzer per language group (Latin,
+  Greek/Cyrillic/Armenian, Arabic, Hebrew, Indic, others) including the Sherlock Holmes
+  punctuation cases; the segment format against a brute-force model (140,000 documents, several
+  65,536-document chunks), with a byte-identical round trip through the table rows; 1,000 random
+  queries (boolean, phrase, w/N, pre/N, exact and stem) against a brute-force search (written
+  after Lucene's span classes for w/N and pre/N), on one segment and on three segments with
+  tombstones and a live tail; the pruned top 10 against the full result; 1,000 fuzzy expansions
+  against the edit distance of every term; merges, in doc_id order and reordered by graph
+  bisection (bit-identical scores before and after, the same counts and matches, the table round
+  trip, masks); the node cache; snippets.
+- **SQL tests** (`tests/sql/*.sh`, on Vertica): results of every operator equal plain SQL over a
+  table tokenized with the same analyzer; BM25 scores equal the formula computed in SQL (1e-4);
+  freshness (inserts, updates with and without a new version, deletes: searched without refresh,
+  after refreshes, merges and a rebuild, always equal to an index built from scratch; merged
+  segments leave no rows behind); session defaults; every
+  language group and the hand-written Arabic and Hebrew cases; snippets; hybrid fusion with known
+  answers and with vvector; `tserve` and the broker (both modes) equal to `tsearch`, batches equal
+  to single queries; access (`tests/sql/test_access.sh`): input not made by the views refused, a
+  copied token refused after `check_access`, with a row access policy every user's ids, ranks and
+  scores equal to an index of the rows that user sees (snap, live tail, after refresh and merge),
+  views with a hidden id left out or replayed by another user refused, a column mask refused,
+  internal functions refused to users.
+- **Systems**: Vertica 26.3.0-2 Enterprise (single node, Ubuntu 26.04, g++ 15.2, unfenced and
+  fenced) and Vertica 26.3.0-2 Eon (5 nodes: a primary subcluster of 3 and a secondary of 2, RHEL
+  8.10, g++ 8.5, fenced and unfenced). The same corpus and queries give identical ids, ranks and
+  scores on 1 node, on 3 nodes and on the secondary subcluster (`tests/sql/digest.sql`). Multi-node
+  Enterprise was not available for testing. Every hit and score of every benchmark query (k = 10
+  and 100) and every count are the same before and after the speed changes of the engine.
+- **Benchmark** against Elasticsearch 9.5.6 and OpenSearch 3.10.0 on the same machine with the
+  same data and equivalent analyzers ([Performance](#performance)): the same matches and, for 97%
+  of the MS MARCO queries and 133 of 140 syntax queries, the same top 10 with the same scores.
+  MS MARCO relevance: MRR@10 0.1815 (vfts), 0.1815 (Elasticsearch), 0.1813 (OpenSearch).
 
 ## Performance
 
@@ -2151,6 +2604,30 @@ One text column per index; index several columns by concatenating them in a view
 **Can I search several indexes at once?** One function call searches one index. Combine results in
 SQL (UNION ALL, `vfts.hybrid` with weights).
 
+## Changes
+
+What changed in each version, and what to do after the upgrade (newest first). Upgrade:
+`git pull && ./install.sh` ([Upgrade and uninstall](#upgrade-and-uninstall)).
+
+**0.4.1.** Counts faster: `tcount`, `tcount ... by=` and `tmatch` read the documents of frequent
+words as bit sets, and a batch of counts (`queries`) shares the cores slice by slice. The answers
+do not change; nothing to do after the upgrade.
+
+**0.4.0.** Adds attributes (filters and counts by another table's column): the upgrade adds the
+tables `vfts.attributes` and `vfts.attr_values` and the function `tattr`; indexes need nothing.
+It also fixes `vfts_broker --mode sql`, whose vsql session ended at the first failing statement.
+
+**0.3.1.** Fixes the analyzer for typographic quote characters: ’ ʼ ＇ ׳ ״ are now unified with
+' and " before the word boundaries are found, as they always were meant to be. Before, a Hebrew
+geresh used as a quotation mark stayed on the word: in ׳תיאטרון מסך׳ the word was ׳תיאטרון,
+which a search for תיאטרון did not find. An index whose text has these characters: run
+`CALL vfts.rebuild(index)` after the upgrade.
+
+**0.3.0.** vfts was named vtext up to version 0.2.0 (version numbers before 0.3.0 in these documents are
+vtext's). vfts 0.3.0 only renames it: the schema, the library, the tools, the session parameters,
+the cache file names and the file formats' magic bytes. It does not read vtext's indexes: remove
+vtext with its own `./install.sh --uninstall --drop`, install vfts, and create the indexes again.
+
 ## Restrictions and future work
 
 - Languages without spaces between words (Chinese, Japanese, Thai, Lao, Khmer, Myanmar) and Korean
@@ -2197,8 +2674,8 @@ SQL (UNION ALL, `vfts.hybrid` with weights).
 
 - Dictionary-based lemmatization.
 - German compound splitting.
-- Synonyms and thesauri (MeSH, UMLS, legal thesauri). Hybrid search with vvector is the planned
-  answer for meaning-based search.
+- Synonyms and thesauri (MeSH, UMLS, legal thesauri). Meaning-based search: [Semantic search](#semantic-search)
+  (vectors next to the text, fused by `hybrid`).
 - Languages written without spaces (they need dictionaries).
 
 ## Files
@@ -2224,7 +2701,7 @@ SQL (UNION ALL, `vfts.hybrid` with weights).
 | **Tools** `tools/` | `vfts_broker.cpp` (HTTP front end, `tserve` / batches), `httpload.cpp` (load generator of the benchmark), `vfts_cli.cpp` (the engine without Vertica: build, search, merge, explain) |
 | **Tests** `tests/engine/`, `tests/sql/` | unit tests against brute-force models; SQL tests against plain SQL, freshness, languages, snippets, hybrid, serve, access, attributes; `digest.sql` for comparing systems |
 | **Benchmark** `bench/` | `run_all.sh` runs everything; `data/` download and preparation; `engines/` Elasticsearch and OpenSearch install and start; `load_*`, `run_*` loaders and runners; `join_test.py` search next to other data; `report.py` tables and charts; `plan_c/` throughput measurements (`stage1.sh j1`: joins with attributes at 1 and 32 clients; also `reorder_ab.sh`: document order, `access_cost.sh`: access policies); `results/` every recorded number |
-| `scripts/` | `deploy.sh` (used by make deploy), `demo.sh` (every function on a small table, one command) |
+| `scripts/` | `deploy.sh` (used by make deploy), `demo.sh` (every function on a small table, one command), `examples.sh` (every example of the Reference), `semantic_example.sh` and `embed.py` ([Semantic search](#semantic-search)) |
 | `docs/` | `design.md`, `format.md` (index layout), `VERTICA_NOTES.md` (measured Vertica behavior), `PLAN.md` (milestones) |
 | `blog/` | the article, with its charts |
 | `third_party/` | download and static build of ICU, Snowball and CRoaring |
@@ -2238,6 +2715,6 @@ repository; their licenses are listed in `bench/data/fetch.sh`.
 ## Disclaimer
 
 This repository is provided "as is", without warranty of any kind, express or implied. It is a
-personal demonstration project. It is not part of Rocket Software's Vertica offering and is not
+personal demonstration: a use case of what a Vertica UDx can do. It is not part of Rocket Software's Vertica offering and is not
 endorsed or supported by Rocket Software. All product names, trademarks and brands mentioned here
 belong to their respective owners and are used for identification and reference only.
