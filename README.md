@@ -12,7 +12,9 @@ changed rows searchable at once without a rebuild, snippets, and hybrid search w
     JOIN app.emails d USING (doc_id)
     ORDER BY r.rank;
 
-Use cases it was built and measured for: legal e-discovery (Enron email), pharma literature search
+- 🎥 Watch the benchmark: https://youtu.be/txBx1-5FCOg
+
+- Use cases it was built and measured for: legal e-discovery (Enron email), pharma literature search
 (PubMed), support logs and general passage search (MS MARCO), Arabic and Hebrew text (Wikipedia).
 
 ![vfts at a glance](bench/results/charts/glance.svg)
