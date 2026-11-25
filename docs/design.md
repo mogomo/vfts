@@ -6,9 +6,10 @@ the README; the exact bytes are in docs/format.md.
 ## Pieces
 
     source table ──tbuild──> index tables ──tload──> node cache files ──mmap──> tsearch / tcount
-    (customer: doc_id,       (vfts.term_dict,       (/tmp/vfts/<index>/)      tsnippet, hybrid
-     body, lang, ver)         postings, positions,
-    journal (doc_id, op, ver) doc_stats, ...)
+    (customer: doc_id,       (vfts.term_dict,       (<cache_dir>/<index>/)    tsnippet, hybrid
+     body, lang)              postings, positions,
+    journal (doc_id, op),     doc_stats, ...)
+    optional
 
 - `src/engine` is plain C++17 without Vertica includes (analysis, segments, search, merge, cache).
   `src/udx` holds thin adapters: they read rows and parameters, call the engine and write rows.
@@ -149,51 +150,87 @@ The same queries with `mode='exact'` (no stem groups at all): 3.37 ms before the
 
 ## Freshness: exact results between refreshes
 
-The source table has a version column `ver` (TIMESTAMPTZ, `DEFAULT CLOCK_TIMESTAMP()`); changes
-that do not move `ver` (an UPDATE that keeps it, a DELETE) are recorded in a journal table
-(doc_id, op, ver). This follows vvector and vgraph.
+Changes are found by the **row epoch**: every Vertica row has an implicit column `epoch`, the
+epoch in which it was committed (NULL while it is not committed yet). Measured on Vertica 26.3
+(tests/sql/test_changes.sh): an INSERT, an UPDATE (a new row version), a COPY,
+`MOVE_PARTITIONS_TO_TABLE`, `SWAP_PARTITIONS_BETWEEN_TABLES` and `COPY_PARTITIONS_TO_TABLE` give
+their rows the epoch of that commit; a mergeout keeps the epochs, also after the AHM moved; vbr
+restores data with the current epoch (Vertica documentation). So the source table needs no
+version column and no rules for writers. Before 0.5.0 vfts asked for a `ver` column
+(`CLOCK_TIMESTAMP()` at write time) and a journal for deletes and for updates that kept `ver`; an
+update that forgot both was never seen.
 
-- **Boundary.** A refresh indexes the rows with `ver <= boundary`, where
-  `boundary = LEAST(now, earliest lock request of an open writer on the source or the journal) - margin`
-  (`v_monitor.locks`). A row committed after the build started reading was written after now or
-  by a transaction open now, which holds an insert lock since its request; the margin (default
-  60 s) covers clock differences between nodes and versions taken at statement start.
+- **Boundary.** A refresh reads the current epoch C first. Every row committed before has an
+  epoch below C, and every statement of the refresh sees it (a statement sees what was committed
+  when it started); every row committed later gets C or more. So the segments take the rows with
+  `epoch <= C - 1` (the boundary, `vfts.indexes.boundary_epoch`) and the live view the rows with
+  `epoch > boundary`: no row is missed or taken twice, with no clock, margin or lock analysis.
+- **Rows that leave.** A DELETE, `DROP_PARTITIONS`, `MOVE_PARTITIONS_TO_TABLE` (on the table the
+  rows leave), `TRUNCATE` or the restore of an older copy leave no row with a new epoch. A refresh
+  compares counts: with unique doc_ids, the source holds exactly the documents the index will hold
+  after the refresh (every row of the source either is in the segments with its current epoch, or
+  is newer and taken by this refresh), unless documents left. So `COUNT(*)` of the source (doc_id
+  not NULL, `epoch <= boundary`; one scan of two integer columns: 10 ms for 8.8 million rows)
+  equal to the live documents of the segments, minus those this refresh replaces, plus the rows
+  it adds, means nothing left. Only when the counts differ does the refresh find the documents that
+  left (an anti-join of the index's doc_ids with the source's: 0.4 s for 8.8 million) and tombstone
+  them; it also adds any row of the source the index lacks. Measured on a copy of MS MARCO
+  (8,841,823 rows, one segment, one node): a refresh with no change 0.31 to 0.33 s; after
+  `DELETE` of 1% of the rows (88,419, no journal) 4.8 s, which found exactly those 88,419; after an
+  `UPDATE` of another 1% (no version column) 5.6 s. A count of `water` took 12 ms before, 16 to
+  30 ms after both refreshes, and 2.1 s while the 88,419 updated rows were in the live tail.
 - **Segments.** Each refresh adds segments; nothing already indexed is rewritten.
-- **Tombstones.** Every doc_id that has a newer row, or a journal row, in the refresh's range gets
-  a tombstone in the older segments (`vfts.tombstones`, a bitmap per segment in the cache).
-- **Live tail.** The view `<schema>.<index>_live` returns the source rows with `ver > boundary`,
-  the doc_ids of journal rows with `ver > boundary` (with the current row's text when it still
-  exists) and one sentinel row with the generation. tsearch masks every doc_id of the tail in the
-  segments and analyzes the tail's rows into an in-memory segment, searched beside the others. So
-  a search sees every committed change, without a refresh. The boundary is a literal in the view,
-  so Vertica can prune storage containers.
+- **Tombstones.** Every doc_id that has a newer row, a journal row, or left the source gets a
+  tombstone in the older segments (`vfts.tombstones`, a bitmap per segment in the cache).
+- **Live tail.** The view `<schema>.<index>_live` returns the source rows with `epoch > boundary`,
+  the doc_ids of journal rows committed after the boundary (with the current row's text when it
+  still exists) and one sentinel row with the generation. tsearch masks every doc_id of the tail
+  in the segments and analyzes the tail's rows into an in-memory segment, searched beside the
+  others. So a search sees every committed insert and update without a refresh. The boundary is a
+  literal in the view, and the predicate is `epoch > boundary` alone, so Vertica skips every
+  storage container older than the boundary (measured on 8.8 million rows: 1.4 ms when nothing is
+  newer; adding `OR epoch IS NULL`, the session's own uncommitted rows, made it read every
+  container: 41 ms, so those are not in the tail).
+- **Deletes before the refresh.** A deleted row is not in the source any more, so the live view
+  cannot list it: between the DELETE and the next refresh, searches still find the deleted
+  document. A journal row (doc_id, op 'D') makes the delete visible at once; without one, the
+  next refresh (or the automatic one, [Refresh](#refresh)) removes it.
 - **Update = delete + insert**: a changed row masks (tail) or tombstones (refresh) its old version.
 - A doc_id in both the tail and a segment is harmless: the tail wins. This makes every step order
   below safe.
+- **Indexes of vfts 0.4 and older** keep their `ver` boundary (a timestamp literal) until their
+  first refresh after the upgrade, which takes the rows newer than it and moves the index to an
+  epoch boundary.
 
-`tests/sql/test_freshness.sh`: inserts, updates (with and without a version change), deletes,
-searched without refresh, after refreshes, after merges and after a rebuild: always the ids,
-ranks and scores of an index built from scratch on the current rows.
+`tests/sql/test_freshness.sh` (with a journal) and `tests/sql/test_changes.sh` (without version
+column or journal: every kind of write above, live and after a refresh): always the ids, ranks
+and scores of an index built from scratch on the current rows.
 
 ## Refresh
 
 `vfts.refresh_index` (the name `refresh` is a Vertica built-in):
 
 1. Mark the index (one refresh at a time; a mark whose session is gone is ignored).
-2. Compute the boundary.
-3. `tbuild` over the new and changed rows (partitioned by node, threads per node) into a session
-   temporary table: segments as rows.
-4. Insert the rows into the index tables; tombstones for the older versions.
-5. `tload` on every node of the session's subcluster: the new segment files.
-6. `tload` with the generation: the generation file (active segments, tombstones, their effect
+2. The new boundary: the current epoch minus one.
+3. The rows to index: `epoch` above the old boundary and at most the new one, and the current row
+   of every doc_id in the journal since the old boundary.
+4. The count check above; when the counts differ, the documents that left and the rows that are
+   missing.
+5. `tbuild` over those rows (partitioned by node, threads per node) into a session temporary
+   table: segments as rows.
+6. Insert the rows into the index tables; tombstones for the older versions and the documents that
+   left.
+7. `tload` on every node of the session's subcluster: the new segment files.
+8. `tload` with the generation: the generation file (active segments, tombstones, their effect
    on df), then ACTIVE. Every node must report, or the refresh fails.
-7. Statistics, the manifest (new generation and boundary) - and commit. Steps 3 to 7 are one
+9. Statistics, the manifest (new generation and boundary) - and commit. Steps 5 to 9 are one
    transaction: a failure leaves the tables as they were.
-8. Replace the views (DDL, after the commit). Until then the old views show a wider tail, which is
-   still exact.
-9. The tiered merge policy.
+10. Replace the views (DDL, after the commit). Until then the old views show a wider tail, which
+    is still exact.
+11. The tiered merge policy.
 
-A failure after step 6 on some node leaves that node's cache ahead of the tables; its segments only
+A refresh that finds nothing (no new epoch, no journal row, equal counts) moves the boundary only.
+A failure after step 8 on some node leaves that node's cache ahead of the tables; its segments only
 hold rows that are also in the (old, wider) tail, so results stay exact, and the next refresh or
 `load_all` replaces the files.
 

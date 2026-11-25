@@ -92,13 +92,12 @@ the first problem and says what to fix. It ends with:
 == Installed
 ```
 
-**2. Index a table and search it.** In `vsql`: a table with an id, a text and a version column,
-then one call to index it:
+**2. Index a table and search it.** In `vsql`: a table with an id and a text, then one call to
+index it:
 
 ```sql
 CREATE SCHEMA quick;
-CREATE TABLE quick.docs (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8),
-                         ver TIMESTAMPTZ NOT NULL DEFAULT CLOCK_TIMESTAMP());
+CREATE TABLE quick.docs (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8));
 INSERT INTO quick.docs (doc_id, body) VALUES (1, 'The supplier shall indemnify the buyer under this contract.');
 INSERT INTO quick.docs (doc_id, body) VALUES (2, 'Contract renewal: payment within 30 days.');
 INSERT INTO quick.docs (doc_id, body) VALUES (3, 'Sherlock Holmes'' notes on the Baskerville case.');
@@ -169,8 +168,8 @@ explains each part.
 **3. Next.**
 
 - `scripts/demo.sh`: a guided tour of every function on a small table, with explanations.
-- [Prepare a table](#prepare-a-table): the columns your own table needs, and how updates and deletes
-  are recorded.
+- [Prepare a table](#prepare-a-table): the columns your own table needs, and when each kind of
+  change (update, delete, partition operation) is searchable.
 - [Install](#install): what `install.sh` does step by step, grants for the users who search,
   refresh schedules, several nodes and Eon, and the HTTP front end for many clients.
 - [Reference](#reference): every procedure and function, each with its syntax, arguments,
@@ -250,7 +249,8 @@ scripts: the connection comes from the `VSQL_*` variables.
 
 ### Index a table and let users search
 
-1. [Prepare the table](#prepare-a-table): `doc_id`, the text, optionally `lang`, and a version column `ver`.
+1. [Prepare the table](#prepare-a-table): a unique `doc_id` and the text, optionally `lang`. Nothing else: writers
+   need no rules.
 2. `CALL vfts.create_index('docs', 'app.docs', 'lang=en');` as dbadmin (or a user with write
    access to the `vfts` tables and the source table: procedures run with the caller's privileges).
 3. Users who search need `USAGE` on the schema and `SELECT` on the views:
@@ -301,44 +301,57 @@ still running.
 
 ## Prepare a table
 
-**Source table contract.** One table, one text column:
+**Source table contract.** One table, one text column, a unique id:
 
     doc_id  INT           NOT NULL                        -- unique
     body    LONG VARCHAR                                   -- the text
     lang    VARCHAR(8)                                     -- optional; ISO 639-1; NULL = the index language
-    ver     TIMESTAMPTZ   NOT NULL DEFAULT CLOCK_TIMESTAMP()   -- when the row was written
 
-**Journal** (optional; needed for deletes and for updates that do not set `ver`):
+That is all. vfts finds what changed by Vertica's row epoch (the commit epoch every row has), so
+writers follow no rules: any `INSERT`, `UPDATE`, `DELETE`, `COPY`, `MERGE`, `TRUNCATE` and every
+partition function is picked up. What each one needs before searches see it:
+
+| Change | Through `<index>_live` | Through `<index>_snap` and in the index |
+|---|---|---|
+| `INSERT`, `COPY`, `UPDATE`, `MERGE` | at once (after `COMMIT`) | after the next `refresh_index` |
+| `MOVE_PARTITIONS_TO_TABLE`, `SWAP_PARTITIONS_BETWEEN_TABLES`, `COPY_PARTITIONS_TO_TABLE` (rows that arrive), a vbr restore | at once | after the next `refresh_index` |
+| `DELETE`, `DROP_PARTITIONS`, `MOVE_PARTITIONS_TO_TABLE` (rows that leave), `TRUNCATE` | after the next `refresh_index`; at once with a journal row `'D'` | after the next `refresh_index` |
+
+Rows written in the session's own open transaction are not searched (committed rows are).
+A refresh finds rows that left the table by comparing counts, so the doc_ids must be unique:
+`refresh_index` says so in a notice when they are not.
+
+**Journal** (optional: makes a delete visible through `<index>_live` before the next refresh):
 
     doc_id  INT
-    op      CHAR(1)                                        -- 'I', 'U', 'D'
-    ver     TIMESTAMPTZ   DEFAULT CLOCK_TIMESTAMP()
+    op      CHAR(1)                                        -- 'D' (any other value is treated the same way)
 
-Rules:
-
-- Use `TIMESTAMPTZ` and `CLOCK_TIMESTAMP()`: the clock at write time. (`NOW()` is the transaction
-  start and is not suitable; plain `TIMESTAMP` depends on the session time zone.)
-- An update either sets `ver = CLOCK_TIMESTAMP()` or writes a journal row `'U'`. A delete writes
-  a journal row `'D'`.
-- Columns with other names are mapped with the options `id_col`, `text_col`, `lang_col`, `ver_col`.
-- For tables with a high write rate, partition the source table by `(ver AT TIME ZONE 'UTC')::DATE`
-  so the live tail reads only the newest storage containers (docs/VERTICA_NOTES.md).
+- Columns with other names are mapped with the options `id_col`, `text_col`, `lang_col`.
+- For tables with a high write rate, partition the source table by time (a load date, for
+  example), so that the live view, which reads only rows committed after the last refresh, finds
+  them in few storage containers (docs/VERTICA_NOTES.md).
+- Tables made for vfts 0.4 and older, with a `ver` column and a journal with `ver`, work as they
+  are; neither `ver` column is used any more.
 
 Ready to run:
 
     CREATE SCHEMA app;
-    CREATE TABLE app.emails (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8),
-                             ver TIMESTAMPTZ NOT NULL DEFAULT CLOCK_TIMESTAMP());
-    CREATE TABLE app.emails_journal (doc_id INT, op CHAR(1), ver TIMESTAMPTZ DEFAULT CLOCK_TIMESTAMP());
+    CREATE TABLE app.emails (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8));
     -- load: COPY app.emails (doc_id, body, lang) FROM ... ;
-    CALL vfts.create_index('emails', 'app.emails', 'lang=en journal=app.emails_journal');
+    CALL vfts.create_index('emails', 'app.emails', 'lang=en');
 
-    -- later: changes
-    UPDATE app.emails SET body = '...', ver = CLOCK_TIMESTAMP() WHERE doc_id = 42;
-    DELETE FROM app.emails WHERE doc_id = 43; INSERT INTO app.emails_journal (doc_id, op) VALUES (43, 'D');
+    -- later: changes, any way you like
+    UPDATE app.emails SET body = '...' WHERE doc_id = 42;
+    DELETE FROM app.emails WHERE doc_id = 43;
     COMMIT;
-    -- searchable now through app.emails_live; folded into the index with:
+    -- the update is searchable now through app.emails_live; both are folded into the index by:
     CALL vfts.refresh_index('emails');
+
+With a journal, the delete is also hidden at once:
+
+    CREATE TABLE app.emails_journal (doc_id INT, op CHAR(1));
+    CALL vfts.create_index('emails', 'app.emails', 'lang=en journal=app.emails_journal');
+    DELETE FROM app.emails WHERE doc_id = 43; INSERT INTO app.emails_journal VALUES (43, 'D'); COMMIT;
 
 ## Reference
 
@@ -432,9 +445,8 @@ Five short notes in two languages, a journal for deletes, and a table of owners 
 
 ```sql
 CREATE SCHEMA ex;
-CREATE TABLE ex.notes (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8),
-                       ver TIMESTAMPTZ NOT NULL DEFAULT CLOCK_TIMESTAMP());
-CREATE TABLE ex.notes_journal (doc_id INT, op CHAR(1), ver TIMESTAMPTZ DEFAULT CLOCK_TIMESTAMP());
+CREATE TABLE ex.notes (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8));
+CREATE TABLE ex.notes_journal (doc_id INT, op CHAR(1));
 CREATE TABLE ex.owners (doc_id INT, owner VARCHAR(20));
 INSERT INTO ex.notes (doc_id, body) VALUES (1, 'The supplier shall indemnify the buyer under this contract.');
 INSERT INTO ex.notes (doc_id, body) VALUES (2, 'Contract renewal: indemnity terms unchanged, payment within 30 days.');
@@ -472,11 +484,11 @@ every node of the session's subcluster.
 | Option | Default | Meaning |
 |---|---|---|
 | lang | en | index language (ISO 639-1): for documents without a `lang` value, and the stemmer of Latin words |
-| journal | none | `schema.table` with columns doc_id, op, ver: deletes (op `D`) and updates that do not set `ver` (op `U`) |
-| margin | 60 | seconds the boundary stays behind a refresh (clock differences between nodes; 0 is fine on one node) |
+| journal | none | `schema.table` with the columns doc_id and op: a row there hides that doc_id's indexed version at once (a delete before the next refresh); not needed for anything else |
 | accent_fold | latin | `latin` (remove accents of Latin letters), `none`, `all` (also Greek and Cyrillic) |
 | on_unsupported | error | `error` or `plain` for Chinese, Japanese, Korean, Thai, Lao, Khmer, Myanmar text |
-| id_col, text_col, lang_col, ver_col | doc_id, body, lang, ver | column names in the source table |
+| id_col, text_col, lang_col | doc_id, body, lang | column names in the source table |
+| ver_col, margin | | options of vfts 0.4 and older: accepted and not used (changes are found by the row epoch) |
 | threads | 0 | build threads per instance (0: a quarter of the cores) |
 | max_segment_mb | 2048 | a build thread starts a new segment above this memory |
 | merge_factor | 10 | segments per tier of the merge policy |
@@ -498,10 +510,10 @@ table against them, so that user must own the table or have `SELECT ... WITH GRA
 
 **Examples**
 
-An English index with a journal for deletes, and no margin (one node):
+An English index with a journal for deletes:
 
 ```sql
-CALL vfts.create_index('notes', 'ex.notes', 'lang=en journal=ex.notes_journal margin=0');
+CALL vfts.create_index('notes', 'ex.notes', 'lang=en journal=ex.notes_journal');
    NOTICE 2005:  vfts: index notes created on ex.notes. Search: SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='...', k=10) OVER() FROM ex.notes_live) r;
     create_index 
    --------------
@@ -602,18 +614,27 @@ SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION 
 
 #### refresh_index
 
-Indexes the rows written since the last refresh into new segments, tombstones their older versions
-and the journal's deletes, loads every node, and moves the views' boundary. Incremental; the table
-changes are one transaction. Then runs the tiered merge policy. (The name `refresh` is a Vertica
-built-in function and cannot be a procedure.)
+Indexes the rows committed since the last refresh into new segments, tombstones their older
+versions, the journal's deletes and the documents that left the table (deleted, dropped with a
+partition, moved to another table, truncated), loads every node, and moves the views' boundary.
+Incremental; the table changes are one transaction. Then runs the tiered merge policy. (The name
+`refresh` is a Vertica built-in function and cannot be a procedure.)
+
+How it finds the changes: the rows to add are those whose epoch (Vertica's commit epoch of every
+row) is newer than the last refresh. Rows that left the table have no epoch to find them by, so
+the refresh compares the number of rows in the table with the number of documents the index will
+hold (one scan of the id column, about 10 ms for 8.8 million rows) and, only when they differ,
+looks for the documents that left (about 0.4 s for 8.8 million rows). The `NOTICE` says how many
+it found.
 
 **Syntax**
 
     CALL vfts.refresh_index ( 'index' )
 
 When to run it: whenever convenient - every minute, every hour, from cron or any scheduler.
-Searches are exact without it (the live view reads the rows written since); a longer live tail
-only costs query time, because every tail row is analyzed per query.
+Inserts and updates are searchable without it (the live view reads the rows committed since);
+deletes need it (or a journal row); a longer live tail costs query time, because every tail row
+is analyzed per query.
 
 **Arguments**
 
@@ -659,11 +680,13 @@ SELECT 'snap' AS view, doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index
    (1 row)
 ```
 
-Updates and deletes (searchable at once through the live view, folded into the index by the next
-refresh; [Prepare a table](#prepare-a-table) has the rules):
+Updates and deletes (an update is searchable at once through the live view, a delete with its
+journal row too; both are folded into the index by the next refresh, and a delete without a
+journal row is seen then; [Prepare a table](#prepare-a-table)):
 
-    UPDATE ex.notes SET body = '...', ver = CLOCK_TIMESTAMP() WHERE doc_id = 2;
+    UPDATE ex.notes SET body = '...' WHERE doc_id = 2;
     DELETE FROM ex.notes WHERE doc_id = 4; INSERT INTO ex.notes_journal (doc_id, op) VALUES (4, 'D');
+    SELECT DROP_PARTITIONS('app.docs', '2024-01-01', '2024-12-31');     -- on a partitioned table: no journal needed
     COMMIT;
     CALL vfts.refresh_index('notes');
 
@@ -1055,7 +1078,7 @@ SELECT COUNT(*) AS attributes FROM vfts.attributes a JOIN vfts.indexes i USING (
 
 | View | Rows | Use |
 |---|---|---|
-| `<index>_live` | the live tail (rows written after the boundary of the last refresh, journal changes) and one sentinel row | always exact: sees every committed change |
+| `<index>_live` | the live tail (rows committed after the last refresh: `epoch` above the index's boundary; journal rows since then) and one sentinel row | sees every committed insert and update, and deletes that have a journal row |
 | `<index>_snap` | the sentinel row only | the segments only: ignores changes since the last refresh |
 
 Both have the columns `(qid, query, doc_id, body, lang, op, gen)`. The sentinel carries the
@@ -1078,7 +1101,7 @@ Searches follow Vertica's access rules (details and the reasons: docs/design.md 
 |---|---|
 | no access policy | every document, to every user with SELECT on the views |
 | a row access policy | only the documents that user sees in the source table; scores are those of an index of exactly those rows (statistics leave hidden rows out); through the snap view, rows changed since the last refresh are left out (their indexed version may not be the one the policy shows) |
-| a column access policy (mask) on the id, text, lang or ver column | an error for everyone: a search through the index would reveal words of the masked text |
+| a column access policy (mask) on the id, text or lang column | an error for everyone: a search through the index would reveal words of the masked text |
 
 - Only the views can feed the search functions: input made by the statement itself is refused,
   so a search needs `SELECT` on the views. The functions that write node caches are not granted to
@@ -2042,9 +2065,10 @@ them with `stopwords=true`.
 
 **An index is built once.** vfts works the way Lucene does:
 
-1. **New rows are searchable as soon as they are committed.** Rows written since the last refresh
-   are searched at query time: the view `<index>_live` returns them, and `tsearch` analyzes them on
-   the fly (the **live tail**). Results are exact without any refresh.
+1. **New and changed rows are searchable as soon as they are committed.** Rows committed since the
+   last refresh are searched at query time: the view `<index>_live` returns them, and `tsearch`
+   analyzes them on the fly (the **live tail**). Deleted rows are hidden at the next refresh, or at
+   once with a journal row.
 2. **Changed and deleted rows** are hidden with a tombstone bitmap. An update is a delete plus an
    insert.
 3. **`refresh_index` adds the live tail as small new segments.** Nothing indexed is rewritten. It
@@ -2053,9 +2077,9 @@ them with `stopwords=true`.
 4. **`refresh_index` then runs a tiered merge** that combines small segments and drops deleted
    documents. Searches keep using the previous generation while it runs.
 
-The one thing vfts needs from the source table is a version column (`ver`, the time a row was
-written) and, for deletes and for updates that keep `ver`, a journal table that records them
-([Prepare a table](#prepare-a-table)).
+vfts needs nothing from the source table but a unique doc_id: what changed is found by the row
+epoch, and what left the table by a count at each refresh ([Prepare a table](#prepare-a-table)).
+A journal table is optional, for deletes that must disappear before the next refresh.
 
 **Vertica upgrades.** The index is stored in ordinary Vertica tables (backed up and restored with
 the database) and in node cache files whose format belongs to vfts, not to Vertica, so an upgrade
@@ -2574,8 +2598,9 @@ results is the same on both scales. The benchmark compares the top 10 of every q
 engines ([Performance](#performance)); the differences that remain come from the analyzers
 (Snowball versions, ICU versions), not from the scoring.
 
-**Do I have to refresh?** No: searches over `<index>_live` see every committed change. A refresh
-folds the changes into segments, so queries do not analyze them again and again. Search over
+**Do I have to refresh?** For inserts and updates, no: searches over `<index>_live` see every
+committed one. Deletes are seen at the next refresh (or at once with a journal row). A refresh
+also folds the changes into segments, so queries do not analyze them again and again. Search over
 `<index>_snap` when the changes since the last refresh do not matter and the last millisecond does:
 the live view costs about 1 ms more per statement (Vertica's `UNION ALL` of the tail and the
 sentinel row, measured in docs/VERTICA_NOTES.md). The snap view gives the guarantee Elasticsearch
@@ -2610,6 +2635,23 @@ SQL (UNION ALL, `vfts.hybrid` with weights).
 
 What changed in each version, and what to do after the upgrade (newest first). Upgrade:
 `git pull && ./install.sh` ([Upgrade and uninstall](#upgrade-and-uninstall)).
+
+**0.5.0.** A unique doc_id is all a source table needs, and every way a table changes is seen
+([Prepare a table](#prepare-a-table)):
+
+- Changes are found by the row epoch (Vertica's commit epoch of every row) instead of a `ver`
+  column: an `UPDATE` that does not touch a version column, `MERGE`, `COPY`, and rows that arrive by
+  `MOVE_PARTITIONS_TO_TABLE`, `SWAP_PARTITIONS_BETWEEN_TABLES`, `COPY_PARTITIONS_TO_TABLE` or a
+  restore are searchable through `<index>_live` at once. Before, an update that set neither `ver`
+  nor a journal row was never seen.
+- `refresh_index` finds the documents that left the table without a journal row (`DELETE`,
+  `DROP_PARTITIONS`, `MOVE_PARTITIONS_TO_TABLE`, `TRUNCATE`) and removes them from the index. Before,
+  they stayed searchable until a rebuild.
+- The journal is optional and needs only `doc_id` and `op`. The options `ver_col` and `margin`
+  are accepted and not used.
+
+After the upgrade: nothing to do. An existing index keeps its `ver` boundary until its next
+`refresh_index`, which moves it to the epoch.
 
 **0.4.1.** Counts faster: `tcount`, `tcount ... by=` and `tmatch` read the documents of frequent
 words as bit sets, and a batch of counts (`queries`) shares the cores slice by slice. The answers

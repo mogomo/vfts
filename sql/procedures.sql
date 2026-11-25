@@ -18,9 +18,14 @@
 -- ------------------------------------------------------------------ helpers
 
 -- The views of an index, from its manifest row:
---   <schema>.<name>_live   rows newer than the segments (the live tail), journal changes, and the
---                          sentinel row with the generation. The input of tsearch and tcount.
+--   <schema>.<name>_live   rows newer than the segments (the live tail: epoch > boundary_epoch),
+--                          journal changes, and the sentinel row with the generation. The input of
+--                          tsearch and tcount.
 --   <schema>.<name>_snap   the sentinel only: search the segments, ignore newer rows (fastest).
+-- The tail is found by the row epoch, Vertica's commit epoch of every row: an INSERT, an UPDATE,
+-- a COPY, MOVE/SWAP/COPY_PARTITIONS and a restore all give their rows a new epoch, so the source
+-- needs no version column (docs/design.md "Freshness"). Indexes of vfts 0.4 and older keep their
+-- ver boundary until their next refresh.
 -- The sentinel carries the access token in its query column (docs/design.md "Access"):
 --   access open: md5(key:gen:key), a literal.
 --   access rows: the views also return the documents of the generation's segments that the user
@@ -33,10 +38,10 @@ DECLARE
     src VARCHAR(300); idc VARCHAR(128); txt VARCHAR(128); lng VARCHAR(128); vc VARCHAR(128);
     jt VARCHAR(300); vs VARCHAR(128); g INT; b VARCHAR(80); iid INT; acc VARCHAR(256); k VARCHAR(64);
     cols VARCHAR(2000); sentinel VARCHAR(16000); stmt VARCHAR(30000); lang_expr VARCHAR(300);
-    hid VARCHAR(4000);
+    hid VARCHAR(4000); e INT; chg VARCHAR(1000); jchg VARCHAR(1000);
 BEGIN
-    SELECT source_table, id_col, text_col, lang_col, ver_col, journal_table, view_schema, gen, boundary_lit, index_id, access
-      INTO src, idc, txt, lng, vc, jt, vs, g, b, iid, acc
+    SELECT source_table, id_col, text_col, lang_col, ver_col, journal_table, view_schema, gen, boundary_lit, index_id, access, boundary_epoch
+      INTO src, idc, txt, lng, vc, jt, vs, g, b, iid, acc, e
       FROM vfts.indexes WHERE index_name = nm;
     IF src IS NULL THEN
         RAISE EXCEPTION 'vfts: index % does not exist', nm;
@@ -46,6 +51,11 @@ BEGIN
         RAISE EXCEPTION 'vfts: index % has no access key: run CALL vfts.check_access(''%'')', nm, nm;
     END IF;
     lang_expr := CASE WHEN lng IS NULL THEN 'NULL::VARCHAR(8)' ELSE 's.' || lng || '::VARCHAR(8)' END;
+    -- rows changed since the segments were built: by epoch, or (an index of vfts 0.4 and older
+    -- before its first refresh) by its ver boundary
+    chg := CASE WHEN e IS NOT NULL THEN 's.epoch > ' || e WHEN vc IS NOT NULL AND b IS NOT NULL THEN 's.' || vc || ' > ' || b END;
+    jchg := CASE WHEN jt IS NULL THEN NULL WHEN e IS NOT NULL THEN 'SELECT doc_id FROM ' || jt || ' WHERE epoch > ' || e
+                 WHEN b IS NOT NULL THEN 'SELECT doc_id FROM ' || jt || ' WHERE ver > ' || b END;
     IF acc = 'rows' THEN
         -- one pass: groups of hidden documents and one NULL row (the sentinel), each with the count
         -- and the two digest sums over all hidden ones (window aggregates over the whole set).
@@ -55,8 +65,8 @@ BEGIN
             || ' AND (gen_removed IS NULL OR gen_removed > ' || g || ')) AND (s.' || idc || ' IS NULL'
             -- a row changed since the boundary: the segments hold an older version, whose visibility
             -- the policy cannot tell (the live view searches the current one through its tail)
-            || CASE WHEN vc IS NOT NULL AND b IS NOT NULL THEN ' OR s.' || vc || ' > ' || b ELSE '' END
-            || CASE WHEN jt IS NOT NULL AND b IS NOT NULL THEN ' OR d.doc_id IN (SELECT doc_id FROM ' || jt || ' WHERE ver > ' || b || ')' ELSE '' END
+            || CASE WHEN chg IS NOT NULL THEN ' OR ' || chg ELSE '' END
+            || CASE WHEN jchg IS NOT NULL THEN ' OR d.doc_id IN (' || jchg || ')' ELSE '' END
             || ')';
         -- H rows carry 2,500 doc_ids each, comma separated, in query: one row per hidden document
         -- would cost the declared width of body and query per row (258,701 rows: 1.36 s against
@@ -77,18 +87,21 @@ BEGIN
     cols := 'SELECT NULL::INT AS qid, NULL::VARCHAR(65000) AS query, s.' || idc || '::INT AS doc_id, s.' || txt
          || '::LONG VARCHAR(32000000) AS body, ' || lang_expr || ' AS lang, ''T''::VARCHAR(1) AS op, ' || g || '::INT AS gen FROM ' || src || ' s';
     stmt := 'CREATE OR REPLACE VIEW ' || vs || '.' || nm || '_live AS ';
-    IF b IS NULL THEN
+    IF chg IS NULL THEN
         IF g = 0 THEN
             stmt := stmt || cols || ' UNION ALL ';          -- nothing built yet: every row is in the tail
         END IF;
-    ELSIF vc IS NOT NULL THEN
-        stmt := stmt || cols || ' WHERE s.' || vc || ' > ' || b || ' UNION ALL ';
-        IF jt IS NOT NULL THEN
+    ELSE
+        -- `epoch > e` alone, so that Vertica skips every storage container older than the
+        -- boundary (with `OR epoch IS NULL` it reads them all): a session's own uncommitted rows
+        -- are not in the tail, committed rows are.
+        stmt := stmt || cols || ' WHERE ' || chg || ' UNION ALL ';
+        IF jchg IS NOT NULL THEN
             -- changed or deleted since the boundary (journal): mask, and search the current row
             stmt := stmt || 'SELECT NULL::INT, NULL::VARCHAR(65000), j.doc_id::INT, NULL::LONG VARCHAR(32000000), NULL::VARCHAR(8), ''D''::VARCHAR(1), '
-                 || g || '::INT FROM ' || jt || ' j WHERE j.ver > ' || b || ' UNION ALL '
-                 || cols || ' WHERE s.' || idc || ' IN (SELECT doc_id FROM ' || jt || ' WHERE ver > ' || b || ') AND (s.' || vc || ' <= ' || b
-                 || ' OR s.' || vc || ' IS NULL) UNION ALL ';
+                 || g || '::INT FROM (' || jchg || ') j UNION ALL '
+                 || cols || ' WHERE s.' || idc || ' IN (' || jchg || ') AND (NOT (' || chg || ')'
+                 || CASE WHEN e IS NULL THEN ' OR s.' || vc || ' IS NULL' ELSE '' END || ') UNION ALL ';
         END IF;
     END IF;
     EXECUTE stmt || sentinel;
@@ -147,8 +160,8 @@ $$;
 -- ------------------------------------------------------------------ create_index
 
 -- options: space or comma separated key=value pairs, all optional:
---   lang=en  journal=schema.table  margin=60  accent_fold=latin|none|all  on_unsupported=error|plain
---   id_col=doc_id  text_col=body  lang_col=lang  ver_col=ver  threads=0  max_segment_mb=2048
+--   lang=en  journal=schema.table  accent_fold=latin|none|all  on_unsupported=error|plain
+--   id_col=doc_id  text_col=body  lang_col=lang  threads=0  max_segment_mb=2048
 --   merge_factor=10  cache_dir=/path  build=true|false  access=auto|rows  reorder=true|false
 CREATE OR REPLACE PROCEDURE vfts.create_index(nm VARCHAR, src VARCHAR, opts VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
@@ -221,30 +234,24 @@ BEGIN
     IF t IS NULL OR NOT (t ILIKE '%char%') THEN
         RAISE EXCEPTION 'vfts.create_index: text column % must exist and be VARCHAR or LONG VARCHAR', txt;
     END IF;
-    -- lang and ver columns: taken by their contract names when the option is not given
+    -- the lang column: taken by its contract name when the option is not given
     IF lng IS NULL AND (SELECT COUNT(*) FROM v_catalog.columns WHERE table_schema ILIKE sch AND table_name ILIKE tbl AND column_name ILIKE 'lang') > 0 THEN
         lng := 'lang';
-    END IF;
-    IF vc IS NULL AND (SELECT COUNT(*) FROM v_catalog.columns WHERE table_schema ILIKE sch AND table_name ILIKE tbl AND column_name ILIKE 'ver') > 0 THEN
-        vc := 'ver';
     END IF;
     IF lng IS NOT NULL AND (SELECT COUNT(*) FROM v_catalog.columns WHERE table_schema ILIKE sch AND table_name ILIKE tbl AND column_name ILIKE lng) = 0 THEN
         RAISE EXCEPTION 'vfts.create_index: lang column % does not exist', lng;
     END IF;
+    -- changes are found by the row epoch (docs/design.md "Freshness"): a version column is not
+    -- needed; the options ver_col and margin of vfts 0.4 are accepted and not used
     IF vc IS NOT NULL THEN
-        t := (SELECT MAX(data_type) FROM v_catalog.columns WHERE table_schema ILIKE sch AND table_name ILIKE tbl AND column_name ILIKE vc);
-        IF t IS NULL OR NOT (t ILIKE 'timestamptz%' OR t ILIKE 'timestamp with time zone%') THEN
-            RAISE EXCEPTION 'vfts.create_index: version column % must exist and be TIMESTAMPTZ (found %)', vc, COALESCE(t, 'nothing');
-        END IF;
+        RAISE NOTICE 'vfts.create_index: ver_col is not needed since vfts 0.5.0 (changes are found by the row epoch); ignored';
+        vc := NULL;
     END IF;
     IF jt IS NOT NULL THEN
-        IF vc IS NULL THEN
-            RAISE EXCEPTION 'vfts.create_index: a journal needs a version column in the source table';
-        END IF;
         n := (SELECT COUNT(*) FROM v_catalog.columns WHERE table_schema ILIKE SPLIT_PART(jt, '.', 1) AND table_name ILIKE SPLIT_PART(jt, '.', 2)
-              AND column_name IN ('doc_id', 'op', 'ver'));
-        IF n <> 3 THEN
-            RAISE EXCEPTION 'vfts.create_index: journal % must have the columns doc_id, op, ver', jt;
+              AND column_name IN ('doc_id', 'op'));
+        IF n <> 2 THEN
+            RAISE EXCEPTION 'vfts.create_index: journal % must have the columns doc_id and op', jt;
         END IF;
     END IF;
 
@@ -390,12 +397,14 @@ BEGIN
 END;
 $$;
 
--- The session temp table that holds a build's index rows until the commit.
+-- The session temp tables, emptied by the commit: vfts_build holds a build's index rows,
+-- vfts_recon the doc_ids a refresh found gone from the source (G) or missing from the index (M).
 CREATE OR REPLACE PROCEDURE vfts.build_table() LANGUAGE PLvSQL AS $$
 BEGIN
     EXECUTE 'CREATE LOCAL TEMPORARY TABLE IF NOT EXISTS vfts_build (kind VARCHAR(1), segment_id INT, term_id INT, chunk_id INT, docno INT, '
          || 'doc_id INT, n INT, term VARCHAR(256), stem VARCHAR(256), lang VARCHAR(8), bin LONG VARBINARY(65000)) '
          || 'ON COMMIT DELETE ROWS UNSEGMENTED ALL NODES';
+    EXECUTE 'CREATE LOCAL TEMPORARY TABLE IF NOT EXISTS vfts_recon (doc_id INT, kind VARCHAR(1)) ON COMMIT DELETE ROWS UNSEGMENTED ALL NODES';
 END;
 $$;
 
@@ -443,21 +452,23 @@ BEGIN
 END;
 $$;
 
--- Incremental and exact: indexes the rows newer than the last boundary into new segments,
--- tombstones their older versions and journal deletes, loads every node, then switches the
--- views. docs/design.md "Refresh" explains the steps and why the result is exact.
+-- Incremental and exact: indexes the rows committed since the last refresh (their epoch is newer
+-- than the boundary) into new segments, tombstones their older versions, journal deletes and the
+-- documents that left the source table, loads every node, then switches the views.
+-- docs/design.md "Refresh" explains the steps and why the result is exact.
 CREATE OR REPLACE PROCEDURE vfts.refresh_index(nm VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
     iid INT; src VARCHAR(300); idc VARCHAR(128); txt VARCHAR(128); lng VARCHAR(128); vc VARCHAR(128); jt VARCHAR(300);
-    lang_ VARCHAR(16); fold VARCHAR(16); unsup VARCHAR(16); margin_ INT; threads_ INT; maxmb INT; cdir VARCHAR(1024);
-    g INT; g_new INT; b_prev VARCHAR(80); b_new VARCHAR(80); cut TIMESTAMPTZ; t0 TIMESTAMPTZ;
-    sel VARCHAR(20000); changed VARCHAR(20000); n_rows INT; n_del INT; parts INT; th INT; nodes INT; cores INT;
+    lang_ VARCHAR(16); fold VARCHAR(16); unsup VARCHAR(16); threads_ INT; maxmb INT; cdir VARCHAR(1024);
+    g INT; g_new INT; b_prev VARCHAR(80); e_prev INT; e_new INT; t0 TIMESTAMPTZ;
+    rng VARCHAR(2000); jsel VARCHAR(2000); base VARCHAR(2000); sel VARCHAR(20000); changed VARCHAR(20000); act VARCHAR(2000); live VARCHAR(4000);
+    n_rows INT; n_del INT; n_live INT; n_masked INT; n_src INT; n_gone INT; n_missing INT; th INT;
     seg_base INT; n_segs INT; n_tomb INT; marked INT; note VARCHAR(2000); lang_expr VARCHAR(300); secs FLOAT;
     full_ BOOLEAN; n_dead INT; me VARCHAR(256); acc_old VARCHAR(256);
 BEGIN
     SELECT index_id, source_table, id_col, text_col, lang_col, ver_col, journal_table, lang, accent_fold, on_unsupported,
-           margin_s, threads, max_segment_mb, cache_dir, gen, boundary_lit
-      INTO iid, src, idc, txt, lng, vc, jt, lang_, fold, unsup, margin_, threads_, maxmb, cdir, g, b_prev
+           threads, max_segment_mb, cache_dir, gen, boundary_lit, boundary_epoch
+      INTO iid, src, idc, txt, lng, vc, jt, lang_, fold, unsup, threads_, maxmb, cdir, g, b_prev, e_prev
       FROM vfts.indexes WHERE index_name = nm;
     IF iid IS NULL THEN
         RAISE EXCEPTION 'vfts.refresh_index: index % does not exist', nm;
@@ -475,52 +486,81 @@ BEGIN
     END IF;
     PERFORM UPDATE vfts.indexes SET refresh_started_at = CLOCK_TIMESTAMP(), refresh_started_by = me WHERE index_name = nm;
     PERFORM COMMIT;
+    PERFORM CALL vfts.build_table();        -- the session temp tables (DDL: before anything is written)
 
-    -- 1. The new boundary, taken before the build reads the table. A row is missing from the
-    --    segments only if it is committed after the build starts reading: written after now, or by
-    --    a transaction open now, which holds an insert lock (v_monitor.locks) since its request.
-    --    boundary = LEAST(now, earliest lock request of an open writer) - margin.
-    full_ := vc IS NULL OR b_prev IS NULL;
-    IF vc IS NOT NULL THEN
-        cut := (SELECT LEAST(CLOCK_TIMESTAMP(), COALESCE(MIN(request_timestamp), CLOCK_TIMESTAMP()))
-                FROM v_monitor.locks
-                WHERE (LOWER(object_name) = LOWER('Table:' || src) OR LOWER(object_name) = LOWER('Table:' || COALESCE(jt, src)))
-                  AND (lock_mode ILIKE '%I%' OR lock_mode = 'X')
-                  AND transaction_id <> (SELECT transaction_id FROM v_monitor.current_session));
-        cut := (SELECT cut - margin_ * INTERVAL '1 second');
-        b_new := (SELECT 'TIMESTAMPTZ ''' || TO_CHAR(cut AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') || '+00''');
-    END IF;
+    -- 1. The new boundary. Every row committed so far has an epoch below the current epoch, and
+    --    every statement below sees it (a statement sees what was committed when it started); a row
+    --    committed from now on gets the current epoch or a later one. So the segments take the rows
+    --    with epoch <= e_new and the live view the rows with epoch > e_new: none is missed, none is
+    --    taken twice, without clocks or margins.
+    e_new := (SELECT current_epoch FROM v_monitor.system) - 1;
+    full_ := e_prev IS NULL AND b_prev IS NULL;
 
-    -- 2. The rows to index, and every doc_id that changed (their older versions get tombstones).
+    -- 2. The rows to index: committed since the last refresh (an index of vfts 0.4 and older: its
+    --    first refresh after the upgrade takes the rows newer than its ver boundary), and the current
+    --    row of every doc_id in the journal since then.
     lang_expr := CASE WHEN lng IS NULL THEN 'NULL::VARCHAR(8)' ELSE 's.' || lng || '::VARCHAR(8)' END;
-    sel := 'SELECT s.' || idc || '::INT AS doc_id, s.' || txt || ' AS body, ' || lang_expr || ' AS lang FROM ' || src || ' s WHERE s.' || idc || ' IS NOT NULL';
-    IF vc IS NOT NULL THEN
-        IF full_ THEN
-            sel := sel || ' AND (s.' || vc || ' <= ' || b_new || ' OR s.' || vc || ' IS NULL)';
-        ELSE
-            sel := sel || ' AND ((s.' || vc || ' > ' || b_prev || ' AND s.' || vc || ' <= ' || b_new || ')';
-            IF jt IS NOT NULL THEN
-                sel := sel || ' OR (s.' || idc || ' IN (SELECT doc_id FROM ' || jt || ' WHERE ver > ' || b_prev || ' AND ver <= ' || b_new
-                     || ') AND (s.' || vc || ' <= ' || b_new || ' OR s.' || vc || ' IS NULL))';
-            END IF;
-            sel := sel || ')';
-        END IF;
-    END IF;
+    rng := CASE WHEN full_ THEN 's.epoch <= ' || e_new
+                WHEN e_prev IS NOT NULL THEN 's.epoch > ' || e_prev || ' AND s.epoch <= ' || e_new
+                ELSE 's.' || vc || ' > ' || b_prev || ' AND s.epoch <= ' || e_new END;
+    jsel := CASE WHEN jt IS NULL OR full_ THEN NULL
+                 WHEN e_prev IS NOT NULL THEN 'SELECT doc_id FROM ' || jt || ' WHERE epoch > ' || e_prev || ' AND epoch <= ' || e_new
+                 ELSE 'SELECT doc_id FROM ' || jt || ' WHERE ver > ' || b_prev || ' AND epoch <= ' || e_new END;
+    base := 'SELECT s.' || idc || '::INT AS doc_id, s.' || txt || ' AS body, ' || lang_expr || ' AS lang FROM ' || src || ' s WHERE s.' || idc || ' IS NOT NULL AND (('
+         || rng || ')' || CASE WHEN jsel IS NULL THEN '' ELSE ' OR (s.' || idc || ' IN (' || jsel || ') AND s.epoch <= ' || e_new || ')' END;
+    sel := base || ')';
     n_rows := EXECUTE 'SELECT COUNT(*) FROM (' || sel || ') x';
     n_del := 0;
-    IF NOT full_ AND jt IS NOT NULL THEN
-        n_del := EXECUTE 'SELECT COUNT(*) FROM ' || jt || ' WHERE ver > ' || b_prev || ' AND ver <= ' || b_new;
+    IF jsel IS NOT NULL THEN
+        n_del := EXECUTE 'SELECT COUNT(*) FROM (' || jsel || ') j';
     END IF;
     g_new := g + 1;
 
-    IF n_rows = 0 AND n_del = 0 AND NOT (full_ AND g > 0) AND g > 0 THEN
+    -- 3. Rows that left the source table without a journal row (DELETE, DROP_PARTITIONS,
+    --    MOVE_PARTITIONS_TO_TABLE, TRUNCATE, a restore of an older copy) have no epoch to find
+    --    them by. Every other change gives its rows a new epoch, so with unique doc_ids the source
+    --    has exactly the documents the index will have, unless some left: compare the counts
+    --    (one scan of the doc_id column), and only when they differ find the documents that left
+    --    (an anti-join of the index's doc_ids with the source's) and any source row the index lacks.
+    n_gone := 0;
+    n_missing := 0;
+    IF NOT full_ THEN
+        act := '(SELECT segment_id FROM vfts.segments WHERE index_id = ' || iid || ' AND gen_removed IS NULL)';
+        live := 'SELECT d.doc_id FROM vfts.doc_stats d WHERE d.index_id = ' || iid || ' AND d.segment_id IN ' || act
+             || ' AND (d.segment_id, d.docno) NOT IN (SELECT segment_id, docno FROM vfts.tombstones WHERE index_id = ' || iid || ')';
+        changed := 'SELECT doc_id FROM (' || sel || ') x' || CASE WHEN jsel IS NULL THEN '' ELSE ' UNION ' || jsel END;
+        n_live := (SELECT COALESCE(SUM(n_docs), 0) FROM vfts.segments WHERE index_id = iid AND gen_removed IS NULL)
+                - (SELECT COUNT(*) FROM vfts.tombstones t WHERE t.index_id = iid
+                   AND t.segment_id IN (SELECT segment_id FROM vfts.segments WHERE index_id = iid AND gen_removed IS NULL));
+        n_masked := 0;
+        IF n_rows > 0 OR n_del > 0 THEN
+            n_masked := EXECUTE 'SELECT COUNT(*) FROM (' || live || ') l WHERE l.doc_id IN (' || changed || ')';
+        END IF;
+        n_src := EXECUTE 'SELECT COUNT(*) FROM ' || src || ' s WHERE s.' || idc || ' IS NOT NULL AND s.epoch <= ' || e_new;
+        IF n_src <> n_live - n_masked + n_rows THEN
+            n_gone := EXECUTE 'INSERT INTO vfts_recon SELECT l.doc_id, ''G'' FROM (' || live || ') l WHERE l.doc_id NOT IN (SELECT s.' || idc
+                   || ' FROM ' || src || ' s WHERE s.' || idc || ' IS NOT NULL)';
+            n_missing := EXECUTE 'INSERT INTO vfts_recon SELECT s.' || idc || ', ''M'' FROM ' || src || ' s WHERE s.' || idc || ' IS NOT NULL AND s.epoch <= ' || e_new
+                   || ' AND s.' || idc || ' NOT IN (' || live || ') AND s.' || idc || ' NOT IN (SELECT doc_id FROM (' || sel || ') x)';
+            IF n_missing > 0 THEN
+                sel := base || ' OR (s.' || idc || ' IN (SELECT doc_id FROM vfts_recon WHERE kind = ''M'') AND s.epoch <= ' || e_new || '))';
+                n_rows := n_rows + n_missing;
+            END IF;
+            IF n_src <> n_live - n_masked + n_rows - n_gone THEN
+                RAISE NOTICE 'vfts: % has % rows (doc_id not NULL), the index % documents: are the doc_ids unique?',
+                             src, n_src, n_live - n_masked + n_rows - n_gone;
+            END IF;
+        END IF;
+    END IF;
+
+    IF n_rows = 0 AND n_del = 0 AND n_gone = 0 AND NOT (full_ AND g > 0) AND g > 0 THEN
         -- nothing changed: move the boundary only (and follow a change of the access policies)
         acc_old := (SELECT access FROM vfts.indexes WHERE index_name = nm);
         PERFORM CALL vfts.detect_access(nm);
         IF acc_old IS NULL OR acc_old <> (SELECT access FROM vfts.indexes WHERE index_name = nm) THEN
             PERFORM CALL vfts.activate(nm, g);
         END IF;
-        PERFORM UPDATE vfts.indexes SET boundary_lit = b_new, refreshed_at = CLOCK_TIMESTAMP(), refresh_note = 'no changes',
+        PERFORM UPDATE vfts.indexes SET boundary_epoch = e_new, boundary_lit = NULL, refreshed_at = CLOCK_TIMESTAMP(), refresh_note = 'no changes',
                        refresh_started_at = NULL WHERE index_name = nm;
         PERFORM COMMIT;
         PERFORM CALL vfts.make_views(nm);
@@ -528,13 +568,10 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 3. Build: segments as index rows into a session temp table (emptied by the commit).
-    nodes := (SELECT COUNT(*) FROM (SELECT vfts.tnode(k) OVER(PARTITION NODES) FROM vfts.probe) n);
-    cores := (SELECT COALESCE(MIN(processor_core_count), 1) FROM v_monitor.host_resources);
-    -- Vertica runs several instances per node (PARTITION BEST); each gets a few threads.
-    th := CASE WHEN threads_ > 0 THEN threads_ ELSE 1 END;     -- PARTITION BEST runs an instance per core already
-    -- fewer than 200,000 rows: one instance (OVER()), so a small refresh makes one segment
-    PERFORM CALL vfts.build_table();
+    -- 4. Build: segments as index rows into a session temp table (emptied by the commit).
+    -- Vertica runs several instances per node (PARTITION BEST: an instance per core already); each
+    -- gets `threads` threads. Fewer than 200,000 rows: one instance (OVER()), one segment.
+    th := CASE WHEN threads_ > 0 THEN threads_ ELSE 1 END;
     seg_base := EXECUTE 'SELECT NEXTVAL(''vfts.segment_seq'')';
     IF n_rows > 0 THEN
         EXECUTE 'INSERT /*+DIRECT, LABEL(vfts_build)*/ INTO vfts_build SELECT vfts.tbuild(0, doc_id, body, lang, NULL::INT USING PARAMETERS seg_base='
@@ -548,21 +585,21 @@ BEGIN
         END IF;
     END IF;
 
-    -- 4. Store the new segments in the index tables.
+    -- 5. Store the new segments in the index tables.
     PERFORM CALL vfts.store_build(iid, g_new);
     n_segs := (SELECT COUNT(*) FROM vfts_build WHERE kind = 'S');
 
-    -- 5. Tombstones: older versions of every changed doc_id, in the segments that were active.
+    -- 6. Tombstones: older versions of every changed doc_id and the documents that left the
+    --    source, in the segments that were active.
     n_tomb := 0;
     IF full_ AND g > 0 THEN
         -- a full build replaces every segment
         PERFORM UPDATE vfts.segments SET state = 'dropped', gen_removed = g_new
                 WHERE index_id = iid AND gen_removed IS NULL AND gen_added < g_new;
     ELSIF NOT full_ THEN
-        changed := 'SELECT doc_id FROM vfts_build WHERE kind = ''D''';
-        IF jt IS NOT NULL THEN
-            changed := changed || ' UNION SELECT doc_id FROM ' || jt || ' WHERE ver > ' || b_prev || ' AND ver <= ' || b_new;
-        END IF;
+        changed := 'SELECT doc_id FROM vfts_build WHERE kind = ''D'''
+                || CASE WHEN jsel IS NULL THEN '' ELSE ' UNION ' || jsel END
+                || CASE WHEN n_gone > 0 THEN ' UNION SELECT doc_id FROM vfts_recon WHERE kind = ''G''' ELSE '' END;
         n_tomb := EXECUTE 'INSERT /*+DIRECT*/ INTO vfts.tombstones SELECT d.index_id, d.segment_id, d.docno, d.doc_id, ' || g_new
              || ' FROM vfts.doc_stats d WHERE d.index_id = ' || iid
              || ' AND d.segment_id IN (SELECT segment_id FROM vfts.segments WHERE index_id = ' || iid || ' AND gen_removed IS NULL AND gen_added < ' || g_new || ')'
@@ -570,7 +607,7 @@ BEGIN
              || ' AND (d.segment_id, d.docno) NOT IN (SELECT segment_id, docno FROM vfts.tombstones WHERE index_id = ' || iid || ')';
     END IF;
 
-    -- 6. Every node: the new segment files, then the new generation (with the access mode the
+    -- 7. Every node: the new segment files, then the new generation (with the access mode the
     --    table's policies give now).
     IF n_segs > 0 THEN
         PERFORM CALL vfts.load_build(nm, cdir);
@@ -578,7 +615,7 @@ BEGIN
     PERFORM CALL vfts.detect_access(nm);
     PERFORM CALL vfts.activate(nm, g_new);
 
-    -- 7. Statistics and the manifest, in the same transaction as the rows.
+    -- 8. Statistics and the manifest, in the same transaction as the rows.
     n_dead := (SELECT COUNT(*) FROM vfts.tombstones t WHERE t.index_id = iid
                AND t.segment_id IN (SELECT segment_id FROM vfts.segments WHERE index_id = iid AND gen_removed IS NULL));
     PERFORM INSERT INTO vfts.index_stats
@@ -587,20 +624,21 @@ BEGIN
             FROM vfts.segments WHERE index_id = iid AND gen_removed IS NULL;
     secs := (SELECT DATEDIFF('millisecond', t0, CLOCK_TIMESTAMP()) / 1000.0);
     note := (CASE WHEN full_ THEN 'full build' ELSE 'incremental' END) || ': ' || n_rows || ' rows into ' || n_segs || ' segments, '
-         || n_tomb || ' tombstones, ' || n_del || ' journal rows';
-    PERFORM UPDATE vfts.indexes SET gen = g_new, boundary_lit = b_new, refreshed_at = CLOCK_TIMESTAMP(), refresh_seconds = secs,
+         || n_tomb || ' tombstones, ' || n_del || ' journal rows'
+         || CASE WHEN n_gone > 0 OR n_missing > 0 THEN ', ' || n_gone || ' documents left the source, ' || n_missing || ' rows were missing' ELSE '' END;
+    PERFORM UPDATE vfts.indexes SET gen = g_new, boundary_epoch = e_new, boundary_lit = NULL, refreshed_at = CLOCK_TIMESTAMP(), refresh_seconds = secs,
                    refresh_note = note, refresh_started_at = NULL WHERE index_name = nm;
     PERFORM COMMIT;
 
-    -- 8. Views with the new boundary and generation (DDL: after the commit; until then the old
+    -- 9. Views with the new boundary and generation (DDL: after the commit; until then the old
     --    views show a wider tail, which is still exact).
     PERFORM CALL vfts.make_views(nm);
     RAISE NOTICE 'vfts: index % generation %: % (% s)', nm, g_new, note, ROUND(secs, 1);
     IF full_ THEN
         PERFORM CALL vfts.purge_segments(iid);
     END IF;
-    -- 9. Tiered merge, when the policy finds a tier with merge_factor segments. Not after a full build
-    --    (its segments have the same size; vfts.merge(name, 1) makes one segment of them when wanted).
+    -- 10. Tiered merge, when the policy finds a tier with merge_factor segments. Not after a full
+    --     build (its segments have the same size; vfts.merge(name, 1) makes one segment of them).
     IF NOT full_ THEN
         PERFORM CALL vfts.merge(nm, 0);
     END IF;
@@ -715,9 +753,9 @@ $$;
 CREATE OR REPLACE PROCEDURE vfts.info(nm VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
     iid INT; g INT; src VARCHAR(300); vs VARCHAR(128); b VARCHAR(80); note VARCHAR(2000); cdir VARCHAR(1024);
-    segs INT; docs INT; dead INT; nbytes INT; tail INT; nodes INT; ok INT; params VARCHAR(2000); acc VARCHAR(256);
+    segs INT; docs INT; dead INT; nbytes INT; tail INT; nodes INT; ok INT; params VARCHAR(2000); acc VARCHAR(256); e INT;
 BEGIN
-    SELECT index_id, gen, source_table, view_schema, boundary_lit, refresh_note, cache_dir, access INTO iid, g, src, vs, b, note, cdir, acc
+    SELECT index_id, gen, source_table, view_schema, boundary_lit, refresh_note, cache_dir, access, boundary_epoch INTO iid, g, src, vs, b, note, cdir, acc, e
       FROM vfts.indexes WHERE index_name = nm;
     IF iid IS NULL THEN
         RAISE EXCEPTION 'vfts.info: index % does not exist', nm;
@@ -732,7 +770,8 @@ BEGIN
     ok := EXECUTE 'SELECT COUNT(*) FROM (SELECT vfts.tinfo(USING PARAMETERS ' || params || ') OVER(PARTITION NODES) FROM vfts.probe) i WHERE gen = ' || g;
     RAISE NOTICE 'index %: source %, generation %, % segments, % documents (% deleted), % MB', nm, src, g, segs, docs - dead, dead,
                  TO_CHAR(nbytes / 1048576.0, 'FM999999990.0');
-    RAISE NOTICE 'boundary %; live tail % rows (%.%_live); last refresh: %', COALESCE(b, '(none)'), tail, vs, nm, COALESCE(note, '(none)');
+    b := CASE WHEN e IS NOT NULL THEN 'epoch ' || e WHEN b IS NOT NULL THEN b ELSE '(none)' END;
+    RAISE NOTICE 'boundary %; live tail % rows (%.%_live); last refresh: %', b, tail, vs, nm, COALESCE(note, '(none)');
     RAISE NOTICE 'access: % (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)',
                  COALESCE(acc, '(no key: run CALL vfts.check_access)');
     RAISE NOTICE 'attributes: %', COALESCE((SELECT LISTAGG(attr_name || ' ' || attr_type || ' from ' || source_table || '.' || value_col || ' ('
@@ -783,7 +822,7 @@ BEGIN
     IF (SELECT COUNT(*) FROM vfts.indexes WHERE index_name = nm) = 0 THEN
         RAISE EXCEPTION 'vfts.rebuild: index % does not exist', nm;
     END IF;
-    PERFORM UPDATE vfts.indexes SET boundary_lit = NULL WHERE index_name = nm;
+    PERFORM UPDATE vfts.indexes SET boundary_lit = NULL, boundary_epoch = NULL WHERE index_name = nm;
     PERFORM COMMIT;
     PERFORM CALL vfts.refresh_index(nm);
 END;

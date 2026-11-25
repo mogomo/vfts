@@ -28,11 +28,12 @@ vsql -X -q -c "DROP SCHEMA IF EXISTS demo CASCADE" > /dev/null 2>&1
 
 step "1. A source table" \
      "The table contract: doc_id INT, body LONG VARCHAR, lang (ISO 639-1, NULL = index language)," \
-     "ver TIMESTAMPTZ DEFAULT CLOCK_TIMESTAMP(). A journal records updates and deletes."
+     "and a unique doc_id; vec, del and ver are for the vector index (vvector). A journal (optional)" \
+     "hides deletes at once."
 sql "CREATE SCHEMA demo;
 CREATE TABLE demo.cases (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8), vec ARRAY[FLOAT],
                          del BOOLEAN NOT NULL DEFAULT FALSE, ver TIMESTAMPTZ NOT NULL DEFAULT CLOCK_TIMESTAMP());
-CREATE TABLE demo.cases_journal (doc_id INT, op CHAR(1), ver TIMESTAMPTZ DEFAULT CLOCK_TIMESTAMP());"
+CREATE TABLE demo.cases_journal (doc_id INT, op CHAR(1));"
 sql "INSERT INTO demo.cases (doc_id, body, lang, vec) VALUES (1, 'The indemnity clause of the supply contract protects the buyer against third-party claims.', 'en', ARRAY[0.9, 0.1, 0.0]);
 INSERT INTO demo.cases (doc_id, body, lang, vec) VALUES (2, 'Contract terms: the seller shall indemnify the buyer within 30 days.', 'en', ARRAY[0.8, 0.2, 0.0]);
 INSERT INTO demo.cases (doc_id, body, lang, vec) VALUES (3, 'Sherlock Holmes'' notes on the Baskerville case, Holmes-style deduction.', 'en', ARRAY[0.0, 1.0, 0.0]);
@@ -50,8 +51,8 @@ sql "SELECT doc_id, pos, term, stem, lang FROM (SELECT doc_id, vfts.tokenize(bod
 
 step "3. Create the index: vfts.create_index" \
      "Builds the index from every row and loads it on every node. The views demo.cases_live and" \
-     "demo.cases_snap are the input of the search functions. margin=0 is fine on one node."
-sql "CALL vfts.create_index('cases', 'demo.cases', 'lang=en journal=demo.cases_journal margin=0');"
+     "demo.cases_snap are the input of the search functions."
+sql "CALL vfts.create_index('cases', 'demo.cases', 'lang=en journal=demo.cases_journal');"
 sql "CALL vfts.info('cases');"
 
 step "4. Ranked search: vfts.tsearch (BM25)" \
@@ -90,8 +91,8 @@ sql "SELECT r.rank, vfts.tsnippet(c.body, 'contract w/5 indemnity' USING PARAMET
      JOIN demo.cases c USING (doc_id) ORDER BY r.rank;"
 
 step "10. No rebuild after new loads" \
-     "New, updated and deleted rows are searchable at once: the live tail is analyzed at query time." \
-     "A delete or an update that keeps ver is written to the journal."
+     "New and updated rows are searchable at once: the live tail is analyzed at query time." \
+     "A delete is hidden at once with a journal row, and by the next refresh without one."
 sql "INSERT INTO demo.cases (doc_id, body, lang, vec) VALUES (9, 'New contract with an indemnity cap.', 'en', ARRAY[0.85, 0.15, 0.0]);
 UPDATE demo.cases SET body = 'Payment terms only.', ver = CLOCK_TIMESTAMP() WHERE doc_id = 2;
 DELETE FROM demo.cases WHERE doc_id = 8; INSERT INTO demo.cases_journal (doc_id, op) VALUES (8, 'D');

@@ -18,19 +18,19 @@ CREATE TABLE IF NOT EXISTS vfts.indexes (
     id_col             VARCHAR(128) NOT NULL,
     text_col           VARCHAR(128) NOT NULL,
     lang_col           VARCHAR(128),              -- NULL: every row in the index language
-    ver_col            VARCHAR(128),              -- NULL: static table, refresh rebuilds
-    journal_table      VARCHAR(300),              -- schema.table (doc_id, op, ver), or NULL
+    ver_col            VARCHAR(128),              -- indexes of vfts 0.4 and older only (changes are found by the row epoch now)
+    journal_table      VARCHAR(300),              -- schema.table (doc_id, op), or NULL
     lang               VARCHAR(8) NOT NULL,
     accent_fold        VARCHAR(8) NOT NULL,
     on_unsupported     VARCHAR(8) NOT NULL,
-    margin_s           INT NOT NULL,              -- seconds; see docs/design.md "Freshness"
+    margin_s           INT NOT NULL,              -- seconds; indexes of vfts 0.4 and older only
     threads            INT NOT NULL,              -- build threads per node
     max_segment_mb     INT NOT NULL,
     merge_factor       INT NOT NULL,              -- tiered merge: segments per tier
     cache_dir          VARCHAR(1024),             -- NULL: session parameter or /tmp/vfts
     view_schema        VARCHAR(128) NOT NULL,
     gen                INT NOT NULL,              -- active generation (0: nothing built yet)
-    boundary           TIMESTAMPTZ,               -- rows with ver <= boundary are in the segments
+    boundary           TIMESTAMPTZ,               -- vfts 0.4 and older: rows with ver <= boundary are in the segments
     boundary_lit       VARCHAR(80),               -- the same, as the SQL literal in the views
     created_at         TIMESTAMPTZ NOT NULL,
     refreshed_at       TIMESTAMPTZ,
@@ -40,12 +40,15 @@ CREATE TABLE IF NOT EXISTS vfts.indexes (
     refresh_started_by VARCHAR(256),
     access_opt         VARCHAR(8),                -- option access: auto (detect policies) or rows
     access             VARCHAR(256),              -- open, rows or masked:<column> (docs/design.md "Access")
-    reorder            BOOLEAN DEFAULT TRUE       -- merges number documents by graph bisection (docs/design.md "Merge")
+    reorder            BOOLEAN DEFAULT TRUE,      -- merges number documents by graph bisection (docs/design.md "Merge")
+    boundary_epoch     INT                        -- rows of the source with epoch <= boundary_epoch are in the segments
 ) UNSEGMENTED ALL NODES;
 -- tables of vfts 0.1.0
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS access_opt VARCHAR(8);
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS access VARCHAR(256);
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS reorder BOOLEAN DEFAULT TRUE;
+-- tables of vfts 0.4
+ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS boundary_epoch INT;
 
 -- The secret key of every index: the views prove with a token made from it that they are the
 -- input of a search. Readable by the owner of the views only (no grant): a view reads it with its

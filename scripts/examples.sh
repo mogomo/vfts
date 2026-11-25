@@ -44,12 +44,11 @@ ex() {   # title, then statements: each is printed with its output; a failed one
 }
 clean
 
-ex "A source table: doc_id, body, lang, ver (README: Prepare a table)" \
+ex "A source table: doc_id, body, lang (README: Prepare a table)" \
 "CREATE SCHEMA ex;
 CREATE TABLE ex.vfts_examples_marker (made_by VARCHAR(40));
-CREATE TABLE ex.notes (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8),
-                       ver TIMESTAMPTZ NOT NULL DEFAULT CLOCK_TIMESTAMP());
-CREATE TABLE ex.notes_journal (doc_id INT, op CHAR(1), ver TIMESTAMPTZ DEFAULT CLOCK_TIMESTAMP());
+CREATE TABLE ex.notes (doc_id INT NOT NULL, body LONG VARCHAR, lang VARCHAR(8));
+CREATE TABLE ex.notes_journal (doc_id INT, op CHAR(1));
 CREATE TABLE ex.owners (doc_id INT, owner VARCHAR(20));
 INSERT INTO ex.notes (doc_id, body) VALUES (1, 'The supplier shall indemnify the buyer under this contract.');
 INSERT INTO ex.notes (doc_id, body) VALUES (2, 'Contract renewal: indemnity terms unchanged, payment within 30 days.');
@@ -60,7 +59,7 @@ INSERT INTO ex.owners VALUES (1, 'legal'); INSERT INTO ex.owners VALUES (2, 'sal
 INSERT INTO ex.owners VALUES (3, 'trading'); INSERT INTO ex.owners VALUES (4, 'legal'); INSERT INTO ex.owners VALUES (5, 'legal');
 COMMIT;"
 
-ex "create_index" "CALL vfts.create_index('notes', 'ex.notes', 'lang=en journal=ex.notes_journal margin=0');"
+ex "create_index" "CALL vfts.create_index('notes', 'ex.notes', 'lang=en journal=ex.notes_journal');"
 
 ex "info" "CALL vfts.info('notes');"
 
