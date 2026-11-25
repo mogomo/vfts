@@ -253,13 +253,16 @@ scripts: the connection comes from the `VSQL_*` variables.
    need no rules.
 2. `CALL vfts.create_index('docs', 'app.docs', 'lang=en');` as dbadmin (or a user with write
    access to the `vfts` tables and the source table: procedures run with the caller's privileges).
-3. Users who search need `USAGE` on the schema and `SELECT` on the views:
-   `GRANT USAGE ON SCHEMA app TO analysts; GRANT SELECT ON app.docs_live, app.docs_snap TO analysts;`
-   (Vertica checks the source table against the view's owner, the user who ran `create_index`: it
-   must own the table or have `SELECT ... WITH GRANT OPTION` on it.) To show the text, they also
-   need `SELECT` on the source table for the join. The views are the only way to search: a
-   statement that makes its own input for `tsearch` is refused, and row access policies of the
-   source table apply to every search ([Access policies](#access-policies)).
+3. Users who may read the table may search it: whoever has `SELECT` on `app.docs` (granted to
+   them, to one of their roles, to `PUBLIC`, or through the schema) gets `SELECT` on the views
+   `app.docs_live` and `app.docs_snap` from vfts, and loses it when they lose `SELECT` on the table
+   (at the next `refresh_index` or `check_access`; a token they copied stops working then too).
+   They also need `USAGE` on the schema, as for the table. (Vertica checks the source table against
+   the views' owner, the user who ran `create_index`: it must own the table or have
+   `SELECT ... WITH GRANT OPTION` on it.) The views are the only way to search: a statement that
+   makes its own input for `tsearch` is refused, and row access policies of the source table apply
+   to every search ([Access policies](#access-policies)). To manage the views' grants yourself, use
+   the option `grants=manual`.
 4. Run `CALL vfts.refresh_index('docs');` on a schedule (a cron job or any scheduler): new rows
    are searchable at once anyway; refresh keeps the live tail short.
 
@@ -364,7 +367,8 @@ what it does, **Syntax**, **Arguments** and **Parameters**, **Returns**, **Privi
   "more of the same", and lower-case words are placeholders.
 - Procedures return 0 and report what they did as `NOTICE` messages. They run with the caller's
   privileges; `dbadmin` (a superuser) may run all of them. The search functions are granted to
-  `PUBLIC`: what limits a search is `SELECT` on the index's views ([The views](#the-views-_live-and-_snap)).
+  `PUBLIC`: what limits a search is `SELECT` on the index's views, which vfts grants to whoever
+  may read the source table ([The views](#the-views-_live-and-_snap)).
 - Every example that shows output is real: `scripts/examples.sh` runs them all, one after the
   other, on a table of its own (schema `ex`, index `notes`; vfts 0.4.1, Vertica 26.3, one node),
   and the blocks show each statement, then what vsql printed. Run it yourself after an install
@@ -409,7 +413,8 @@ A search, part by part:
 | Fewer, larger segments | [merge](#merge) | `CALL vfts.merge('docs');` |
 | Look at an index | [info](#info), [tinfo](#tinfo) | `CALL vfts.info('docs');` |
 | Fill the cache of a new node or subcluster | [load_all](#load_all) | `CALL vfts.load_all('docs');` |
-| Read changed access policies | [check_access](#check_access) | `CALL vfts.check_access('docs');` |
+| Read changed access policies and grants | [check_access](#check_access) | `CALL vfts.check_access('docs');` |
+| Change options of an index | [alter_index](#alter_index) | `CALL vfts.alter_index('docs', 'grants=manual');` |
 | Index everything again (recovery) | [rebuild](#rebuild) | `CALL vfts.rebuild('docs');` |
 | Remove an index | [drop_index](#drop_index) | `CALL vfts.drop_index('docs');` |
 | Filter and count by another table's column | [add_attribute](#add_attribute) | `CALL vfts.add_attribute('docs', 'owner', 'app.owners', 'doc_id', 'owner');` |
@@ -433,7 +438,8 @@ The examples run as one story, in this order, on the example table below:
 [tcount](#tcount), [tmatch](#tmatch)); [add_attribute](#add_attribute) `owner` and the searches by
 it; [refresh_attributes](#refresh_attributes-refresh_attribute) (note 3 moves to legal);
 [tsnippet](#tsnippet); [refresh_index](#refresh_index) (note 6 is added); [merge](#merge),
-[tinfo](#tinfo), [load_all](#load_all), [check_access](#check_access), [rebuild](#rebuild);
+[tinfo](#tinfo), [load_all](#load_all), [check_access](#check_access), [alter_index](#alter_index),
+[rebuild](#rebuild);
 [tokenize](#tokenize), [hybrid](#hybrid), [tversion](#tversion), the [broker](#tserve-and-vfts_broker-many-clients);
 then [drop_attribute](#drop_attribute) and [drop_index](#drop_index). An example that depends on an
 earlier one says so in a line *Example state*.
@@ -495,6 +501,7 @@ every node of the session's subcluster.
 | cache_dir | /tmp/vfts | directory of the node caches |
 | build | true | `false`: register and create the views only |
 | access | auto | `auto`: follow the access policies of the source table ([Access policies](#access-policies)); `rows`: apply its row access policies to every search even before one exists |
+| grants | source | `source`: the views' `SELECT` grants follow the source table's (users, roles, `PUBLIC`, its owner, privileges inherited from the schema), checked at every `refresh_index` and `check_access`; `manual`: vfts leaves the views' grants alone |
 | reorder | true | merges number the documents by recursive graph bisection (smaller and faster index, same results); `false`: keep doc_id order |
 
 **Returns**
@@ -760,6 +767,51 @@ WHERE i.index_name = 'notes' ORDER BY s.gen DESC LIMIT 1;
    (1 row)
 ```
 
+#### alter_index
+
+Changes options of an existing index. An option not given keeps its value; the new values count
+from the next refresh or merge (`grants=source`: at once).
+
+**Syntax**
+
+    CALL vfts.alter_index ( 'index', 'options' )
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index name |
+| options | `key=value` pairs separated by spaces or commas (below) |
+
+**Options**
+
+| Option | Meaning |
+|---|---|
+| grants | `source` or `manual`, as at [create_index](#create_index); `source` makes the views' grants follow the source table's at once |
+| merge_factor | segments per tier of the merge policy (at least 2) |
+| threads | build threads per instance (0: a quarter of the cores) |
+| max_segment_mb | a build thread starts a new segment above this memory |
+| reorder | `true` or `false`: whether merges number the documents by graph bisection |
+
+**Returns**
+
+0. What the procedure did is reported as a `NOTICE` message.
+
+**Privileges**
+
+As [create_index](#create_index).
+
+**Examples**
+
+```sql
+CALL vfts.alter_index('notes', 'merge_factor=8 grants=source');
+   NOTICE 2005:  vfts: index notes altered: merge_factor=8 grants=source
+    alter_index 
+   -------------
+              0
+   (1 row)
+```
+
 #### rebuild
 
 For recovery only: indexes every row again as new segments and drops the old ones.
@@ -833,10 +885,12 @@ CALL vfts.load_all('notes');
 
 #### check_access
 
-Re-reads the access policies of the source table and makes a new key: run it after creating,
-changing, enabling or dropping an access policy on the source table, and after revoking `SELECT`
-on the views from someone (a token copied from a view before stops working). `refresh_index` and
-`merge` re-read the policies too.
+Re-reads the access policies of the source table, makes a new key, and makes the views' grants
+follow the source table's (option `grants=source`): run it after creating, changing, enabling or
+dropping an access policy on the source table, and after granting or revoking `SELECT` on the
+source table, to make it count at once (a token copied from a view before stops working).
+`refresh_index` follows the grants too (with a new key when someone lost access), `merge` re-reads
+the policies.
 
 **Syntax**
 
@@ -1087,11 +1141,16 @@ so the search functions accept the views' rows only. With a row access policy on
 the views also return the indexed documents the querying user may not see (rows with op `H`,
 2,500 doc_ids each).
 
-Grant `USAGE` on the schema and `SELECT` on the views (and on the source table, to show the text)
-to the users who search:
+Who may read the views: with `grants=source` (the default), exactly the users and roles that may
+read the source table; vfts grants and revokes `SELECT` on both views at every `refresh_index`
+and `check_access` and makes a new key when someone lost access. So granting the table is all:
 
     GRANT USAGE ON SCHEMA ex TO analysts;
-    GRANT SELECT ON ex.notes_live, ex.notes_snap, ex.notes TO analysts;
+    GRANT SELECT ON ex.notes TO analysts;
+    CALL vfts.check_access('notes');        -- or wait for the next refresh_index
+
+With `grants=manual`, grant the views yourself (`GRANT SELECT ON ex.notes_live, ex.notes_snap TO
+analysts;`) and run `check_access` after revoking them from someone.
 
 #### Access policies
 
@@ -1104,8 +1163,8 @@ Searches follow Vertica's access rules (details and the reasons: docs/design.md 
 | a column access policy (mask) on the id, text or lang column | an error for everyone: a search through the index would reveal words of the masked text |
 
 - Only the views can feed the search functions: input made by the statement itself is refused,
-  so a search needs `SELECT` on the views. The functions that write node caches are not granted to
-  users.
+  so a search needs `SELECT` on the views, which follows `SELECT` on the source table (option
+  `grants`). The functions that write node caches are not granted to users.
 - vfts reads the policies at `create_index`, `refresh_index`, `merge` and `check_access`. After
   creating or changing a policy, run `CALL vfts.check_access(index)`; or create the index with
   `access=rows` to apply row policies from the start.
@@ -2650,8 +2709,17 @@ What changed in each version, and what to do after the upgrade (newest first). U
 - The journal is optional and needs only `doc_id` and `op`. The options `ver_col` and `margin`
   are accepted and not used.
 
+Search access follows the source table ([Access policies](#access-policies)): with the new option
+`grants=source` (the default, also for existing indexes) whoever may `SELECT` from the source table
+may search it, and nobody else. vfts grants and revokes `SELECT` on the views at every
+`refresh_index` and `check_access`, and makes a new key when someone lost access, so a token
+they copied stops working. Before, a user who lost `SELECT` on the table could still search it
+through the views. `grants=manual` (with the new procedure `alter_index`) keeps the views' grants
+as you set them.
+
 After the upgrade: nothing to do. An existing index keeps its `ver` boundary until its next
-`refresh_index`, which moves it to the epoch.
+`refresh_index`, which moves it to the epoch, and from then on its views' grants follow the source
+table's (`CALL vfts.alter_index(index, 'grants=manual')` first to keep grants you gave by hand).
 
 **0.4.1.** Counts faster: `tcount`, `tcount ... by=` and `tmatch` read the documents of frequent
 words as bit sets, and a batch of counts (`queries`) shares the cores slice by slice. The answers

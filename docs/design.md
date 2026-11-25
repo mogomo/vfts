@@ -279,6 +279,19 @@ Who may search an index, and what the access policies of the source table do to 
   the functions recompute the token and refuse input without the right one. A statement that makes
   its own input (`FROM dual` with a generation number) is refused, so a search needs SELECT on the
   views: Vertica's own grants decide who searches.
+- **The views follow the source table's grants** (option `grants=source`, the default since
+  0.5.0). A view reads its tables with its owner's privileges, so SELECT on a view alone would let
+  a user search a table they may not read. Checking the caller's privilege inside the view is not
+  possible: `HAS_TABLE_PRIVILEGE` is a meta-function, which Vertica refuses in a view, and a
+  lookup in `v_catalog.grants` with `ENABLED_ROLE()` misses roles granted to roles and cost 8 ms
+  per statement (measured). So vfts keeps the views' grants equal to the table's
+  (`vfts.sync_grants`): every grantee of SELECT on the table (users, roles, `PUBLIC`, privileges
+  inherited from the schema, the owner) gets SELECT on both views, every other grantee loses it,
+  and Vertica decides as for the table itself (role chains, default roles, `SET ROLE`). It runs at
+  `create_index`, `refresh_index`, `check_access` and `alter_index`; when someone lost access, the
+  index gets a new key at once, so a token they read from a view before stops working. A REVOKE on
+  the table therefore counts at the next refresh (or `check_access`), not at the next statement.
+  `grants=manual` leaves the views' grants to the administrator (vfts 0.4's behaviour).
 - **Access mode**, read from `v_catalog.access_policy` when the index is created, refreshed or
   merged, and by `vfts.check_access(index)` (only a superuser or the table's owner sees the
   policies, so only they run these):

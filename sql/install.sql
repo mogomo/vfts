@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS vfts.indexes (
     access_opt         VARCHAR(8),                -- option access: auto (detect policies) or rows
     access             VARCHAR(256),              -- open, rows or masked:<column> (docs/design.md "Access")
     reorder            BOOLEAN DEFAULT TRUE,      -- merges number documents by graph bisection (docs/design.md "Merge")
-    boundary_epoch     INT                        -- rows of the source with epoch <= boundary_epoch are in the segments
+    boundary_epoch     INT,                       -- rows of the source with epoch <= boundary_epoch are in the segments
+    grants_opt         VARCHAR(8)                 -- source (NULL): the views follow the source table's SELECT grants; manual
 ) UNSEGMENTED ALL NODES;
 -- tables of vfts 0.1.0
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS access_opt VARCHAR(8);
@@ -49,6 +50,7 @@ ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS access VARCHAR(256);
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS reorder BOOLEAN DEFAULT TRUE;
 -- tables of vfts 0.4
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS boundary_epoch INT;
+ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS grants_opt VARCHAR(8);
 
 -- The secret key of every index: the views prove with a token made from it that they are the
 -- input of a search. Readable by the owner of the views only (no grant): a view reads it with its

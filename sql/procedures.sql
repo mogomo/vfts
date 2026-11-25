@@ -163,6 +163,7 @@ $$;
 --   lang=en  journal=schema.table  accent_fold=latin|none|all  on_unsupported=error|plain
 --   id_col=doc_id  text_col=body  lang_col=lang  threads=0  max_segment_mb=2048
 --   merge_factor=10  cache_dir=/path  build=true|false  access=auto|rows  reorder=true|false
+--   grants=source|manual
 CREATE OR REPLACE PROCEDURE vfts.create_index(nm VARCHAR, src VARCHAR, opts VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
     ident VARCHAR(64) := '^[A-Za-z_][A-Za-z0-9_]*$';
@@ -170,7 +171,7 @@ DECLARE
     o VARCHAR(4000); sch VARCHAR(128); tbl VARCHAR(128);
     idc VARCHAR(128); txt VARCHAR(128); lng VARCHAR(128); vc VARCHAR(128); jt VARCHAR(300);
     lang_ VARCHAR(16); fold VARCHAR(16); unsup VARCHAR(16); margin_ INT; threads_ INT; maxmb INT; mf INT;
-    cdir VARCHAR(1024); build VARCHAR(8); n INT; t VARCHAR(128); iid INT; accopt VARCHAR(8); reord VARCHAR(8);
+    cdir VARCHAR(1024); build VARCHAR(8); n INT; t VARCHAR(128); iid INT; accopt VARCHAR(8); reord VARCHAR(8); grt VARCHAR(8);
 BEGIN
     IF nm IS NULL OR NOT REGEXP_LIKE(nm, '^[A-Za-z0-9_]{1,64}$') THEN
         RAISE EXCEPTION 'vfts.create_index: index name must be 1 to 64 letters, digits or underscores';
@@ -200,6 +201,10 @@ BEGIN
     build := COALESCE(REGEXP_SUBSTR(o, ' build=([a-z]+)', 1, 1, '', 1), 'true');
     accopt := COALESCE(REGEXP_SUBSTR(o, ' access=([a-z]+)', 1, 1, '', 1), 'auto');
     reord := COALESCE(REGEXP_SUBSTR(o, ' reorder=([a-z]+)', 1, 1, '', 1), 'true');
+    grt := COALESCE(REGEXP_SUBSTR(o, ' grants=([a-z]+)', 1, 1, '', 1), 'source');
+    IF grt NOT IN ('source', 'manual') THEN
+        RAISE EXCEPTION 'vfts.create_index: grants must be source (the views follow the SELECT grants of the table) or manual';
+    END IF;
     IF reord NOT IN ('true', 'false') THEN
         RAISE EXCEPTION 'vfts.create_index: reorder must be true or false';
     END IF;
@@ -258,12 +263,13 @@ BEGIN
     iid := (SELECT NEXTVAL('vfts.index_seq'));
     PERFORM INSERT INTO vfts.indexes (index_id, index_name, source_table, id_col, text_col, lang_col, ver_col, journal_table,
                                        lang, accent_fold, on_unsupported, margin_s, threads, max_segment_mb, merge_factor,
-                                       cache_dir, view_schema, gen, created_at, access_opt, reorder)
-            VALUES (iid, nm, src, idc, txt, lng, vc, jt, lang_, fold, unsup, margin_, threads_, maxmb, mf, cdir, sch, 0, CLOCK_TIMESTAMP(), accopt, reord = 'true');
+                                       cache_dir, view_schema, gen, created_at, access_opt, reorder, grants_opt)
+            VALUES (iid, nm, src, idc, txt, lng, vc, jt, lang_, fold, unsup, margin_, threads_, maxmb, mf, cdir, sch, 0, CLOCK_TIMESTAMP(), accopt, reord = 'true', grt);
     PERFORM CALL vfts.new_key(iid);
     PERFORM CALL vfts.detect_access(nm);
     PERFORM COMMIT;
     PERFORM CALL vfts.make_views(nm);
+    PERFORM CALL vfts.sync_grants(nm, FALSE);
     IF build = 'true' THEN
         PERFORM CALL vfts.refresh_index(nm);
     END IF;
@@ -564,6 +570,7 @@ BEGIN
                        refresh_started_at = NULL WHERE index_name = nm;
         PERFORM COMMIT;
         PERFORM CALL vfts.make_views(nm);
+        PERFORM CALL vfts.sync_grants(nm, TRUE);
         RAISE NOTICE 'vfts: index % has no changes; boundary moved', nm;
         RETURN;
     END IF;
@@ -633,6 +640,7 @@ BEGIN
     -- 9. Views with the new boundary and generation (DDL: after the commit; until then the old
     --    views show a wider tail, which is still exact).
     PERFORM CALL vfts.make_views(nm);
+    PERFORM CALL vfts.sync_grants(nm, TRUE);
     RAISE NOTICE 'vfts: index % generation %: % (% s)', nm, g_new, note, ROUND(secs, 1);
     IF full_ THEN
         PERFORM CALL vfts.purge_segments(iid);
@@ -816,6 +824,44 @@ BEGIN
 END;
 $$;
 
+-- Changes options of an index (the same names as create_index): grants=source|manual,
+-- merge_factor, threads, max_segment_mb, reorder=true|false. An option not given keeps its value.
+CREATE OR REPLACE PROCEDURE vfts.alter_index(nm VARCHAR, opts VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    o VARCHAR(4000); iid INT; grt VARCHAR(16); mf VARCHAR(16); th VARCHAR(16); mx VARCHAR(16); reord VARCHAR(16); bad VARCHAR(4000);
+BEGIN
+    iid := (SELECT MAX(index_id) FROM vfts.indexes WHERE index_name = nm);
+    IF iid IS NULL THEN
+        RAISE EXCEPTION 'vfts.alter_index: index % does not exist', nm;
+    END IF;
+    o := ' ' || COALESCE(REPLACE(opts, ',', ' '), '') || ' ';
+    bad := REGEXP_REPLACE(o, ' (grants|merge_factor|threads|max_segment_mb|reorder)=[^ ]+', '');
+    IF TRIM(bad) <> '' THEN
+        RAISE EXCEPTION 'vfts.alter_index: unknown or malformed option(s): % (allowed: grants, merge_factor, threads, max_segment_mb, reorder)', TRIM(bad);
+    END IF;
+    grt := REGEXP_SUBSTR(o, ' grants=([^ ]+)', 1, 1, '', 1);
+    mf := REGEXP_SUBSTR(o, ' merge_factor=([^ ]+)', 1, 1, '', 1);
+    th := REGEXP_SUBSTR(o, ' threads=([^ ]+)', 1, 1, '', 1);
+    mx := REGEXP_SUBSTR(o, ' max_segment_mb=([^ ]+)', 1, 1, '', 1);
+    reord := REGEXP_SUBSTR(o, ' reorder=([^ ]+)', 1, 1, '', 1);
+    IF grt IS NOT NULL AND grt NOT IN ('source', 'manual') THEN
+        RAISE EXCEPTION 'vfts.alter_index: grants must be source or manual';
+    END IF;
+    IF (mf IS NOT NULL AND (NOT REGEXP_LIKE(mf, '^[0-9]{1,6}$') OR mf::INT < 2)) OR (th IS NOT NULL AND NOT REGEXP_LIKE(th, '^[0-9]{1,2}$'))
+       OR (mx IS NOT NULL AND (NOT REGEXP_LIKE(mx, '^[0-9]{1,7}$') OR mx::INT < 1)) OR (reord IS NOT NULL AND reord NOT IN ('true', 'false')) THEN
+        RAISE EXCEPTION 'vfts.alter_index: merge_factor must be at least 2, threads 0 to 99, max_segment_mb at least 1, reorder true or false';
+    END IF;
+    PERFORM UPDATE vfts.indexes SET grants_opt = COALESCE(grt, grants_opt), merge_factor = COALESCE(mf::INT, merge_factor),
+                   threads = COALESCE(th::INT, threads), max_segment_mb = COALESCE(mx::INT, max_segment_mb),
+                   reorder = COALESCE((reord = 'true'), reorder) WHERE index_id = iid;
+    PERFORM COMMIT;
+    IF grt = 'source' THEN
+        PERFORM CALL vfts.sync_grants(nm, TRUE);
+    END IF;
+    RAISE NOTICE 'vfts: index % altered: %', nm, TRIM(o);
+END;
+$$;
+
 -- For recovery only: indexes every row again, as one new set of segments.
 CREATE OR REPLACE PROCEDURE vfts.rebuild(nm VARCHAR) LANGUAGE PLvSQL AS $$
 BEGIN
@@ -830,22 +876,16 @@ $$;
 
 -- ------------------------------------------------------------------ access
 
--- Run after creating, changing, enabling or dropping an access policy on the source table, and
--- after revoking SELECT on the views from someone: re-reads the policies (access mode), makes a
--- new key (tokens that anyone saw before stop working), activates it on the nodes of this
--- subcluster and makes new views. refresh_index and merge re-read the policies too.
-CREATE OR REPLACE PROCEDURE vfts.check_access(nm VARCHAR) LANGUAGE PLvSQL AS $$
+-- A new key (tokens that anyone saw before stop working), activated on the nodes of this
+-- subcluster, and new views. The nodes accept the old and the new key while the views change, then
+-- the new one only.
+CREATE OR REPLACE PROCEDURE vfts.rotate_key(nm VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
     iid INT; g INT;
 BEGIN
     SELECT index_id, gen INTO iid, g FROM vfts.indexes WHERE index_name = nm;
-    IF iid IS NULL THEN
-        RAISE EXCEPTION 'vfts.check_access: index % does not exist', nm;
-    END IF;
-    PERFORM CALL vfts.detect_access(nm);
     PERFORM CALL vfts.new_key(iid);
     PERFORM COMMIT;
-    -- the nodes accept the old and the new key while the views change, then the new one only
     IF g > 0 THEN
         PERFORM CALL vfts.activate(nm, g);
     END IF;
@@ -855,6 +895,79 @@ BEGIN
     IF g > 0 THEN
         PERFORM CALL vfts.activate(nm, g);
     END IF;
+END;
+$$;
+
+-- The views follow the source table's grants (option grants=source, the default; docs/design.md
+-- "Access"): every user and role that has SELECT on the source table - granted on the table, to
+-- PUBLIC, inherited from the schema, or its owner - gets SELECT on the views, and nobody else.
+-- Vertica then decides as it does for the table itself (roles granted to roles, default roles,
+-- SET ROLE). When someone lost SELECT on the views, rotate = TRUE makes a new key, so that a token
+-- they saw before stops working. Run by create_index, refresh_index, check_access and alter_index.
+CREATE OR REPLACE PROCEDURE vfts.sync_grants(nm VARCHAR, rotate BOOLEAN) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT; src VARCHAR(300); vs VARCHAR(128); opt VARCHAR(8); sch VARCHAR(128); tbl VARCHAR(128); vown VARCHAR(256);
+    want VARCHAR(4000); have VARCHAR(4000); who VARCHAR(256); last VARCHAR(256); lost INT; added INT;
+BEGIN
+    SELECT index_id, source_table, view_schema, grants_opt INTO iid, src, vs, opt FROM vfts.indexes WHERE index_name = nm;
+    IF iid IS NULL OR COALESCE(opt, 'source') <> 'source' THEN
+        RETURN;
+    END IF;
+    sch := LOWER(SPLIT_PART(src, '.', 1));
+    tbl := LOWER(SPLIT_PART(src, '.', 2));
+    vown := (SELECT MAX(owner_name) FROM v_catalog.views WHERE LOWER(table_schema) = LOWER(vs) AND LOWER(table_name) = LOWER(nm || '_live'));
+    want := 'SELECT grantee AS who FROM v_catalog.grants WHERE object_type = ''TABLE'' AND LOWER(object_schema) = ' || QUOTE_LITERAL(sch)
+         || ' AND LOWER(object_name) = ' || QUOTE_LITERAL(tbl) || ' AND privileges_description ILIKE ''%SELECT%'''
+         || ' UNION SELECT principal FROM v_catalog.inherited_privileges WHERE LOWER(object_schema) = ' || QUOTE_LITERAL(sch)
+         || ' AND LOWER(object_name) = ' || QUOTE_LITERAL(tbl) || ' AND privileges_description ILIKE ''%SELECT%'''
+         || ' UNION SELECT owner_name FROM v_catalog.tables WHERE LOWER(table_schema) = ' || QUOTE_LITERAL(sch) || ' AND LOWER(table_name) = ' || QUOTE_LITERAL(tbl);
+    have := 'SELECT grantee AS who FROM v_catalog.grants WHERE object_type = ''VIEW'' AND LOWER(object_schema) = ' || QUOTE_LITERAL(LOWER(vs))
+         || ' AND LOWER(object_name) = ' || QUOTE_LITERAL(LOWER(nm) || '_live') || ' AND privileges_description ILIKE ''%SELECT%''';
+    added := 0;
+    last := '';
+    LOOP
+        who := EXECUTE 'SELECT MIN(who) FROM (' || want || ') w WHERE who > ' || QUOTE_LITERAL(last) || ' AND who <> ' || QUOTE_LITERAL(COALESCE(vown, ''))
+                     || ' AND who NOT IN (' || have || ')';
+        EXIT WHEN who IS NULL;
+        last := who;
+        EXECUTE 'GRANT SELECT ON ' || vs || '.' || nm || '_live, ' || vs || '.' || nm || '_snap TO ' || QUOTE_IDENT(who);
+        added := added + 1;
+    END LOOP;
+    lost := 0;
+    last := '';
+    LOOP
+        who := EXECUTE 'SELECT MIN(who) FROM (' || have || ') h WHERE who > ' || QUOTE_LITERAL(last) || ' AND who <> ' || QUOTE_LITERAL(COALESCE(vown, ''))
+                     || ' AND who NOT IN (' || want || ')';
+        EXIT WHEN who IS NULL;
+        last := who;
+        EXECUTE 'REVOKE SELECT ON ' || vs || '.' || nm || '_live, ' || vs || '.' || nm || '_snap FROM ' || QUOTE_IDENT(who);
+        lost := lost + 1;
+    END LOOP;
+    IF lost > 0 AND rotate THEN
+        PERFORM CALL vfts.rotate_key(nm);
+    END IF;
+    IF added > 0 OR lost > 0 THEN
+        RAISE NOTICE 'vfts: index % views granted to % and revoked from % users or roles (they follow the SELECT grants of %)', nm, added, lost, src;
+    END IF;
+END;
+$$;
+
+-- Run after creating, changing, enabling or dropping an access policy on the source table, and
+-- after grants on it changed: re-reads the policies (access mode), makes a new key (tokens that
+-- anyone saw before stop working), activates it on the nodes of this subcluster, makes new views
+-- and makes their grants follow the source table's again. refresh_index and merge re-read the
+-- policies too; refresh_index also follows the grants.
+CREATE OR REPLACE PROCEDURE vfts.check_access(nm VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT;
+BEGIN
+    iid := (SELECT MAX(index_id) FROM vfts.indexes WHERE index_name = nm);
+    IF iid IS NULL THEN
+        RAISE EXCEPTION 'vfts.check_access: index % does not exist', nm;
+    END IF;
+    PERFORM CALL vfts.detect_access(nm);
+    PERFORM CALL vfts.rotate_key(nm);
+    PERFORM CALL vfts.sync_grants(nm, FALSE);
     RAISE NOTICE 'vfts: index % access %, new key active', nm, (SELECT access FROM vfts.indexes WHERE index_id = iid);
 END;
 $$;

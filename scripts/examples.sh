@@ -161,6 +161,7 @@ ex "load_all: write missing node caches from the index tables" "CALL vfts.load_a
 ex "check_access: read the access policies again and make a new key" "CALL vfts.check_access('notes');" \
 "SELECT index_name, access, reorder FROM vfts.indexes WHERE index_name = 'notes';"
 
+ex "alter_index: change options of an index" "CALL vfts.alter_index('notes', 'merge_factor=8 grants=source');"
 ex "rebuild (recovery only)" "CALL vfts.rebuild('notes');"
 
 ex "tokenize: what the analyzer sees" \
