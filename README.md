@@ -506,6 +506,7 @@ every node of the session's subcluster.
 | lang | en | index language (ISO 639-1): for documents without a `lang` value, and the stemmer of Latin words |
 | journal | none | `schema.table` with the columns doc_id and op: a row there hides that doc_id's indexed version at once (a delete before the next refresh); not needed for anything else |
 | accent_fold | latin | `latin` (remove accents of Latin letters), `none`, `all` (also Greek and Cyrillic) |
+| case | insensitive | `insensitive`: words are case folded (`Apple` = `apple`); `sensitive`: words keep their case in the index and in queries (`Apple` finds `Apple` only, `US` is not `us`); stems keep it too (`Apples` and `Apple` share the stem `Appl`, `apples` has `appl`). Set at `create_index`; changing it needs a new index |
 | on_unsupported | error | `error` or `plain` for Chinese, Japanese, Korean, Thai, Lao, Khmer, Myanmar text |
 | id_col, text_col, lang_col | doc_id, body, lang | column names in the source table |
 | ver_col, margin | | options of vfts 0.4 and older: accepted and not used (changes are found by the row epoch) |
@@ -1889,7 +1890,7 @@ try when a search does not find what you expected.
 **Syntax**
 
     SELECT vfts.tokenize ( text [, lang ] [ USING PARAMETERS [ lang='xx' ] [, accent_fold='latin' | 'none' | 'all' ]
-                           [, on_unsupported='error' | 'plain' ] ] ) OVER () ...
+                           [, on_unsupported='error' | 'plain' ] [, case_sensitive=true | false ] ] ) OVER () ...
     SELECT doc_id, vfts.tokenize ( text [, lang ] ) FROM table      -- beside other columns
 
 **Arguments**
@@ -1906,6 +1907,7 @@ try when a search does not find what you expected.
 | lang | en | the language when the argument `lang` is not given |
 | accent_fold | latin | as the index option of [create_index](#create_index) |
 | on_unsupported | error | as the index option of [create_index](#create_index) |
+| case_sensitive | false | `true`: as the index option `case=sensitive` of [create_index](#create_index) |
 
 **Returns**
 
@@ -2265,6 +2267,7 @@ ORDER BY h.rank;
 **Which languages work, and why.** Every language written with spaces between words works with
 three generic steps, and no dictionary or thesaurus: ICU finds the words (Unicode word boundaries),
 ICU normalizes them (NFKC, case folding, accents), and a rule-based stemmer reduces them to a stem.
+An index made with `case=sensitive` keeps the case of every word ([create_index](#create_index)).
 BM25, phrases, proximity and fuzzy search need nothing more: only word positions, a few counts and
 the list of distinct words.
 
@@ -2927,6 +2930,10 @@ source table's schema, so that an object backup of the schema holds the index to
 again after a restore. Without them, one `refresh_index` after a restore makes the index equal to
 the restored table (before 0.5.0 an index answered with rows the restore had taken away, also
 after a refresh).
+
+Case-sensitive search: the index option `case=sensitive` keeps the case of words in the index and
+in queries (`Apple` finds `Apple`, not `apple`; stems keep the case too). Indexes made without it
+are unchanged, byte for byte.
 
 After the upgrade: existing indexes keep their settings and get no trigger; give them one with
 `CALL vfts.alter_index(index, 'refresh_every=1')`. On Eon, run `CALL vfts.upgrade_caches()` from a

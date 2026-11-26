@@ -54,7 +54,7 @@ struct Snippeter::Impl {
             switch (p.kind) {
             case QKind::Term:
                 if (term == p.word) return p.id;
-                if (o.match == MatchMode::Stem && stem_key(lang_info(lang).code, stemmer.stem(term, lang)) == p.key) return p.id;
+                if (o.match == MatchMode::Stem && stem_key(lang_info(lang).code, stemmer.stem(term, lang, analyzer.options().case_sensitive)) == p.key) return p.id;
                 break;
             case QKind::Prefix:
                 if (term.compare(0, p.prefix.size(), p.prefix) == 0) return p.id;
@@ -91,7 +91,7 @@ Snippeter::Snippeter(const AnalyzerOptions &aopts, const std::string &query, con
         Pattern p;
         p.kind = QKind::Term;
         p.word = w;
-        p.key = stem_key(lang_info(lang).code, impl_->stemmer.stem(w, lang));
+        p.key = stem_key(lang_info(lang).code, impl_->stemmer.stem(w, lang, impl_->analyzer.options().case_sensitive));
         p.id = id++;
         impl_->pats.push_back(p);
     };

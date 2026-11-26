@@ -33,19 +33,20 @@ const icu::BreakIterator &prototype()
 const icu::Normalizer2 &normalizer(int which)
 {
     static std::once_flag once;
-    static const icu::Normalizer2 *n[3] = {nullptr, nullptr, nullptr};
+    static const icu::Normalizer2 *n[4] = {nullptr, nullptr, nullptr, nullptr};
     static std::string error;
     std::call_once(once, [] {
         UErrorCode st = U_ZERO_ERROR;
         n[0] = icu::Normalizer2::getNFKCCasefoldInstance(st);
         if (U_SUCCESS(st)) n[1] = icu::Normalizer2::getNFDInstance(st);
         if (U_SUCCESS(st)) n[2] = icu::Normalizer2::getNFCInstance(st);
-        if (U_FAILURE(st)) { n[0] = n[1] = n[2] = nullptr; error = u_errorName(st); }
+        if (U_SUCCESS(st)) n[3] = icu::Normalizer2::getNFKCInstance(st);
+        if (U_FAILURE(st)) { n[0] = n[1] = n[2] = n[3] = nullptr; error = u_errorName(st); }
     });
     if (!n[which]) throw std::runtime_error("ICU normalizer cannot be created: " + error);
     return *n[which];
 }
-enum { NFKC_CF = 0, NFD = 1, NFC = 2 };
+enum { NFKC_CF = 0, NFD = 1, NFC = 2, NFKC = 3 };
 
 Script script_of(UScriptCode sc)
 {
@@ -246,7 +247,8 @@ Analyzer::~Analyzer() = default;
 Script Analyzer::normalize_piece(std::string_view piece, Lang doc_lang, std::string &out)
 {
     out.clear();
-    const bool turkish = doc_lang != LANG_NONE && lang_info(doc_lang).code == std::string_view("tr");
+    const bool cs = opts_.case_sensitive;
+    const bool turkish = !cs && doc_lang != LANG_NONE && lang_info(doc_lang).code == std::string_view("tr");
     bool ascii = true, alpha = false, cap_i = false;
     for (unsigned char ch : piece) {
         ascii &= ch < 0x80;
@@ -254,11 +256,12 @@ Script Analyzer::normalize_piece(std::string_view piece, Lang doc_lang, std::str
         cap_i |= ch == 'I';
     }
     if (ascii && !(turkish && cap_i)) {
-        // NFKC with case folding changes nothing in ASCII but the upper case letters.
+        // NFKC with case folding changes nothing in ASCII but the upper case letters (NFKC alone:
+        // nothing at all).
         out.resize(piece.size());
         for (std::size_t i = 0; i < piece.size(); ++i) {
             const char ch = piece[i];
-            out[i] = ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch + 32) : ch;
+            out[i] = !cs && ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch + 32) : ch;
         }
         return alpha ? Script::Latin : Script::Other;
     }
@@ -270,7 +273,7 @@ Script Analyzer::normalize_piece(std::string_view piece, Lang doc_lang, std::str
         }
     }
     UErrorCode st = U_ZERO_ERROR;
-    u = normalizer(NFKC_CF).normalize(u, st);
+    u = normalizer(cs ? NFKC : NFKC_CF).normalize(u, st);
     if (U_FAILURE(st)) throw std::runtime_error(std::string("ICU normalization failed: ") + u_errorName(st));
     if (turkish) u.findAndReplace(icu::UnicodeString((UChar32)'i').append((UChar32)0x0307), icu::UnicodeString((UChar32)'i'));
     unify_apostrophes(u);

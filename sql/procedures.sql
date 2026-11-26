@@ -163,7 +163,7 @@ $$;
 --   lang=en  journal=schema.table  accent_fold=latin|none|all  on_unsupported=error|plain
 --   id_col=doc_id  text_col=body  lang_col=lang  threads=0  max_segment_mb=2048
 --   merge_factor=10  cache_dir=/path  build=true|false  access=auto|rows  reorder=true|false
---   grants=source|manual  refresh_every=1 (minutes; 0: off)
+--   grants=source|manual  refresh_every=1 (minutes; 0: off)  case=insensitive|sensitive
 CREATE OR REPLACE PROCEDURE vfts.create_index(nm VARCHAR, src VARCHAR, opts VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
     ident VARCHAR(64) := '^[A-Za-z_][A-Za-z0-9_]*$';
@@ -171,7 +171,7 @@ DECLARE
     o VARCHAR(4000); sch VARCHAR(128); tbl VARCHAR(128);
     idc VARCHAR(128); txt VARCHAR(128); lng VARCHAR(128); vc VARCHAR(128); jt VARCHAR(300);
     lang_ VARCHAR(16); fold VARCHAR(16); unsup VARCHAR(16); margin_ INT; threads_ INT; maxmb INT; mf INT;
-    cdir VARCHAR(1024); build VARCHAR(8); n INT; t VARCHAR(128); iid INT; accopt VARCHAR(8); reord VARCHAR(8); grt VARCHAR(8); every INT;
+    cdir VARCHAR(1024); build VARCHAR(8); n INT; t VARCHAR(128); iid INT; accopt VARCHAR(8); reord VARCHAR(8); grt VARCHAR(8); every INT; cs VARCHAR(16);
 BEGIN
     IF nm IS NULL OR NOT REGEXP_LIKE(nm, '^[A-Za-z0-9_]{1,64}$') THEN
         RAISE EXCEPTION 'vfts.create_index: index name must be 1 to 64 letters, digits or underscores';
@@ -203,6 +203,10 @@ BEGIN
     reord := COALESCE(REGEXP_SUBSTR(o, ' reorder=([a-z]+)', 1, 1, '', 1), 'true');
     grt := COALESCE(REGEXP_SUBSTR(o, ' grants=([a-z]+)', 1, 1, '', 1), 'source');
     every := COALESCE(REGEXP_SUBSTR(o, ' refresh_every=([0-9]{1,4})( |$)', 1, 1, '', 1), '1')::INT;
+    cs := COALESCE(REGEXP_SUBSTR(o, ' case=([a-z]+)', 1, 1, '', 1), 'insensitive');
+    IF cs NOT IN ('sensitive', 'insensitive') THEN
+        RAISE EXCEPTION 'vfts.create_index: case must be insensitive (the default: words are case folded) or sensitive';
+    END IF;
     IF REGEXP_LIKE(o, ' refresh_every=') AND NOT REGEXP_LIKE(o, ' refresh_every=[0-9]{1,4} ') THEN
         RAISE EXCEPTION 'vfts.create_index: refresh_every is in minutes: 0 (off), 1 to 59, or whole hours up to 1440';
     END IF;
@@ -270,8 +274,8 @@ BEGIN
     iid := (SELECT NEXTVAL('vfts.index_seq'));
     PERFORM INSERT INTO vfts.indexes (index_id, index_name, source_table, id_col, text_col, lang_col, ver_col, journal_table,
                                        lang, accent_fold, on_unsupported, margin_s, threads, max_segment_mb, merge_factor,
-                                       cache_dir, view_schema, gen, created_at, access_opt, reorder, grants_opt, refresh_every)
-            VALUES (iid, nm, src, idc, txt, lng, vc, jt, lang_, fold, unsup, margin_, threads_, maxmb, mf, cdir, sch, 0, CLOCK_TIMESTAMP(), accopt, reord = 'true', grt, every);
+                                       cache_dir, view_schema, gen, created_at, access_opt, reorder, grants_opt, refresh_every, case_sensitive)
+            VALUES (iid, nm, src, idc, txt, lng, vc, jt, lang_, fold, unsup, margin_, threads_, maxmb, mf, cdir, sch, 0, CLOCK_TIMESTAMP(), accopt, reord = 'true', grt, every, cs = 'sensitive');
     PERFORM CALL vfts.new_key(iid);
     PERFORM CALL vfts.detect_access(nm);
     PERFORM COMMIT;
@@ -329,6 +333,7 @@ DECLARE
     iid INT; cdir VARCHAR(1024); opts VARCHAR(256); want INT; got INT; params VARCHAR(2000); act VARCHAR(2000); rows_sql VARCHAR(8000);
 BEGIN
     SELECT index_id, cache_dir, 'lang=' || lang || ';accent_fold=' || accent_fold || ';on_unsupported=' || on_unsupported
+                                || CASE WHEN case_sensitive THEN ';case=sensitive' ELSE '' END
       INTO iid, cdir, opts FROM vfts.indexes WHERE index_name = nm;
     act := '(SELECT segment_id FROM vfts.segments WHERE index_id = ' || iid || ' AND gen_added <= ' || g
         || ' AND (gen_removed IS NULL OR gen_removed > ' || g || '))';
@@ -504,11 +509,11 @@ DECLARE
     rng VARCHAR(2000); jsel VARCHAR(2000); base VARCHAR(2000); sel VARCHAR(20000); changed VARCHAR(20000); act VARCHAR(2000); live VARCHAR(4000);
     n_rows INT; n_del INT; n_live INT; n_masked INT; n_src INT; n_gone INT; n_missing INT; th INT;
     seg_base INT; n_segs INT; n_tomb INT; marked INT; note VARCHAR(2000); lang_expr VARCHAR(300); secs FLOAT;
-    full_ BOOLEAN; n_dead INT; me VARCHAR(256); acc_old VARCHAR(256);
+    full_ BOOLEAN; n_dead INT; me VARCHAR(256); acc_old VARCHAR(256); csens BOOLEAN;
 BEGIN
     SELECT index_id, source_table, id_col, text_col, lang_col, ver_col, journal_table, lang, accent_fold, on_unsupported,
-           threads, max_segment_mb, cache_dir, gen, boundary_lit, boundary_epoch
-      INTO iid, src, idc, txt, lng, vc, jt, lang_, fold, unsup, threads_, maxmb, cdir, g, b_prev, e_prev
+           threads, max_segment_mb, cache_dir, gen, boundary_lit, boundary_epoch, case_sensitive
+      INTO iid, src, idc, txt, lng, vc, jt, lang_, fold, unsup, threads_, maxmb, cdir, g, b_prev, e_prev, csens
       FROM vfts.indexes WHERE index_name = nm;
     IF iid IS NULL THEN
         RAISE EXCEPTION 'vfts.refresh_index: index % does not exist', nm;
@@ -617,6 +622,7 @@ BEGIN
     IF n_rows > 0 THEN
         EXECUTE 'INSERT /*+DIRECT, LABEL(vfts_build)*/ INTO vfts_build SELECT vfts.tbuild(0, doc_id, body, lang, NULL::INT USING PARAMETERS seg_base='
              || seg_base || ', lang=' || QUOTE_LITERAL(lang_) || ', accent_fold=' || QUOTE_LITERAL(fold) || ', on_unsupported=' || QUOTE_LITERAL(unsup)
+             || CASE WHEN csens THEN ', case_sensitive=true' ELSE '' END
              || ', threads=' || th || ', max_segment_mb=' || maxmb || ', index=' || QUOTE_LITERAL(nm) || ', index_id=' || iid
              || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END || ') OVER('
              || CASE WHEN n_rows < 200000 THEN '' ELSE 'PARTITION BEST' END || ') FROM (' || sel || ') x';
@@ -1119,6 +1125,7 @@ BEGIN
                  || ';threads=' || threads || ';max_segment_mb=' || max_segment_mb || ';merge_factor=' || merge_factor || ';cache_dir=' || COALESCE(cache_dir, '')
                  || ';access=' || COALESCE(access_opt, 'auto') || ';reorder=' || CASE WHEN reorder IS FALSE THEN 'false' ELSE 'true' END
                  || ';grants=' || COALESCE(grants_opt, 'source') || ';refresh_every=' || COALESCE(refresh_every, 0) || ';gen=' || gen
+                 || ';case=' || CASE WHEN case_sensitive THEN 'sensitive' ELSE 'insensitive' END
                  || ';exported_at=' || TO_CHAR(CLOCK_TIMESTAMP(), 'YYYY-MM-DD HH24:MI:SS')
              FROM vfts.indexes WHERE index_id = iid);
     act := '(SELECT segment_id FROM vfts.segments WHERE index_id = ' || iid || ' AND gen_removed IS NULL)';
@@ -1193,7 +1200,7 @@ BEGIN
     e := (SELECT current_epoch FROM v_monitor.system) - 1;
     PERFORM INSERT INTO vfts.indexes (index_id, index_name, source_table, id_col, text_col, lang_col, ver_col, journal_table,
                                        lang, accent_fold, on_unsupported, margin_s, threads, max_segment_mb, merge_factor,
-                                       cache_dir, view_schema, gen, created_at, access_opt, reorder, grants_opt, refresh_every, boundary_epoch, refresh_note)
+                                       cache_dir, view_schema, gen, created_at, access_opt, reorder, grants_opt, refresh_every, boundary_epoch, refresh_note, case_sensitive)
             SELECT iid, nm, src, REGEXP_SUBSTR(info, '(^|;)id_col=([^;]*)', 1, 1, '', 2), REGEXP_SUBSTR(info, '(^|;)text_col=([^;]*)', 1, 1, '', 2),
                    NULLIF(REGEXP_SUBSTR(info, '(^|;)lang_col=([^;]*)', 1, 1, '', 2), ''), NULL, NULLIF(REGEXP_SUBSTR(info, '(^|;)journal=([^;]*)', 1, 1, '', 2), ''),
                    REGEXP_SUBSTR(info, '(^|;)lang=([^;]*)', 1, 1, '', 2), REGEXP_SUBSTR(info, '(^|;)accent_fold=([^;]*)', 1, 1, '', 2),
@@ -1201,7 +1208,8 @@ BEGIN
                    REGEXP_SUBSTR(info, '(^|;)threads=([0-9]+)', 1, 1, '', 2)::INT, REGEXP_SUBSTR(info, '(^|;)max_segment_mb=([0-9]+)', 1, 1, '', 2)::INT,
                    REGEXP_SUBSTR(info, '(^|;)merge_factor=([0-9]+)', 1, 1, '', 2)::INT, NULLIF(REGEXP_SUBSTR(info, '(^|;)cache_dir=([^;]*)', 1, 1, '', 2), ''),
                    sch, g, CLOCK_TIMESTAMP(), REGEXP_SUBSTR(info, '(^|;)access=([^;]*)', 1, 1, '', 2), REGEXP_SUBSTR(info, '(^|;)reorder=([^;]*)', 1, 1, '', 2) = 'true',
-                   REGEXP_SUBSTR(info, '(^|;)grants=([^;]*)', 1, 1, '', 2), every, e, 'imported from ' || src_export;
+                   REGEXP_SUBSTR(info, '(^|;)grants=([^;]*)', 1, 1, '', 2), every, e, 'imported from ' || src_export,
+                   COALESCE(REGEXP_SUBSTR(info, '(^|;)case=([^;]*)', 1, 1, '', 2), 'insensitive') = 'sensitive';
     EXECUTE 'INSERT INTO vfts.segments (index_id, segment_id, state, gen_added, n_docs, n_terms, sum_len, bytes, checksum, created) SELECT '
          || iid || ', segment_id, ''active'', ' || g || ', n, term_id, docno, chunk_id, doc_id, CLOCK_TIMESTAMP() FROM ' || src_export || ' WHERE kind = ''S''';
     EXECUTE 'INSERT /*+DIRECT*/ INTO vfts.doc_stats SELECT ' || iid || ', segment_id, docno, doc_id, n FROM ' || src_export || ' WHERE kind = ''D''';

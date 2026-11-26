@@ -106,6 +106,7 @@ inline vfts::AnalyzerOptions analyzer_options(Settings &s, const std::string &de
     const std::string un = s.text("on_unsupported", "error");
     if (un == "plain") o.unsupported_plain = true;
     else if (un != "error") fail("on_unsupported must be 'error' or 'plain', not '" + un + "'");
+    o.case_sensitive = s.boolean("case_sensitive", false);
     return o;
 }
 
@@ -114,10 +115,11 @@ inline void add_analyzer_parameters(Vertica::SizedColumnTypes &p)
     p.addVarchar(16, "lang");
     p.addVarchar(16, "accent_fold");
     p.addVarchar(16, "on_unsupported");
+    p.addBool("case_sensitive");
 }
 
 // The analyzer options of an index as stored in its generation file:
-// "lang=en;accent_fold=latin;on_unsupported=error".
+// "lang=en;accent_fold=latin;on_unsupported=error", and ";case=sensitive" for a case-sensitive index.
 inline vfts::AnalyzerOptions parse_index_options(const std::string &s)
 {
     vfts::AnalyzerOptions o;
@@ -133,6 +135,7 @@ inline vfts::AnalyzerOptions parse_index_options(const std::string &s)
             if (k == "lang") o.default_lang = vfts::parse_lang(v);
             else if (k == "accent_fold") o.fold = v == "none" ? vfts::AccentFold::None : v == "all" ? vfts::AccentFold::All : vfts::AccentFold::Latin;
             else if (k == "on_unsupported") o.unsupported_plain = v == "plain";
+            else if (k == "case") o.case_sensitive = v == "sensitive";
         }
         i = j + 1;
     }
@@ -143,7 +146,7 @@ inline std::string index_options_string(const vfts::AnalyzerOptions &o)
 {
     return std::string("lang=") + vfts::lang_info(o.default_lang).code + ";accent_fold=" +
            (o.fold == vfts::AccentFold::None ? "none" : o.fold == vfts::AccentFold::All ? "all" : "latin") +
-           ";on_unsupported=" + (o.unsupported_plain ? "plain" : "error");
+           ";on_unsupported=" + (o.unsupported_plain ? "plain" : "error") + (o.case_sensitive ? ";case=sensitive" : "");
 }
 
 // The default cache directory: <catalog>/vfts, in the node's catalog directory (persistent, local

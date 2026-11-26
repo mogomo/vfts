@@ -139,7 +139,7 @@ std::string SegmentBuilder::finish(std::int64_t segment_id)
         for (std::uint32_t l = 0; l < 64; ++l) {
             if (!(acc.langs >> l & 1)) continue;
             const Lang lang = static_cast<Lang>(l);
-            w.add_stem(stem_key(lang_info(lang).code, stemmer_.stem(term, lang)), id);
+            w.add_stem(stem_key(lang_info(lang).code, stemmer_.stem(term, lang, analyzer_.options().case_sensitive)), id);
         }
         std::string().swap(acc.buf);
     }

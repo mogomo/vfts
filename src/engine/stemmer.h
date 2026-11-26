@@ -31,12 +31,15 @@ public:
 
     // The stem of `term` (already normalized) in language `lang`. LANG_NONE or a language
     // without a stemmer returns the term itself. The view is valid until the next call.
-    std::string_view stem(std::string_view term, Lang lang);
+    // keep_case (a case-sensitive index): the stem of the lower-case word, with the word's own
+    // letters: "Apples" -> "Appl", "apples" -> "appl", "APPLES" -> "APPL".
+    std::string_view stem(std::string_view term, Lang lang, bool keep_case = false);
 
 private:
     std::vector<sb_stemmer *> sb_;      // by language id, created on first use
     std::vector<bool> tried_;
-    std::string buf_, pre_;
+    std::string buf_, pre_, low_;
+    std::string_view stem_folded(std::string_view term, Lang lang);
 };
 
 // The Arabic prefix step on its own (UTF-8 in, UTF-8 out).

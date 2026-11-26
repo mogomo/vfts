@@ -40,7 +40,7 @@ public:
                 for (std::size_t i = 0; i < analyzer_->size(); ++i) {
                     const vfts::Token &t = analyzer_->token(i);
                     const std::string_view term = analyzer_->term(i);
-                    const std::string_view st = stemmer_->stem(term, t.lang);
+                    const std::string_view st = stemmer_->stem(term, t.lang, analyzer_->options().case_sensitive);
                     out.setInt(0, t.pos);
                     out.getStringRef(1).copy(term.data(), term.size());
                     out.getStringRef(2).copy(st.data(), st.size());

@@ -7,6 +7,7 @@
 //      dropped. "Holmes'", "Holmes," and "Holmes-style" all give the token "holmes"; Hebrew
 //      acronyms with gershayim (צה"ל, צה״ל) stay one token.
 //   2. NFKC with case folding (ICU nfkc_cf); Turkish dotted and dotless i for documents in 'tr'.
+//      A case-sensitive index (option case=sensitive) uses NFKC without case folding.
 //   3. Per script: accent folding (Latin by default), the Arabic and Persian normalization of
 //      Lucene, removal of Hebrew points and cantillation marks.
 // Terms are stored unstemmed; stemming is a column of the term dictionary (stemmer.h).
@@ -39,6 +40,7 @@ struct AnalyzerOptions {
     AccentFold fold = AccentFold::Latin;
     bool unsupported_plain = false;     // on_unsupported='plain': keep such words, no stemming
     std::uint32_t max_token_bytes = 255; // longer normalized words are skipped (no position)
+    bool case_sensitive = false;        // case=sensitive: NFKC without case folding; stems keep the case
 };
 
 // Thrown when text contains words in a script the index does not support.

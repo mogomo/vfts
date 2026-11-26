@@ -1,6 +1,8 @@
 #include "stemmer.h"
 
 #include <libstemmer.h>
+#include <unicode/locid.h>
+#include <unicode/unistr.h>
 
 #include <stdexcept>
 
@@ -87,7 +89,34 @@ Stemmer::~Stemmer()
     for (sb_stemmer *s : sb_) if (s) sb_stemmer_delete(s);
 }
 
-std::string_view Stemmer::stem(std::string_view term, Lang lang)
+std::string_view Stemmer::stem(std::string_view term, Lang lang, bool keep_case)
+{
+    if (!keep_case) return stem_folded(term, lang);
+    bool ascii = true, upper = false;
+    for (unsigned char ch : term) { ascii &= ch < 0x80; upper |= ch >= 'A' && ch <= 'Z'; }
+    if (ascii && !upper) return stem_folded(term, lang);
+    if (ascii) {
+        low_.assign(term.data(), term.size());
+        for (char &c : low_) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+    } else {
+        icu::UnicodeString u = icu::UnicodeString::fromUTF8(icu::StringPiece(term.data(), static_cast<int32_t>(term.size())));
+        u.toLower(icu::Locale::getRoot());
+        low_.clear();
+        u.toUTF8String(low_);
+        if (low_ == term) return stem_folded(term, lang);
+    }
+    const std::string low = low_;
+    const std::string_view s = stem_folded(low, lang);
+    // the stem as a prefix of the lower-case word: the same bytes of the word itself
+    if (low.size() == term.size() && s.size() <= low.size() && low.compare(0, s.size(), s) == 0) {
+        buf_.assign(term.data(), s.size());
+        return buf_;
+    }
+    if (s.data() != buf_.data()) buf_.assign(s.data(), s.size());
+    return buf_;
+}
+
+std::string_view Stemmer::stem_folded(std::string_view term, Lang lang)
 {
     const LangInfo &info = lang_info(lang);
     if (lang == LANG_NONE || info.stem == StemKind::None) return term;

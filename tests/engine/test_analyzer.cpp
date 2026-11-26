@@ -275,6 +275,25 @@ static void stopwords()
     CHECK_EQ(ka.size(), std::size_t(0));
 }
 
+// case=sensitive (vfts 0.5.0): NFKC without case folding; accents still folded; the stem of the
+// lower-case word with the word's own letters. The default stays case folded, stems unchanged.
+static void case_sensitive()
+{
+    AnalyzerOptions o;
+    o.default_lang = L("en");
+    o.case_sensitive = true;
+    CHECK_EQ(analyze_terms("Apple apple APPLE Café ﬁle Ǆ", LANG_NONE, o), (V{"Apple", "apple", "APPLE", "Cafe", "file", "DZ"}));
+    CHECK_EQ(analyze_terms("Holmes' Holmes-style", LANG_NONE, o), (V{"Holmes", "Holmes", "style"}));
+    CHECK_EQ(terms("Apple APPLE"), (V{"apple", "apple"}));
+    Stemmer s;
+    CHECK_EQ(std::string(s.stem("Apples", L("en"), true)), std::string("Appl"));
+    CHECK_EQ(std::string(s.stem("APPLES", L("en"), true)), std::string("APPL"));
+    CHECK_EQ(std::string(s.stem("apples", L("en"), true)), std::string("appl"));
+    CHECK_EQ(std::string(s.stem("apples", L("en"))), std::string("appl"));
+    CHECK_EQ(std::string(s.stem("Running", L("en"), true)), std::string("Run"));
+    CHECK_EQ(std::string(s.stem("Москвы", L("ru"), true)), std::string("Москв"));
+}
+
 static void snowball_list()
 {
     const auto list = snowball_algorithms();
@@ -296,6 +315,7 @@ int main()
     indic_and_others();
     unsupported();
     long_tokens();
+    case_sensitive();
     stopwords();
     snowball_list();
     return finish("test_analyzer");

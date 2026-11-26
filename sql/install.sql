@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS vfts.indexes (
     reorder            BOOLEAN DEFAULT TRUE,      -- merges number documents by graph bisection (docs/design.md "Merge")
     boundary_epoch     INT,                       -- rows of the source with epoch <= boundary_epoch are in the segments
     grants_opt         VARCHAR(8),                -- source (NULL): the views follow the source table's SELECT grants; manual
-    refresh_every      INT                        -- minutes between automatic refreshes (trigger vfts.refresh_<index>); 0 or NULL: off
+    refresh_every      INT,                       -- minutes between automatic refreshes (trigger vfts.refresh_<index>); 0 or NULL: off
+    case_sensitive     BOOLEAN DEFAULT FALSE      -- option case=sensitive: words keep their case (docs/design.md "Analysis")
 ) UNSEGMENTED ALL NODES;
 -- tables of vfts 0.1.0
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS access_opt VARCHAR(8);
@@ -53,6 +54,7 @@ ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS reorder BOOLEAN DEFAULT TRUE;
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS boundary_epoch INT;
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS grants_opt VARCHAR(8);
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS refresh_every INT;
+ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS case_sensitive BOOLEAN DEFAULT FALSE;
 
 -- The secret key of every index: the views prove with a token made from it that they are the
 -- input of a search. Readable by the owner of the views only (no grant): a view reads it with its

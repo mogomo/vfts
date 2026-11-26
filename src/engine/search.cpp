@@ -780,7 +780,7 @@ struct Searcher::Impl {
         L.ids.resize(n);
         L.stem_entry.assign(n, -1);
         std::string key;
-        if (o.match == MatchMode::Stem) key = stem_key(lang_info(lang).code, stemmer.stem(word, lang));
+        if (o.match == MatchMode::Stem) key = stem_key(lang_info(lang).code, stemmer.stem(word, lang, s.aopts_.case_sensitive));
         for (std::size_t si = 0; si < n; ++si) {
             const Segment &seg = *segs[si];
             const std::int64_t exact = seg.find_term(word);

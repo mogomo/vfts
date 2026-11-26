@@ -33,7 +33,13 @@ One pipeline for documents and queries (`src/engine/analyzer.cpp`):
    run before it; Han, Kana and Hangul count as one), and every run is broken again: Lucene's
    ICUTokenizer cuts the text into script runs the same way.
 2. NFKC with case folding (ICU `nfkc_cf`); in Turkish documents I -> ı and İ -> i first. An ASCII
-   word takes a fast path (lower-casing is all NFKC_CF does to ASCII).
+   word takes a fast path (lower-casing is all NFKC_CF does to ASCII). An index made with `case=sensitive`
+   uses NFKC without case folding (ASCII words are kept as they are; accents are still folded,
+   step 3), and its stems keep the case: the stem of the lower-case word, with the word's own
+   letters when the stem is a prefix of it (`Apples` -> `Appl`, `APPLES` -> `APPL`), else the
+   lower-case stem. So `mode='stem'` stays case-sensitive (`Apple` finds `Apples`, not `apples`).
+   The option is in the generation file's options (`;case=sensitive`), which every search, snippet
+   and live tail reads; an index without it writes exactly the bytes it wrote before.
 3. Per script: Latin accents removed (NFD, non-spacing marks dropped, NFC; option `accent_fold`);
    Arabic and Persian: Lucene's ArabicNormalizer and PersianNormalizer (tashkeel, tatweel, alef
    forms, alef maksura, teh marbuta, keheh, Farsi yeh); Hebrew: U+0591..U+05C7 removed, geresh
