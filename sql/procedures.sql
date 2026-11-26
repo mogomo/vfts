@@ -1096,6 +1096,156 @@ BEGIN
 END;
 $$;
 
+-- ------------------------------------------------------------------ export, import (backup with the table)
+
+-- Copies an index into the table <schema>.<index>_vfts_export in the source table's schema: its
+-- options, active segments (the rows of the index tables), tombstones and attributes. An object
+-- backup of that schema (vbr) then holds the index with its table; vfts.import_index makes the
+-- index again from it, without analyzing the text again. The table holds the words of the text:
+-- it is as sensitive as the source table (no grants are given on it). Not the key: an imported
+-- index gets a new one.
+CREATE OR REPLACE PROCEDURE vfts.export_index(nm VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT; g INT; vs VARCHAR(128); t VARCHAR(300); info VARCHAR(4000); act VARCHAR(500); n INT; t0 TIMESTAMPTZ;
+BEGIN
+    SELECT index_id, gen, view_schema INTO iid, g, vs FROM vfts.indexes WHERE index_name = nm;
+    IF iid IS NULL THEN
+        RAISE EXCEPTION 'vfts.export_index: index % does not exist', nm;
+    END IF;
+    t0 := (SELECT CLOCK_TIMESTAMP());
+    t := vs || '.' || nm || '_vfts_export';
+    info := (SELECT 'vfts=0.5.0;source_table=' || source_table || ';id_col=' || id_col || ';text_col=' || text_col || ';lang_col=' || COALESCE(lang_col, '')
+                 || ';journal=' || COALESCE(journal_table, '') || ';lang=' || lang || ';accent_fold=' || accent_fold || ';on_unsupported=' || on_unsupported
+                 || ';threads=' || threads || ';max_segment_mb=' || max_segment_mb || ';merge_factor=' || merge_factor || ';cache_dir=' || COALESCE(cache_dir, '')
+                 || ';access=' || COALESCE(access_opt, 'auto') || ';reorder=' || CASE WHEN reorder IS FALSE THEN 'false' ELSE 'true' END
+                 || ';grants=' || COALESCE(grants_opt, 'source') || ';refresh_every=' || COALESCE(refresh_every, 0) || ';gen=' || gen
+                 || ';exported_at=' || TO_CHAR(CLOCK_TIMESTAMP(), 'YYYY-MM-DD HH24:MI:SS')
+             FROM vfts.indexes WHERE index_id = iid);
+    act := '(SELECT segment_id FROM vfts.segments WHERE index_id = ' || iid || ' AND gen_removed IS NULL)';
+    EXECUTE 'DROP TABLE IF EXISTS ' || t || ' CASCADE';
+    EXECUTE 'CREATE TABLE ' || t || ' (kind VARCHAR(1) NOT NULL, segment_id INT, term_id INT, chunk_id INT, docno INT, doc_id INT, n INT, '
+         || 'term VARCHAR(1024), stem VARCHAR(1024), lang VARCHAR(8), bin LONG VARBINARY(65000), info VARCHAR(4000)) '
+         || 'ORDER BY kind, segment_id, term_id, chunk_id, docno SEGMENTED BY HASH(segment_id, term_id, chunk_id, docno) ALL NODES';
+    EXECUTE 'INSERT INTO ' || t || ' (kind, info) VALUES (''M'', ' || QUOTE_LITERAL(info) || ')';
+    EXECUTE 'INSERT /*+DIRECT*/ INTO ' || t || ' (kind, segment_id, term_id, chunk_id, docno, doc_id, n) SELECT ''S'', segment_id, n_terms, bytes, sum_len, checksum, n_docs '
+         || 'FROM vfts.segments WHERE index_id = ' || iid || ' AND gen_removed IS NULL';
+    EXECUTE 'INSERT /*+DIRECT*/ INTO ' || t || ' (kind, segment_id, docno, doc_id, n) SELECT ''D'', segment_id, docno, doc_id, length FROM vfts.doc_stats '
+         || 'WHERE index_id = ' || iid || ' AND segment_id IN ' || act;
+    EXECUTE 'INSERT /*+DIRECT*/ INTO ' || t || ' (kind, segment_id, term_id, n, term, stem, lang) SELECT ''T'', segment_id, term_id, doc_freq, term, stem, lang FROM vfts.term_dict '
+         || 'WHERE index_id = ' || iid || ' AND segment_id IN ' || act;
+    EXECUTE 'INSERT /*+DIRECT*/ INTO ' || t || ' (kind, segment_id, term_id, chunk_id, bin) SELECT ''P'', segment_id, term_id, chunk_id, docs FROM vfts.postings '
+         || 'WHERE index_id = ' || iid || ' AND segment_id IN ' || act;
+    EXECUTE 'INSERT /*+DIRECT*/ INTO ' || t || ' (kind, segment_id, term_id, chunk_id, docno, bin) SELECT ''Q'', segment_id, term_id, chunk_id, part, payload FROM vfts.positions '
+         || 'WHERE index_id = ' || iid || ' AND segment_id IN ' || act;
+    EXECUTE 'INSERT /*+DIRECT*/ INTO ' || t || ' (kind, segment_id, docno, doc_id, n) SELECT ''X'', segment_id, docno, doc_id, gen FROM vfts.tombstones '
+         || 'WHERE index_id = ' || iid || ' AND segment_id IN ' || act;
+    -- attributes: their definition, and the values of their current copy
+    EXECUTE 'INSERT INTO ' || t || ' (kind, term, info) SELECT ''A'', attr_name, source_table || ''|'' || key_col || ''|'' || value_col || ''|'' || attr_type '
+         || 'FROM vfts.attributes WHERE index_id = ' || iid || ' AND slot IS NOT NULL';
+    EXECUTE 'INSERT /*+DIRECT*/ INTO ' || t || ' (kind, stem, doc_id, n, term) SELECT ''V'', a.attr_name, v.doc_id, v.ival, v.sval FROM vfts.attr_values v '
+         || 'JOIN vfts.attributes a ON a.slot = v.slot WHERE a.index_id = ' || iid;
+    PERFORM COMMIT;
+    n := EXECUTE 'SELECT COUNT(*) FROM ' || t || ' WHERE kind = ''S''';
+    RAISE NOTICE 'vfts: index % (generation %, % segments) exported to % in % s; vfts.import_index(''%'', ''%'') makes it again',
+                 nm, g, n, t, (SELECT ROUND(DATEDIFF('millisecond', t0, CLOCK_TIMESTAMP()) / 1000.0, 1)), nm, t;
+END;
+$$;
+
+-- Makes an index again from a table written by vfts.export_index (for example after the schema was
+-- restored from a backup): the options, segments, tombstones and attributes of the export, a new
+-- key, the views, the node caches of this subcluster, the trigger. Then a refresh compares the
+-- index with the table as it is now: rows that came or went since the export are found by the
+-- count check. Rows changed in place between the export and the backup are not (export and back
+-- up in the same quiet moment, or run vfts.rebuild after the import).
+CREATE OR REPLACE PROCEDURE vfts.import_index(nm VARCHAR, src_export VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    qual VARCHAR(100) := '^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$';
+    info VARCHAR(4000); iid INT; g INT; src VARCHAR(300); sch VARCHAR(128); e INT; t0 TIMESTAMPTZ; n INT; na INT; i INT; a VARCHAR(64); ainfo VARCHAR(4000); sl INT;
+    every INT;
+BEGIN
+    IF nm IS NULL OR NOT REGEXP_LIKE(nm, '^[A-Za-z0-9_]{1,64}$') THEN
+        RAISE EXCEPTION 'vfts.import_index: index name must be 1 to 64 letters, digits or underscores';
+    END IF;
+    IF src_export IS NULL OR NOT REGEXP_LIKE(src_export, qual) THEN
+        RAISE EXCEPTION 'vfts.import_index: the export table must be given as schema.table';
+    END IF;
+    IF (SELECT COUNT(*) FROM vfts.indexes WHERE index_name = nm) > 0 THEN
+        RAISE EXCEPTION 'vfts.import_index: index % exists: drop it first (vfts.drop_index)', nm;
+    END IF;
+    t0 := (SELECT CLOCK_TIMESTAMP());
+    IF (SELECT COUNT(*) FROM v_catalog.columns WHERE LOWER(table_schema || '.' || table_name) = LOWER(src_export)
+        AND column_name IN ('kind', 'segment_id', 'bin', 'info')) <> 4 THEN
+        RAISE EXCEPTION 'vfts.import_index: % is not an export of vfts.export_index (or does not exist)', src_export;
+    END IF;
+    info := EXECUTE 'SELECT MAX(info) FROM ' || src_export || ' WHERE kind = ''M''';
+    IF info IS NULL OR info NOT LIKE 'vfts=%' THEN
+        RAISE EXCEPTION 'vfts.import_index: % is not an export of vfts.export_index', src_export;
+    END IF;
+    src := REGEXP_SUBSTR(info, '(^|;)source_table=([^;]*)', 1, 1, '', 2);
+    sch := SPLIT_PART(src, '.', 1);
+    IF (SELECT COUNT(*) FROM v_catalog.tables WHERE LOWER(table_schema || '.' || table_name) = LOWER(src)) = 0 THEN
+        RAISE EXCEPTION 'vfts.import_index: the source table % does not exist', src;
+    END IF;
+    g := REGEXP_SUBSTR(info, '(^|;)gen=([0-9]+)', 1, 1, '', 2)::INT;
+    every := COALESCE(REGEXP_SUBSTR(info, '(^|;)refresh_every=([0-9]+)', 1, 1, '', 2), '0')::INT;
+    iid := (SELECT NEXTVAL('vfts.index_seq'));
+    -- the boundary: the table as it is now; the refresh below compares the counts
+    e := (SELECT current_epoch FROM v_monitor.system) - 1;
+    PERFORM INSERT INTO vfts.indexes (index_id, index_name, source_table, id_col, text_col, lang_col, ver_col, journal_table,
+                                       lang, accent_fold, on_unsupported, margin_s, threads, max_segment_mb, merge_factor,
+                                       cache_dir, view_schema, gen, created_at, access_opt, reorder, grants_opt, refresh_every, boundary_epoch, refresh_note)
+            SELECT iid, nm, src, REGEXP_SUBSTR(info, '(^|;)id_col=([^;]*)', 1, 1, '', 2), REGEXP_SUBSTR(info, '(^|;)text_col=([^;]*)', 1, 1, '', 2),
+                   NULLIF(REGEXP_SUBSTR(info, '(^|;)lang_col=([^;]*)', 1, 1, '', 2), ''), NULL, NULLIF(REGEXP_SUBSTR(info, '(^|;)journal=([^;]*)', 1, 1, '', 2), ''),
+                   REGEXP_SUBSTR(info, '(^|;)lang=([^;]*)', 1, 1, '', 2), REGEXP_SUBSTR(info, '(^|;)accent_fold=([^;]*)', 1, 1, '', 2),
+                   REGEXP_SUBSTR(info, '(^|;)on_unsupported=([^;]*)', 1, 1, '', 2), 0,
+                   REGEXP_SUBSTR(info, '(^|;)threads=([0-9]+)', 1, 1, '', 2)::INT, REGEXP_SUBSTR(info, '(^|;)max_segment_mb=([0-9]+)', 1, 1, '', 2)::INT,
+                   REGEXP_SUBSTR(info, '(^|;)merge_factor=([0-9]+)', 1, 1, '', 2)::INT, NULLIF(REGEXP_SUBSTR(info, '(^|;)cache_dir=([^;]*)', 1, 1, '', 2), ''),
+                   sch, g, CLOCK_TIMESTAMP(), REGEXP_SUBSTR(info, '(^|;)access=([^;]*)', 1, 1, '', 2), REGEXP_SUBSTR(info, '(^|;)reorder=([^;]*)', 1, 1, '', 2) = 'true',
+                   REGEXP_SUBSTR(info, '(^|;)grants=([^;]*)', 1, 1, '', 2), every, e, 'imported from ' || src_export;
+    EXECUTE 'INSERT INTO vfts.segments (index_id, segment_id, state, gen_added, n_docs, n_terms, sum_len, bytes, checksum, created) SELECT '
+         || iid || ', segment_id, ''active'', ' || g || ', n, term_id, docno, chunk_id, doc_id, CLOCK_TIMESTAMP() FROM ' || src_export || ' WHERE kind = ''S''';
+    EXECUTE 'INSERT /*+DIRECT*/ INTO vfts.doc_stats SELECT ' || iid || ', segment_id, docno, doc_id, n FROM ' || src_export || ' WHERE kind = ''D''';
+    EXECUTE 'INSERT /*+DIRECT*/ INTO vfts.term_dict SELECT ' || iid || ', segment_id, term_id, term, stem, COALESCE(lang, ''''), n FROM ' || src_export || ' WHERE kind = ''T''';
+    EXECUTE 'INSERT /*+DIRECT*/ INTO vfts.postings SELECT ' || iid || ', segment_id, term_id, chunk_id, bin::VARBINARY(65000) FROM ' || src_export || ' WHERE kind = ''P''';
+    EXECUTE 'INSERT /*+DIRECT*/ INTO vfts.positions SELECT ' || iid || ', segment_id, term_id, chunk_id, docno, bin FROM ' || src_export || ' WHERE kind = ''Q''';
+    EXECUTE 'INSERT /*+DIRECT*/ INTO vfts.tombstones SELECT ' || iid || ', segment_id, docno, doc_id, LEAST(n, ' || g || ') FROM ' || src_export || ' WHERE kind = ''X''';
+    PERFORM INSERT INTO vfts.index_stats SELECT iid, g, COALESCE(SUM(n_docs), 0), COALESCE(SUM(sum_len), 0), NULL, COUNT(*), COALESCE(SUM(n_terms), 0),
+                   COALESCE(SUM(bytes), 0), CLOCK_TIMESTAMP() FROM vfts.segments WHERE index_id = iid;
+    -- attributes: a new copy each, with the exported values
+    na := EXECUTE 'SELECT COUNT(*) FROM ' || src_export || ' WHERE kind = ''A''';
+    i := 0;
+    WHILE i < na LOOP
+        a := EXECUTE 'SELECT MAX(term) FROM (SELECT term, ROW_NUMBER() OVER(ORDER BY term) AS rn FROM ' || src_export || ' WHERE kind = ''A'') x WHERE rn = ' || (i + 1);
+        ainfo := EXECUTE 'SELECT MAX(info) FROM ' || src_export || ' WHERE kind = ''A'' AND term = ' || QUOTE_LITERAL(a);
+        sl := (SELECT NEXTVAL('vfts.attr_seq'));
+        EXECUTE 'INSERT /*+DIRECT*/ INTO vfts.attr_values (slot, doc_id, ival, sval) SELECT ' || sl || ', doc_id, n, term FROM ' || src_export
+             || ' WHERE kind = ''V'' AND stem = ' || QUOTE_LITERAL(a);
+        PERFORM INSERT INTO vfts.attributes (index_id, attr_name, source_table, key_col, value_col, attr_type, version, slot, n_rows, refreshed_at)
+                SELECT iid, a, SPLIT_PART(ainfo, '|', 1), SPLIT_PART(ainfo, '|', 2), SPLIT_PART(ainfo, '|', 3), SPLIT_PART(ainfo, '|', 4), 1, sl,
+                       (SELECT COUNT(*) FROM vfts.attr_values WHERE slot = sl), CLOCK_TIMESTAMP();
+        i := i + 1;
+    END LOOP;
+    PERFORM CALL vfts.new_key(iid);
+    PERFORM CALL vfts.detect_access(nm);
+    PERFORM COMMIT;
+    PERFORM CALL vfts.load_missing(nm, g, FALSE);
+    PERFORM CALL vfts.activate(nm, g);
+    i := 0;
+    WHILE i < na LOOP
+        a := (SELECT MAX(attr_name) FROM (SELECT attr_name, ROW_NUMBER() OVER(ORDER BY attr_name) AS rn FROM vfts.attributes WHERE index_id = iid) x WHERE rn = i + 1);
+        PERFORM CALL vfts.load_attribute(nm, a);
+        i := i + 1;
+    END LOOP;
+    PERFORM CALL vfts.make_views(nm);
+    PERFORM CALL vfts.sync_grants(nm, FALSE);
+    n := (SELECT COUNT(*) FROM vfts.segments WHERE index_id = iid);
+    RAISE NOTICE 'vfts: index % imported from % (generation %, % segments) in % s; now a refresh against the table', nm, src_export, g, n,
+                 (SELECT ROUND(DATEDIFF('millisecond', t0, CLOCK_TIMESTAMP()) / 1000.0, 1));
+    PERFORM CALL vfts.refresh_index(nm);
+    PERFORM CALL vfts.set_schedule(nm, every);
+END;
+$$;
+
 -- ------------------------------------------------------------------ access
 
 -- A new key (tokens that anyone saw before stop working), activated on the nodes of this

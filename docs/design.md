@@ -234,6 +234,24 @@ A failure after step 8 on some node leaves that node's cache ahead of the tables
 hold rows that are also in the (old, wider) tail, so results stay exact, and the next refresh or
 `load_all` replaces the files.
 
+## Backup and restore
+
+The index lives in the shared tables of schema `vfts` (one partition per index), so a full backup
+holds every index, and an object backup of a user schema holds none. After an object restore of a
+source table (or a schema), the rows of the restore get the current epoch (vbr restores with the
+current epoch): the next refresh indexes them again, and the count check tombstones the documents
+the restore took away. So one refresh makes the index equal to the restored table, at the cost of
+analyzing the restored rows again.
+
+`export_index` avoids that cost: it copies the index (options, the rows of the active segments,
+tombstones, attribute copies; not the key) into `<schema>.<index>_vfts_export`, a table of the
+source table's schema, so an object backup of that schema holds it. `import_index` writes the rows
+back under a new index id with a new key, loads the nodes, makes the views, sets the boundary to
+the current epoch and runs a refresh: the count check then finds the rows that came or went since
+the export (`tests/sql/test_export.sh`: equal to a fresh index after deletes and inserts made
+after the export). A row changed in place between the export and the backup keeps its doc_id and
+cannot be found this way; the procedure says so, and `rebuild` is the remedy.
+
 ## Merge
 
 `vfts.merge(index [, max_segments])` merges segments from the node cache (`tmerge`, no text is

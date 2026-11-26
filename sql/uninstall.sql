@@ -18,6 +18,8 @@ DROP PROCEDURE IF EXISTS vfts.clean_caches();
 DROP PROCEDURE IF EXISTS vfts.cleanup();
 DROP PROCEDURE IF EXISTS vfts.upgrade_caches();
 DROP PROCEDURE IF EXISTS vfts.upgrade_schedules();
+DROP PROCEDURE IF EXISTS vfts.export_index(VARCHAR);
+DROP PROCEDURE IF EXISTS vfts.import_index(VARCHAR, VARCHAR);
 DROP PROCEDURE IF EXISTS vfts.purge_segments(INT);
 DROP PROCEDURE IF EXISTS vfts.refresh_index(VARCHAR);
 DROP PROCEDURE IF EXISTS vfts.merge_step(VARCHAR, VARCHAR);

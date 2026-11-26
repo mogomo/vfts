@@ -425,6 +425,7 @@ A search, part by part:
 | Fill the cache of a new node or subcluster | [load_all](#load_all) | `CALL vfts.load_all('docs');` |
 | Refresh and repair, as the trigger does | [maintain](#maintain) | `CALL vfts.maintain('docs');` (every minute by itself) |
 | Remove leftovers of dropped tables and indexes | [cleanup](#cleanup) | `CALL vfts.cleanup();` |
+| Keep the index with the table in a backup | [export_index](#export_index), [import_index](#import_index) | `CALL vfts.export_index('docs');` |
 | Read changed access policies and grants | [check_access](#check_access) | `CALL vfts.check_access('docs');` |
 | Change options of an index | [alter_index](#alter_index) | `CALL vfts.alter_index('docs', 'grants=manual');` |
 | Index everything again (recovery) | [rebuild](#rebuild) | `CALL vfts.rebuild('docs');` |
@@ -828,6 +829,86 @@ CALL vfts.alter_index('notes', 'merge_factor=8 grants=source');
               0
    (1 row)
 ```
+
+#### export_index
+
+Copies an index into the table `<schema>.<index>_vfts_export` in the schema of its source table:
+its options, the rows of its active segments, its tombstones and its attributes (not its key: an
+imported index gets a new one). An object backup of that schema (`vbr`, object or schema scope)
+then holds the index with the table, and [import_index](#import_index) makes the index again after
+a restore without analyzing the text again. An earlier export of the index is replaced. The export
+holds the words of the text: it is as sensitive as the source table (vfts grants nothing on it).
+
+**Syntax**
+
+    CALL vfts.export_index ( 'index' )
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index name |
+
+**Returns**
+
+0. What the procedure did is reported as a `NOTICE` message.
+
+**Privileges**
+
+As [create_index](#create_index), and `CREATE` on the source table's schema.
+
+**Examples**
+
+```sql
+CALL vfts.export_index('notes');
+```
+
+#### import_index
+
+Makes an index from a table written by [export_index](#export_index), for example after the schema
+was restored from a backup: the options, segments, tombstones and attributes of the export, a new
+key, the views and their grants, the node caches of the session's subcluster and the automatic
+refresh. Then it runs [refresh_index](#refresh_index), which compares the index with the table as it
+is now: rows that came or went after the export are found by the count check and indexed or
+removed. A row changed in place between the export and the backup is not found (it has the same
+doc_id): export right before the backup, when the table is quiet, or run [rebuild](#rebuild) after
+the import.
+
+**Syntax**
+
+    CALL vfts.import_index ( 'index', 'schema.export_table' )
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the name of the new index (no index of that name may exist) |
+| schema.export_table | the table written by `export_index` |
+
+**Returns**
+
+0. What the procedure did is reported as `NOTICE` messages.
+
+**Privileges**
+
+As [create_index](#create_index).
+
+**Examples**
+
+A backup with the index, and the restore (`vbr` with an object-scope configuration of your own
+for the schema `app`):
+
+    CALL vfts.refresh_index('docs');
+    CALL vfts.export_index('docs');             -- app.docs_vfts_export
+    -- vbr -t backup -c app_objects.ini
+    ...
+    -- vbr -t restore -c app_objects.ini        -- brings back app.docs and app.docs_vfts_export
+    CALL vfts.drop_index('docs');               -- the index as it was before the restore
+    CALL vfts.import_index('docs', 'app.docs_vfts_export');
+
+Without an export, an index still answers like the restored table after one `refresh_index`
+(restored rows get a new epoch and are indexed again; rows the restore took away are found by the
+count check): `export_index` only saves analyzing the text again.
 
 #### rebuild
 
@@ -2840,6 +2921,12 @@ Indexes look after themselves ([Install](#index-a-table-and-let-users-search)):
   gone (it removes that name's caches on this subcluster); the new procedure `cleanup` drops the
   indexes whose table is gone and the caches of indexes that no longer exist; a cache knows its
   index's id, so an index created again with the same name never meets an old cache.
+
+Backups: the new procedures `export_index` and `import_index` keep an index in a table of its
+source table's schema, so that an object backup of the schema holds the index too, and make it
+again after a restore. Without them, one `refresh_index` after a restore makes the index equal to
+the restored table (before 0.5.0 an index answered with rows the restore had taken away, also
+after a refresh).
 
 After the upgrade: existing indexes keep their settings and get no trigger; give them one with
 `CALL vfts.alter_index(index, 'refresh_every=1')`. On Eon, run `CALL vfts.upgrade_caches()` from a

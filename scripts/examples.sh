@@ -167,6 +167,8 @@ ex "cleanup: indexes whose table is gone, caches of indexes that are gone" "CALL
 ex "check_access: read the access policies again and make a new key" "CALL vfts.check_access('notes');" \
 "SELECT index_name, access, reorder FROM vfts.indexes WHERE index_name = 'notes';"
 
+ex "export_index: the index in a table of the source table's schema, for a backup with the table" "CALL vfts.export_index('notes');" \
+"SELECT kind, COUNT(*) FROM ex.notes_vfts_export GROUP BY kind ORDER BY kind;"
 ex "alter_index: change options of an index" "CALL vfts.alter_index('notes', 'merge_factor=8 grants=source');"
 ex "rebuild (recovery only)" "CALL vfts.rebuild('notes');"
 
