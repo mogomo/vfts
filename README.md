@@ -59,7 +59,7 @@ refuse to search, rather than search the masked text ([Access policies](#access-
 **Contents**
 
 - New: [Improvements in 0.5.0](#improvements-in-050-an-index-that-looks-after-itself)
-- Start: [Quick start](#quick-start) · [Install](#install) · [Prepare a table](#prepare-a-table)
+- Start: [Quick start](#quick-start) · [Install](#install) ([first install](#first-install), [remove](#remove-vfts), [after a Vertica upgrade](#after-a-vertica-server-upgrade), [upgrade vfts](#upgrade-vfts), [new nodes](#new-nodes-and-new-subclusters)) · [Prepare a table](#prepare-a-table)
 - Use: [Reference](#reference) ([how to call the functions](#how-to-call-the-functions), [at a glance](#every-procedure-and-function-at-a-glance))
   - [Index management](#index-management): [create_index](#create_index), [info](#info), [tinfo](#tinfo), [refresh_index](#refresh_index), [merge](#merge), [rebuild](#rebuild), [load_all](#load_all), [maintain](#maintain), [cleanup](#cleanup), [check_access](#check_access), [alter_index](#alter_index), [export_index](#export_index), [import_index](#import_index), [drop_index](#drop_index), [add_attribute](#add_attribute), [refresh_attributes](#refresh_attributes-refresh_attribute), [drop_attribute](#drop_attribute), [the views](#the-views-_live-and-_snap), [access policies](#access-policies)
   - [Search functions](#search-functions): [tsearch](#tsearch), [tcount](#tcount), [tmatch](#tmatch), [tserve and vfts_broker](#tserve-and-vfts_broker-many-clients), [tsnippet](#tsnippet), [hybrid](#hybrid), [tokenize](#tokenize), [tversion](#tversion)
@@ -72,10 +72,11 @@ refuse to search, rather than search the masked text ([Access policies](#access-
 ## Improvements in 0.5.0: an index that looks after itself
 
 vfts 0.5.0 makes an index behave like part of its table: it needs nothing from the people who
-write to the table, follows the table's grants, refreshes and repairs itself, survives reboots and
-backups, and leaves nothing behind when it goes. Every change below was tested on one node
-(Ubuntu) and on the 5-node Eon cluster (3 + 2 nodes, fenced), and is described in the reference
-entries it changes; [Changes](#changes) lists what to do after an upgrade.
+write to the table, follows the table's grants, repairs its nodes, can refresh itself on a schedule
+when you ask for one, survives reboots and backups, and leaves nothing behind when it goes. Every
+change below was tested on one node (Ubuntu) and on the 5-node Eon cluster (3 + 2 nodes, fenced),
+and is described in the reference entries it changes. To upgrade: [Upgrade vfts](#upgrade-vfts);
+what to do afterwards: [Changes](#changes).
 
 | Area | Before (0.4.1) | Now (0.5.0) |
 |---|---|---|
@@ -84,7 +85,7 @@ entries it changes; [Changes](#changes) lists what to do after an upgrade.
 | `DELETE`, `DROP_PARTITIONS`, `MOVE_PARTITIONS_TO_TABLE`, `TRUNCATE` without a journal row | the rows stayed searchable until a rebuild | gone at the next refresh, found by a count check ([refresh_index](#refresh_index)) |
 | Rows moved, swapped or copied in by partition functions, a restore | not seen (their version was older) | searchable at once through `<index>_live` |
 | Who may search | whoever had `SELECT` on the views, also after losing `SELECT` on the table | whoever may read the source table; a `REVOKE` counts at the next refresh or `check_access`, and old tokens stop working ([Access policies](#access-policies)) |
-| Refresh | yours to schedule | every minute by itself (option `refresh_every`; [maintain](#maintain)) |
+| Refresh | `CALL vfts.refresh_index`, from a scheduler of yours | the same by default; or one option, `refresh_every=1`, makes a Vertica schedule and trigger that refresh and repair the index every minute ([alter_index](#alter_index), [maintain](#maintain)). Off unless you ask for it: nothing is scheduled in your database without a request |
 | Node caches after a reboot | lost (`/tmp/vfts`): every search failed until `load_all` | kept (`<catalog>/vfts` on each node) |
 | A node that was down during a refresh | refused to answer until `load_all` | repaired by the next refresh; `load_all` writes only what is missing |
 | `drop_index`, a dropped source table | caches left on other subclusters; the index of a dropped table stayed | `drop_index` works from anywhere and twice; [cleanup](#cleanup) removes the rest |
@@ -101,10 +102,35 @@ newer). Searches run the same engine code as in 0.4.1 (an index without `case=se
 and stems exactly as before, and a merge on several threads writes the same bytes as one thread),
 so the published search timings stay those of 0.4.1.
 
-What stays the same: a deleted row is found until the next refresh (at most a minute with the
-default schedule) unless a journal row hides it at once; on Eon, a statement reaches only its own
-subcluster, so subclusters other than the one the trigger runs on need `maintain` from a session
-on them ([Several nodes, Eon and subclusters](#several-nodes-eon-and-subclusters)).
+What stays the same: a deleted row is found until the next refresh (at most `refresh_every`
+minutes with a schedule) unless a journal row hides it at once; on Eon, a statement reaches only
+its own subcluster, so subclusters other than the one a refresh runs on need `maintain` from a
+session on them ([Several nodes, Eon and subclusters](#several-nodes-eon-and-subclusters)).
+
+**Bug fixes** (all of them in 0.4.1 too, unless noted):
+
+- **Access.** A user who lost `SELECT` on the source table could still search it through the
+  index's views, which kept their own grants. Now the views' grants follow the table's, and a
+  `REVOKE` also makes the old tokens stop working ([Access policies](#access-policies)).
+- **Changes that were never seen.** An `UPDATE` that set no version column, rows that arrived by
+  `MOVE_PARTITIONS_TO_TABLE`, `SWAP_PARTITIONS_BETWEEN_TABLES` or `COPY_PARTITIONS_TO_TABLE`, and
+  a restore were not found; rows removed by `DROP_PARTITIONS`, `MOVE_PARTITIONS_TO_TABLE`,
+  `TRUNCATE` or a `DELETE` without a journal row stayed searchable until a rebuild, also after a
+  restore took them away. All are found now ([Prepare a table](#prepare-a-table)).
+- **A merge failed on a cluster** when every document of its segments had been deleted (after a
+  `TRUNCATE`, for example): it made an empty segment, which the other nodes could not load. Such a
+  merge now only retires its inputs.
+- **Lost notices.** `CALL vfts.create_index(index, table)` (without options) and
+  `CALL vfts.merge(index)` (without a segment count) printed none of their notices, because a
+  procedure called by another procedure cannot send notices to the client; both forms now print
+  their own.
+- **Caches lost at a reboot.** On systems where `/tmp` is a memory file system, every search
+  failed after a reboot until `load_all`; the caches now live in the catalog directory.
+- `scripts/demo.sh` ended with exit status 1, although every step had run.
+- Found and fixed during the 0.5.0 work (never released): after the library was replaced while
+  the database ran (`./install.sh` a second time without a restart), the default cache directory
+  was read as empty and every function refused to run; a second index with the same
+  `refresh_every` could not get a trigger; an install failed while a refresh trigger existed.
 
 ## Quick start
 
@@ -143,11 +169,15 @@ COMMIT;
    COMMIT
 CALL vfts.create_index('docs', 'quick.docs', 'lang=en');
    NOTICE 2005:  vfts: index docs created on quick.docs. Search: SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='...', k=10) OVER() FROM quick.docs_live) r;
+   NOTICE 2005:  vfts: index docs is refreshed when you run CALL vfts.refresh_index('docs'); to refresh it automatically, a superuser runs CALL vfts.alter_index('docs', 'refresh_every=1') (a Vertica schedule and the trigger vfts.refresh_docs, every minute)
     create_index 
    --------------
                0
    (1 row)
 ```
+
+The first notice gives the statement to search with; the second says how the index stays fresh:
+vfts schedules nothing in your database unless you ask for it.
 
 A ranked search, joined to the table for the text (*contracts* also finds *contract*):
 
@@ -209,20 +239,44 @@ explains each part.
 - [Prepare a table](#prepare-a-table): the columns your own table needs, and when each kind of
   change (update, delete, partition operation) is searchable.
 - [Install](#install): what `install.sh` does step by step, grants for the users who search,
-  refresh schedules, several nodes and Eon, and the HTTP front end for many clients.
+  refreshes, several nodes and Eon, new nodes, the HTTP front end for many clients, and how to
+  remove vfts, what to do after a Vertica upgrade and how to upgrade vfts.
 - [Reference](#reference): every procedure and function, each with its syntax, arguments,
   parameters, result and a real example.
 
 ## Install
 
+Four tasks, each a procedure of its own below:
+
+| Task | Run it | On which node | Eon: other subclusters | Nodes added later |
+|---|---|---|---|---|
+| [First install](#first-install) | `./install.sh` | one node, any | nothing: the library reaches every subcluster | nothing for the library; their caches: [New nodes](#new-nodes-and-new-subclusters) |
+| [Remove vfts](#remove-vfts) | `./install.sh --uninstall [--drop]` | one node, any | with `--drop`: `CALL vfts.cleanup();` from a session on each, first | - |
+| [After a Vertica upgrade](#after-a-vertica-server-upgrade) | `./install.sh` again | one node, any | nothing | - |
+| [Upgrade vfts](#upgrade-vfts) | `git pull && ./install.sh` | one node, any | what [Changes](#changes) says for the version (0.5.0: `CALL vfts.upgrade_caches();`) | - |
+
+Why one node is enough: vfts is one library file, linked statically (nothing to install on the
+nodes), and Vertica's `CREATE LIBRARY` copies it to every node of the database, in every
+subcluster, and keeps it in the catalog across restarts. The functions, procedures and the schema
+`vfts` are catalog objects, so every node sees them. What each node keeps for itself is its
+**node cache**: a copy of the index tables in `<catalog>/vfts` (the node's catalog directory),
+written by the procedures ([Index a table](#index-a-table-and-let-users-search)).
+
+Then, for every installation: [index a table and let users search](#index-a-table-and-let-users-search),
+[several nodes, Eon and subclusters](#several-nodes-eon-and-subclusters), and the optional
+[HTTP front end for many clients](#many-clients-optional-vfts_broker).
+
+### First install
+
 Two ways to the same result: **A**, one command (recommended), or **B**, the same steps by hand
-(to see each part, or to build on another machine). Then, for both: index a table and let users
-search, nodes and subclusters, and the HTTP front end for many clients.
+(to see each part, or to build on another machine).
 
-### A. One command
+#### A. One command
 
-For any Vertica database (one node or many, Enterprise or Eon). On a Vertica node, as the Linux user
-that runs Vertica, in a directory whose path has no spaces, with the connection of a superuser:
+For any Vertica database (one node or many, Enterprise or Eon). On **one** Vertica node (any node;
+on Eon, a node of the subcluster you will create indexes from, usually the primary one), as the
+Linux user that runs Vertica (dbadmin), in a directory whose path has no spaces, with the
+connection of a superuser:
 
     git clone https://github.com/mogomo/vfts.git && cd vfts
     export VSQL_USER=dbadmin VSQL_PASSWORD='...' VSQL_DATABASE=...
@@ -236,14 +290,31 @@ shows its output). It stops at the first problem and says what to fix. It can be
 upgrade); its test uses the schema `vfts_selftest` and never touches anything else.
 
     ./install.sh --check                 # only check the environment
-    ./install.sh --uninstall             # remove the library, functions and procedures; indexes stay
-    ./install.sh --uninstall --drop      # also drop every index (views, node caches) and the schema vfts
+    ./install.sh --skip-tests            # no engine unit tests (faster)
+    ./install.sh --help                  # every option
 
-### B. Step by step
+**Fenced or unfenced.** Unfenced (the default) runs the functions inside the Vertica process: the
+fastest. `--fenced` runs them in a separate process on each node, so that a crash in the library
+cannot stop a node (slower: the rows cross into that process; [FAQ](#faq) has the numbers). Keep
+the same choice when you run `install.sh` again later: it deploys what you ask for each time.
+
+Check the result on every node of the session's subcluster (one row per node, from that node):
+
+```sql
+SELECT * FROM (SELECT vfts.tnode(k) OVER(PARTITION NODES) FROM vfts.probe) n;
+      node_name    | k 
+   ----------------+---
+    v_vdb_node0001 | 1
+   (1 row)
+```
+
+On Eon, run it from a session on each other subcluster too: the library is the same everywhere.
+
+#### B. Step by step
 
 What `install.sh` does, one part at a time.
 
-#### 1. Check the environment
+##### 1. Check the environment
 
 | Need | Check |
 |---|---|
@@ -251,12 +322,12 @@ What `install.sh` does, one part at a time.
 | The SDK of that version on the machine that builds (`/opt/vertica/sdk`, installed with the server) | `ls /opt/vertica/sdk/include/Vertica.h` |
 | Linux x86-64 with g++ 8 or later, make, curl (tested: RHEL 8 with g++ 8.5, Ubuntu 26.04 with g++ 15.2) | `g++ --version` |
 | A superuser (dbadmin) for the install (`CREATE LIBRARY`) | |
-| Free disk on every node for the node caches (about the size of the index: half to two thirds of the text) | `df -h /tmp` |
+| Free disk on every node for the node caches (about the size of the index: half to two thirds of the text), in the catalog directory | `df -h <catalog directory>` |
 
 Build on a Vertica node, or on a machine with the same Linux family and a glibc no newer than the
 nodes' (the library links ICU, Snowball and CRoaring statically: nothing else is installed on the nodes).
 
-#### 2. Build and test
+##### 2. Build and test
 
     git clone https://github.com/mogomo/vfts.git && cd vfts
     make deps        # downloads and builds ICU 79.1, libstemmer_c 3.2.0, CRoaring 5.5.5 (pinned checksums)
@@ -264,22 +335,22 @@ nodes' (the library links ICU, Snowball and CRoaring statically: nothing else is
     make test        # engine unit tests, no database needed
     make tools       # optional: build/tools/vfts_broker (many clients), vfts_cli, httpload
 
-#### 3. Deploy into the database
+##### 3. Deploy into the database
 
-On a Vertica node (with the built `build/libvfts.so` and the repository's `sql/` directory):
+On one Vertica node (with the built `build/libvfts.so` and the repository's `sql/` directory):
 
     export VSQL_HOST=localhost VSQL_PORT=5433 VSQL_USER=dbadmin VSQL_PASSWORD=... VSQL_DATABASE=...
     make deploy                 # unfenced: fastest, runs inside the Vertica process
     make deploy FENCED=yes      # or fenced: a separate process per node, a crash cannot stop the node (slower)
 
 `make deploy` (scripts/deploy.sh, sql/install.sql) creates the schema `vfts`, its tables, the
-library, every function and procedure, and grants the functions to PUBLIC (the procedures are for
-dbadmin, or `GRANT EXECUTE ON PROCEDURE ...`). `CREATE LIBRARY` reads the library as the database's
-OS user (deploy.sh hands it a copy in /tmp) and copies it to every node of the cluster, so this runs
-once per database. Nothing is stored in the
-scripts: the connection comes from the `VSQL_*` variables.
+library, every function and procedure, and grants the search functions to PUBLIC (the procedures
+are for dbadmin, or `GRANT EXECUTE ON PROCEDURE ...`). `CREATE LIBRARY` reads the library as the
+database's OS user (deploy.sh hands it a copy in /tmp) and copies it to every node of the cluster,
+so this runs once per database. Nothing is stored in the scripts: the connection comes from the
+`VSQL_*` variables.
 
-#### 4. Verify
+##### 4. Verify
 
     vsql -c "SELECT * FROM (SELECT vfts.tversion() OVER()) v;"   # version, build, ICU, stemmers
     scripts/examples.sh         # every function on a small table (the examples of the Reference)
@@ -291,6 +362,7 @@ scripts: the connection comes from the `VSQL_*` variables.
    need no rules.
 2. `CALL vfts.create_index('docs', 'app.docs', 'lang=en');` as dbadmin (or a user with write
    access to the `vfts` tables and the source table: procedures run with the caller's privileges).
+   It builds the index and writes the node cache of every node of the session's subcluster.
 3. Users who may read the table may search it: whoever has `SELECT` on `app.docs` (granted to
    them, to one of their roles, to `PUBLIC`, or through the schema) gets `SELECT` on the views
    `app.docs_live` and `app.docs_snap` from vfts, and loses it when they lose `SELECT` on the table
@@ -301,11 +373,18 @@ scripts: the connection comes from the `VSQL_*` variables.
    makes its own input for `tsearch` is refused, and row access policies of the source table apply
    to every search ([Access policies](#access-policies)). To manage the views' grants yourself, use
    the option `grants=manual`.
-4. Nothing to schedule: `create_index` sets up a Vertica schedule and trigger that refresh the index
-   every minute (option `refresh_every`, in minutes; `0` turns it off, and then you run
-   `CALL vfts.refresh_index('docs');` from any scheduler). New and updated rows are searchable at
-   once anyway; the refresh keeps the live tail short, removes deleted rows and repairs nodes
-   that are behind. Creating the trigger needs a superuser.
+4. Keep it fresh. New and updated rows are searchable at once through `app.docs_live`, without a
+   refresh. A refresh folds them into the index (so that queries stop analyzing them again and
+   again), removes deleted rows and repairs nodes that are behind. Choose one:
+   - **By hand or from your own scheduler** (the default): `CALL vfts.refresh_index('docs');`,
+     for example after each load, from cron with `vsql`, or from your ETL tool.
+   - **Automatically**, on request: `CALL vfts.alter_index('docs', 'refresh_every=1');` (or the
+     option `refresh_every=1` at `create_index`), as a superuser. vfts then creates a Vertica
+     schedule `vfts.refresh_docs_schedule` and a trigger `vfts.refresh_docs` that run
+     [maintain](#maintain) every minute (`refresh_every` is in minutes: 1 to 59, or whole hours up
+     to 1440). `'refresh_every=0'` removes both again. Nothing is scheduled unless you ask: the
+     notice of `create_index` says which of the two an index has, and so does
+     `CALL vfts.info('docs');`.
 
 Where the node caches live: in `<catalog>/vfts` on each node, the node's catalog directory
 (for example `/home/dbadmin/VDB/v_vdb_node0001_catalog/vfts`), which survives a reboot. Another
@@ -316,15 +395,37 @@ refresh, or at once with `CALL vfts.load_all('docs');`, which writes only what i
 
 ### Several nodes, Eon and subclusters
 
-- **Enterprise, several nodes**: nothing more; `create_index` and `refresh_index` load every node,
-  and a node that was down during a refresh is brought up to date by the next one.
+- **Enterprise, several nodes**: nothing more; `create_index` and `refresh_index` write every
+  node's cache, and a node that was down during a refresh is brought up to date by the next one
+  (or by `CALL vfts.load_all('docs');`).
 - **Eon**: a statement reaches the nodes of its session's subcluster only, so each subcluster
   keeps its own caches. Run `create_index` on one subcluster; on each other subcluster, run
-  `CALL vfts.maintain('docs');` from a session connected to it every minute or so (cron and
+  `CALL vfts.maintain('docs');` from a session connected to it after each refresh (cron and
   `vsql`, or any scheduler that connects there): it refreshes the index when there are changes and
-  loads what that subcluster lacks. Without it, a node of that subcluster refuses to answer after
-  a refresh elsewhere, with what to do (`run CALL vfts.load_all('docs')`).
-- **New node**: `CALL vfts.load_all('docs');` (or wait for the next refresh).
+  loads what that subcluster lacks. A trigger (`refresh_every`) runs on the subcluster where
+  Vertica's scheduler runs it (the primary one in the tests), so it does not replace this. Without
+  it, a node of that subcluster refuses to answer after a refresh elsewhere, with what to do
+  (`run CALL vfts.load_all('docs')`).
+
+#### New nodes and new subclusters
+
+The library needs nothing: Vertica keeps it in the catalog and gives it to nodes that join (the
+Vertica documentation of `CREATE LIBRARY`; vfts was not tested on a cluster that grew). What a new
+node needs is its node cache, and the rows of `vfts.probe` through which the procedures reach it:
+
+1. Add the node with Vertica's own procedure, including its rebalance step
+   (`SELECT REBALANCE_CLUSTER();` on Enterprise; on Eon the node subscribes to its subcluster's
+   shards).
+2. From a session on the node's subcluster: `CALL vfts.load_all('docs');` for each index (or wait
+   for the next refresh on that subcluster). It writes only what the new node lacks.
+3. Check from the same session: the query `SELECT * FROM (SELECT vfts.tnode(k) OVER(PARTITION NODES)
+   FROM vfts.probe) n;` lists the node, and `CALL vfts.info('docs');` says
+   `node caches: N of N nodes of this subcluster have generation ...`.
+4. With the option `cache_dir=<dir>`, create that directory on the new node first (writable by
+   the database's OS user); the default `<catalog>/vfts` is created by vfts.
+
+A new Eon subcluster is the same: steps 2 and 3 from a session on it, then `maintain` after each
+refresh, as for every other subcluster.
 
 ### Many clients (optional): vfts_broker
 
@@ -335,20 +436,103 @@ user, and send searches to it over HTTP ([tserve and vfts_broker](#tserve-and-vf
     curl -XPOST localhost:9300/docs/_search -u alice:secret -d '{"query": "contract w/5 indemn*"}'
 
 It listens on 127.0.0.1 by default (`--bind` to change); each user's searches run in that user's
-own Vertica sessions.
+own Vertica sessions. Run it on each node that should accept searches; it is a program of the
+repository, not part of the database, so stop it before you remove vfts.
 
-### Upgrade and uninstall
+### Remove vfts
 
-    git pull && ./install.sh             # or: git pull && make && make deploy
-                                         # replaces the library and functions; indexes and caches stay
+Two levels. Both run on **one** node (any node), as with the install, from the repository, with
+the connection of a superuser:
 
-What each version needs after the upgrade (most need nothing): [Changes](#changes).
+    ./install.sh --uninstall             # the library, functions, procedures and refresh triggers
+    ./install.sh --uninstall --drop      # also every index and the schema vfts
 
-    ./install.sh --uninstall             # removes library, functions and procedures; indexes stay
-    ./install.sh --uninstall --drop      # also drops every index (views, node caches) and the schema vfts
+| | `--uninstall` | `--uninstall --drop` |
+|---|---|---|
+| Library, functions, procedures (every node) | removed | removed |
+| Triggers of the automatic refresh | removed | removed |
+| Schema `vfts`: the index tables (`vfts.indexes`, segments, postings, attributes, keys), the Vertica schedules | kept (a new install uses them again: the indexes come back as they were) | dropped |
+| The views `<index>_live`, `<index>_snap` in the source tables' schemas | kept (searches fail without the functions) | dropped |
+| Node caches (`<catalog>/vfts`, or `cache_dir`) | kept | removed on the nodes of the session's subcluster |
+| Source tables, journals, tables made by `export_index` | not touched | not touched |
 
-An unfenced upgrade is safe while the database runs: the old library stays mapped for searches
-still running.
+`--uninstall` is for a break (or to go back to a clean install); `--uninstall --drop` removes
+vfts. On Eon, every subcluster keeps its own caches, so remove the indexes first and let each
+other subcluster clean up while the procedures still exist:
+
+    -- 1. on one subcluster (vsql as dbadmin), for each index (SELECT index_name FROM vfts.indexes;)
+    CALL vfts.drop_index('docs');
+    -- 2. from a session on each other subcluster: removes the caches of indexes that no longer exist
+    CALL vfts.cleanup();
+
+    # 3. then, on one node
+    ./install.sh --uninstall --drop
+
+Check that nothing is left, on each node (as the database's OS user): the directory
+`<catalog>/vfts` is gone or empty (`ls <catalog>/vfts`; the catalog directory is the one
+`SELECT node_name, storage_path FROM v_monitor.disk_storage WHERE storage_usage = 'CATALOG';`
+shows, without its last part `/Catalog`). A directory left there holds only vfts files and may be
+deleted (`rm -rf <catalog>/vfts`), also on a node that was down during the removal. With the
+option `cache_dir=<dir>`, look in that directory instead. Then drop what you made for vfts
+yourself (journal tables, tables made by `export_index`: `DROP TABLE app.docs_vfts_export CASCADE;`),
+and delete the repository directory.
+
+### After a Vertica server upgrade
+
+What stays: the index tables (ordinary Vertica tables, upgraded with the database), the node caches
+(their format belongs to vfts, not to Vertica), the schedules and triggers, the grants. No index
+needs a rebuild.
+
+What needs a step: the library is compiled against the SDK of one Vertica version, and Vertica
+loads only libraries built with an SDK compatible with the server. The Vertica documentation says
+to compile C++ libraries again after every upgrade between major, minor or service-pack versions
+(a hotfix does not change the SDK). Until that is done, a search fails with
+`ERROR 2858: Could not find function definition`, and an automatic refresh writes its failure to
+`vfts.indexes.refresh_note`.
+
+1. Upgrade Vertica on all nodes with Vertica's own procedure, and start the database.
+2. On **one** node, in the repository of the vfts version you run (check it with
+   `SELECT version FROM (SELECT vfts.tversion() OVER()) v;` before the upgrade, or
+   `git checkout v0.5.0` for that version), as the database's OS user:
+
+       ./install.sh                  # or ./install.sh --fenced, as before
+
+   `install.sh` checks the new version (26.2 or later), notices that the library was built for
+   another Vertica version (`build/vertica_version`) and compiles it again with the new SDK, then
+   deploys it to every node and subcluster, makes the refresh triggers again and runs its test.
+   Without `install.sh`: `make clean && make && make deploy` (`make` alone may keep the old
+   library, because the new SDK's files can be older than it).
+3. Check: `SELECT * FROM (SELECT vfts.tversion() OVER()) v;` and a search of each index;
+   `CALL vfts.info('docs');` shows the caches of every node.
+
+On Eon, step 2 from one subcluster is enough: the library reaches every subcluster, and the caches
+of every subcluster stay valid. vfts was tested on Vertica 26.3.0-2 only: an upgrade of Vertica
+with vfts installed has not been tested yet. If the build fails on a newer SDK, the
+[issues](https://github.com/mogomo/vfts/issues) page is the place to say so.
+
+### Upgrade vfts
+
+1. Read the entry of each version you skip in [Changes](#changes): most need nothing, some ask
+   for a step after the upgrade (a rebuild of an index, one call per subcluster).
+2. On **one** node, in the repository, as the database's OS user, with a superuser's connection:
+
+       git pull && ./install.sh      # or ./install.sh --fenced, as before
+                                     # or: git pull && make && make deploy
+
+   This replaces the library on every node of every subcluster, and the functions and procedures,
+   while the database runs. An unfenced upgrade is safe while searches run: a statement that
+   started keeps the old library until it ends. The index tables, node caches and grants stay;
+   the install removes the refresh triggers before it replaces the procedures and makes them again
+   after.
+3. Do what [Changes](#changes) lists for the versions you skipped. For 0.4.x to 0.5.0, on Eon:
+   from a session on each subcluster other than the one you installed from,
+   `CALL vfts.upgrade_caches();` (it moves the node caches from `/tmp/vfts` to `<catalog>/vfts`).
+4. Check: `SELECT version FROM (SELECT vfts.tversion() OVER()) v;` shows the new version, and
+   `CALL vfts.info('docs');` shows each index's state.
+
+A version tag (`git checkout v0.4.1`) installs an older version, but an older version may not read
+what a newer one wrote: take a backup (vbr) of the schema `vfts` and of the source tables' schemas
+before an upgrade if you may want to go back.
 
 ## Prepare a table
 
@@ -457,11 +641,12 @@ A search, part by part:
 | Task | Procedure or function | Typical call |
 |---|---|---|
 | Create an index of a table | [create_index](#create_index) | `CALL vfts.create_index('docs', 'app.docs', 'lang=en');` |
-| Add the rows written since the last refresh | [refresh_index](#refresh_index) | `CALL vfts.refresh_index('docs');` (runs every minute by itself) |
+| Add the rows written since the last refresh | [refresh_index](#refresh_index) | `CALL vfts.refresh_index('docs');` (after a load, or from a scheduler) |
 | Fewer, larger segments | [merge](#merge) | `CALL vfts.merge('docs');` |
 | Look at an index | [info](#info), [tinfo](#tinfo) | `CALL vfts.info('docs');` |
 | Fill the cache of a new node or subcluster | [load_all](#load_all) | `CALL vfts.load_all('docs');` |
-| Refresh and repair, as the trigger does | [maintain](#maintain) | `CALL vfts.maintain('docs');` (every minute by itself) |
+| Refresh and repair, as the trigger does | [maintain](#maintain) | `CALL vfts.maintain('docs');` (what a schedule runs) |
+| Refresh automatically (a Vertica schedule), change options | [alter_index](#alter_index) | `CALL vfts.alter_index('docs', 'refresh_every=1');` |
 | Remove leftovers of dropped tables and indexes | [cleanup](#cleanup) | `CALL vfts.cleanup();` |
 | Keep the index with the table in a backup | [export_index](#export_index), [import_index](#import_index) | `CALL vfts.export_index('docs');` |
 | Read changed access policies and grants | [check_access](#check_access) | `CALL vfts.check_access('docs');` |
@@ -523,7 +708,8 @@ COMMIT;
 
 Registers a source table as an index, creates the views `<schema>.<index>_live` and
 `<schema>.<index>_snap` in the table's schema, builds the index from every row and loads it on
-every node of the session's subcluster.
+every node of the session's subcluster. It schedules nothing unless asked to (option
+`refresh_every`); its notices say how the index is kept fresh.
 
 **Syntax**
 
@@ -552,7 +738,7 @@ every node of the session's subcluster.
 | max_segment_mb | 2048 | a build thread starts a new segment above this memory |
 | merge_factor | 10 | segments per tier of the merge policy |
 | cache_dir | `<catalog>/vfts` | directory of the node caches (default: `vfts` in each node's catalog directory) |
-| refresh_every | 1 | minutes between automatic refreshes (a Vertica schedule and the trigger `vfts.refresh_<index>`, which runs [maintain](#maintain)): `0` (off), 1 to 59, or whole hours up to 1440. Needs a superuser |
+| refresh_every | 0 | `0`: no automatic refresh (you run [refresh_index](#refresh_index), by hand or from a scheduler of yours). `1` to `59`, or whole hours up to `1440` (`60`, `120`, ...): minutes between automatic refreshes; vfts creates the Vertica schedule `vfts.refresh_<index>_schedule` and the trigger `vfts.refresh_<index>`, which runs [maintain](#maintain). Needs a superuser; changed later with [alter_index](#alter_index) |
 | build | true | `false`: register and create the views only |
 | access | auto | `auto`: follow the access policies of the source table ([Access policies](#access-policies)); `rows`: apply its row access policies to every search even before one exists |
 | grants | source | `source`: the views' `SELECT` grants follow the source table's (users, roles, `PUBLIC`, its owner, privileges inherited from the schema), checked at every `refresh_index` and `check_access`; `manual`: vfts leaves the views' grants alone |
@@ -560,7 +746,16 @@ every node of the session's subcluster.
 
 **Returns**
 
-0. What the procedure did is reported as `NOTICE` messages.
+0. What the procedure did is reported as `NOTICE` messages: the index and the statement to search
+it, then how it is refreshed. Without `refresh_every`:
+
+    vfts: index docs is refreshed when you run CALL vfts.refresh_index('docs'); to refresh it automatically,
+    a superuser runs CALL vfts.alter_index('docs', 'refresh_every=1') (a Vertica schedule and the trigger
+    vfts.refresh_docs, every minute)
+
+With `refresh_every=1`: `vfts: index docs refreshes itself every minute (Vertica schedule
+vfts.refresh_docs_schedule, trigger vfts.refresh_docs); off: CALL vfts.alter_index('docs', 'refresh_every=0')`.
+A user who is not a superuser gets no schedule, and a notice that says so.
 
 **Privileges**
 
@@ -576,6 +771,7 @@ An English index with a journal for deletes:
 ```sql
 CALL vfts.create_index('notes', 'ex.notes', 'lang=en journal=ex.notes_journal');
    NOTICE 2005:  vfts: index notes created on ex.notes. Search: SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='...', k=10) OVER() FROM ex.notes_live) r;
+   NOTICE 2005:  vfts: index notes is refreshed when you run CALL vfts.refresh_index('notes'); to refresh it automatically, a superuser runs CALL vfts.alter_index('notes', 'refresh_every=1') (a Vertica schedule and the trigger vfts.refresh_notes, every minute)
     create_index 
    --------------
                0
@@ -587,6 +783,7 @@ Other forms:
     CALL vfts.create_index('docs', 'app.docs');                                          -- every default
     CALL vfts.create_index('mail', 'app.mail', 'id_col=msg_id text_col=content lang_col=language');
     CALL vfts.create_index('big', 'app.big', 'threads=16 max_segment_mb=4096');          -- a large table, more build threads
+    CALL vfts.create_index('news', 'app.news', 'lang=en refresh_every=5');               -- refreshed every 5 minutes by a Vertica schedule
 
 #### info
 
@@ -616,8 +813,8 @@ Any user (`EXECUTE` is granted to `PUBLIC`).
 ```sql
 CALL vfts.info('notes');
    NOTICE 2005:  index notes: source ex.notes, generation 1, 1 segments, 5 documents (0 deleted), 0.0 MB
-   NOTICE 2005:  boundary epoch 24944; live tail 0 rows (ex.notes_live); last refresh: full build: 5 rows into 1 segments, 0 tombstones, 0 journal rows
-   NOTICE 2005:  automatic refresh: every 1 minutes
+   NOTICE 2005:  boundary epoch 25457; live tail 0 rows (ex.notes_live); last refresh: full build: 5 rows into 1 segments, 0 tombstones, 0 journal rows
+   NOTICE 2005:  automatic refresh: off: refreshed by CALL vfts.refresh_index('notes'); scheduled: CALL vfts.alter_index('notes', 'refresh_every=1')
    NOTICE 2005:  access: open (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)
    NOTICE 2005:  attributes: (none)
    NOTICE 2005:  node caches: 1 of 1 nodes of this subcluster have generation 1 (details: SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;)
@@ -693,14 +890,14 @@ it found.
 
     CALL vfts.refresh_index ( 'index' )
 
-When it runs: by itself, every minute (option `refresh_every` of [create_index](#create_index) and
-[alter_index](#alter_index)); call it yourself whenever you like, for example right after a large
-load. Inserts and updates are searchable without it (the live view reads the rows committed
-since); deletes need it (or a journal row); a longer live tail costs query time, because every
-tail row is analyzed per query (above 10,000 tail rows a search writes a warning to the server
-log: parameter `tail_warn`). A
-refresh also writes every segment a node of the subcluster lacks, so a node that was down or lost
-its cache is repaired by it.
+When it runs: when you call it, for example right after a load, or from a scheduler of yours (cron
+and `vsql`, an ETL tool); or, on request, from a Vertica schedule that vfts makes (option
+`refresh_every` of [create_index](#create_index) and [alter_index](#alter_index), which runs it
+through [maintain](#maintain)). Inserts and updates are searchable without it (the live view reads
+the rows committed since); deletes need it (or a journal row); a longer live tail costs query time,
+because every tail row is analyzed per query (above 10,000 tail rows a search writes a warning to
+the server log: parameter `tail_warn`). A refresh also writes every segment a node of the
+subcluster lacks, so a node that was down or lost its cache is repaired by it.
 
 **Arguments**
 
@@ -810,10 +1007,10 @@ CALL vfts.merge('notes', 1);
    (1 row)
 CALL vfts.info('notes');
    NOTICE 2005:  index notes: source ex.notes, generation 3, 1 segments, 6 documents (0 deleted), 0.0 MB
-   NOTICE 2005:  boundary epoch 24960; live tail 0 rows (ex.notes_live); last refresh: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows
-   NOTICE 2005:  automatic refresh: every 1 minutes
+   NOTICE 2005:  boundary epoch 25473; live tail 0 rows (ex.notes_live); last refresh: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows
+   NOTICE 2005:  automatic refresh: off: refreshed by CALL vfts.refresh_index('notes'); scheduled: CALL vfts.alter_index('notes', 'refresh_every=1')
    NOTICE 2005:  access: open (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)
-   NOTICE 2005:  attributes: owner text from ex.owners.owner (5 values, refreshed 2026-11-26 02:53:02)
+   NOTICE 2005:  attributes: owner text from ex.owners.owner (5 values, refreshed 2026-11-26 10:18:36)
    NOTICE 2005:  node caches: 1 of 1 nodes of this subcluster have generation 3 (details: SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;)
     info 
    ------
@@ -830,7 +1027,8 @@ WHERE i.index_name = 'notes' ORDER BY s.gen DESC LIMIT 1;
 #### alter_index
 
 Changes options of an existing index. An option not given keeps its value; the new values count
-from the next refresh or merge (`grants=source`: at once).
+from the next refresh or merge (`grants=source` and `refresh_every`: at once). It is also how an
+index gets, changes or loses its automatic refresh.
 
 **Syntax**
 
@@ -848,6 +1046,7 @@ from the next refresh or merge (`grants=source`: at once).
 | Option | Meaning |
 |---|---|
 | grants | `source` or `manual`, as at [create_index](#create_index); `source` makes the views' grants follow the source table's at once |
+| refresh_every | minutes between automatic refreshes, as at [create_index](#create_index): `1` to `59`, or whole hours up to `1440`, creates or changes the Vertica schedule `vfts.refresh_<index>_schedule` and the trigger `vfts.refresh_<index>` (which runs [maintain](#maintain)); `0` removes both. Needs a superuser |
 | merge_factor | segments per tier of the merge policy (at least 2) |
 | threads | build threads per instance (0: a quarter of the cores); for a merge, its threads (0: half the cores) |
 | max_segment_mb | a build thread starts a new segment above this memory |
@@ -855,17 +1054,47 @@ from the next refresh or merge (`grants=source`: at once).
 
 **Returns**
 
-0. What the procedure did is reported as a `NOTICE` message.
+0. What the procedure did is reported as `NOTICE` messages; with `refresh_every`, also what is
+scheduled now.
 
 **Privileges**
 
-As [create_index](#create_index).
+As [create_index](#create_index); `refresh_every` needs a superuser (it creates or drops a Vertica
+schedule and trigger, which run as their creator): for anyone else it is refused, and nothing is
+changed.
 
 **Examples**
 
 ```sql
 CALL vfts.alter_index('notes', 'merge_factor=8 grants=source');
    NOTICE 2005:  vfts: index notes altered: merge_factor=8 grants=source
+    alter_index 
+   -------------
+              0
+   (1 row)
+```
+
+An automatic refresh every minute (the schedule and trigger vfts makes for it, in Vertica's
+catalog), then off again:
+
+```sql
+CALL vfts.alter_index('notes', 'refresh_every=1');
+   NOTICE 2005:  vfts: index notes altered: refresh_every=1
+   NOTICE 2005:  vfts: index notes refreshes itself every minute (Vertica schedule vfts.refresh_notes_schedule, trigger vfts.refresh_notes)
+    alter_index 
+   -------------
+              0
+   (1 row)
+SELECT s.schedule_name, s.date_time_string AS cron, t.trigger_name, t.procedure_name, t.procedure_args
+FROM v_catalog.user_schedules s JOIN v_catalog.stored_proc_triggers t ON t.trigger_name = s.attached_trigger AND t.schema_name = s.schema_name
+WHERE s.schema_name = 'vfts' AND t.trigger_name = 'refresh_notes';
+        schedule_name      |    cron     | trigger_name  | procedure_name | procedure_args 
+   ------------------------+-------------+---------------+----------------+----------------
+    refresh_notes_schedule | */1 * * * * | refresh_notes | maintain       | 'notes'
+   (1 row)
+CALL vfts.alter_index('notes', 'refresh_every=0');
+   NOTICE 2005:  vfts: index notes altered: refresh_every=0
+   NOTICE 2005:  vfts: automatic refresh of index notes off (schedule and trigger removed); refresh it with CALL vfts.refresh_index('notes')
     alter_index 
    -------------
               0
@@ -926,12 +1155,12 @@ SELECT kind, COUNT(*) FROM ex.notes_vfts_export GROUP BY kind ORDER BY kind;
 
 Makes an index from a table written by [export_index](#export_index), for example after the schema
 was restored from a backup: the options, segments, tombstones and attributes of the export, a new
-key, the views and their grants, the node caches of the session's subcluster and the automatic
-refresh. Then it runs [refresh_index](#refresh_index), which compares the index with the table as it
-is now: rows that came or went after the export are found by the count check and indexed or
-removed. A row changed in place between the export and the backup is not found (it has the same
-doc_id): export right before the backup, when the table is quiet, or run [rebuild](#rebuild) after
-the import.
+key, the views and their grants, the node caches of the session's subcluster, and the automatic
+refresh if the exported index had one (`refresh_every`; a notice says so). Then it runs
+[refresh_index](#refresh_index), which compares the index with the table as it is now: rows that
+came or went after the export are found by the count check and indexed or removed. A row changed in
+place between the export and the backup is not found (it has the same doc_id): export right before
+the backup, when the table is quiet, or run [rebuild](#rebuild) after the import.
 
 **Syntax**
 
@@ -1044,12 +1273,13 @@ CALL vfts.load_all('notes');
 
 #### maintain
 
-What the trigger of an index runs (option `refresh_every`): [refresh_index](#refresh_index) - skipped
+What the trigger of an index runs, when the index has one (option `refresh_every`): [refresh_index](#refresh_index) - skipped
 while another refresh of the index runs; a failure is written to `vfts.indexes.refresh_note`
 instead of being lost - then [load_all](#load_all) when a node of the session's subcluster is behind
 (a refresh that finds no change does not touch the nodes), then the removal of caches of indexes
-that no longer exist. Call it yourself from a scheduler of your own, for example from a session on
-each Eon subcluster other than the one the trigger runs on.
+that no longer exist. Call it yourself from a scheduler of your own instead of `refresh_index`
+(it never fails the scheduler: a failure goes to `refresh_note`), and from a session on each Eon
+subcluster other than the one the refresh runs on.
 
 **Syntax**
 
@@ -1081,7 +1311,7 @@ CALL vfts.maintain('notes');
 SELECT index_name, refresh_every, refresh_note FROM vfts.indexes WHERE index_name = 'notes';
     index_name | refresh_every | refresh_note 
    ------------+---------------+--------------
-    notes      |             1 | no changes
+    notes      |             0 | no changes
    (1 row)
 ```
 
@@ -1309,7 +1539,7 @@ One attribute, and its row in `vfts.attributes` (`version` counts the copies mad
 
 ```sql
 CALL vfts.refresh_attribute('notes', 'owner');
-   NOTICE 2005:  vfts: attribute owner of index notes refreshed: 5 values in 0.116 s
+   NOTICE 2005:  vfts: attribute owner of index notes refreshed: 5 values in 0.138 s
     refresh_attribute 
    -------------------
                     0
@@ -2392,7 +2622,8 @@ them with `stopwords=true`.
    insert.
 3. **`refresh_index` adds the live tail as small new segments.** Nothing indexed is rewritten. It
    is needed for speed, not for correct answers: every query analyzes every tail row (a tail of
-   88,418 MS MARCO rows: 2.0 s per query), so run it often, every minute or every hour.
+   88,418 MS MARCO rows: 2.0 s per query), so run it often, every minute or every hour (from your
+   scheduler, or with the option `refresh_every`).
 4. **`refresh_index` then runs a tiered merge** that combines small segments and drops deleted
    documents. Searches keep using the previous generation while it runs.
 
@@ -2402,11 +2633,11 @@ A journal table is optional, for deletes that must disappear before the next ref
 
 **Vertica upgrades.** The index is stored in ordinary Vertica tables (backed up and restored with
 the database) and in node cache files whose format belongs to vfts, not to Vertica, so an upgrade
-of Vertica keeps it. The library may need to be compiled again for the new Vertica version
-(`make && make deploy`); the index does not need a rebuild. Not tested yet: vfts was tested on
-Vertica 26.3.0-2 only.
+of Vertica keeps it. The library is compiled again for the new Vertica version (`./install.sh`
+does it: [After a Vertica server upgrade](#after-a-vertica-server-upgrade)); the index does not
+need a rebuild. Not tested yet: vfts was tested on Vertica 26.3.0-2 only.
 
-**vfts upgrades** (`git pull && make && make deploy`) keep the index too, unless a version changes
+**vfts upgrades** (`git pull && ./install.sh`: [Upgrade vfts](#upgrade-vfts)) keep the index too, unless a version changes
 the analyzer (how words are found, normalized and stemmed, for example a new Snowball release) or
 the file format. Such a version says so under [Changes](#changes), and
 the index is built again, so that old and new rows are analyzed the same way. 0.3.0 is one: it
@@ -2920,10 +3151,12 @@ results is the same on both scales. The benchmark compares the top 10 of every q
 engines ([Performance](#performance)); the differences that remain come from the analyzers
 (Snowball versions, ICU versions), not from the scoring.
 
-**Do I have to refresh?** No: every index refreshes itself every minute (option `refresh_every`).
-Searches over `<index>_live` see every committed insert and update at once; deleted rows are gone
-at the next refresh (or at once with a journal row). A refresh also folds the changes into
-segments, so queries do not analyze them again and again. Search over
+**Do I have to refresh?** Not for new and updated rows: searches over `<index>_live` see every
+committed insert and update at once. Deleted rows are gone at the next refresh (or at once with a
+journal row), and a refresh folds the changes into segments, so queries do not analyze them again
+and again. So refresh regularly: `CALL vfts.refresh_index('docs');` after a load or from your
+scheduler, or let vfts schedule it (`CALL vfts.alter_index('docs', 'refresh_every=1');`, next
+question). Search over
 `<index>_snap` when the changes since the last refresh do not matter and the last millisecond does:
 the live view costs about 1 ms more per statement (Vertica's `UNION ALL` of the tail and the
 sentinel row, measured in docs/VERTICA_NOTES.md). The snap view gives the guarantee Elasticsearch
@@ -2932,10 +3165,15 @@ and OpenSearch give: a document is searchable after a refresh.
 **What does a refresh cost?** Proportional to the rows written since the last one, plus a load
 of the new segments on every node. The benchmark measures 1% of MS MARCO.
 
-**How do I schedule refreshes?** With Vertica's scheduler: `CREATE SCHEDULE s USING CRON '*/5 * * * *';
-CREATE TRIGGER t ON SCHEDULE s EXECUTE PROCEDURE vfts.refresh_index('emails') AS DEFINER;`.
-On Eon the trigger runs on the primary subcluster; a secondary subcluster needs `load_all` from a
-session there (docs/design.md).
+**How do I schedule refreshes?** Ask vfts, as a superuser: `CALL vfts.alter_index('emails', 'refresh_every=5');`
+(or the option `refresh_every=5` at `create_index`). It creates the Vertica schedule
+`vfts.refresh_emails_schedule` (`*/5 * * * *`) and the trigger `vfts.refresh_emails`, which runs
+[maintain](#maintain) as its creator; `'refresh_every=0'` removes both, and so does `drop_index`.
+vfts never schedules anything by itself: an index without the option is refreshed only when
+someone calls `refresh_index`. Any other scheduler works as well (cron with `vsql -c "CALL
+vfts.maintain('emails');"`). On Eon the trigger runs on one subcluster (the primary one in the
+tests); every other subcluster needs `maintain` (or `load_all`) from a session there
+([Several nodes, Eon and subclusters](#several-nodes-eon-and-subclusters)).
 
 **Is the cache safe to delete?** Yes. It is a copy of the index tables; `CALL vfts.load_all('<index>')`
 writes it again. A node without its cache answers with an error that says so.
@@ -2957,7 +3195,7 @@ SQL (UNION ALL, `vfts.hybrid` with weights).
 ## Changes
 
 What changed in each version, and what to do after the upgrade (newest first). Upgrade:
-`git pull && ./install.sh` ([Upgrade and uninstall](#upgrade-and-uninstall)).
+`git pull && ./install.sh` ([Upgrade vfts](#upgrade-vfts)).
 
 **0.5.0.** A unique doc_id is all a source table needs, and every way a table changes is seen
 ([Prepare a table](#prepare-a-table)):
@@ -2983,12 +3221,14 @@ as you set them.
 
 Indexes look after themselves ([Install](#index-a-table-and-let-users-search)):
 
-- **Automatic refresh.** `create_index` makes a Vertica schedule of the index's own
+- **Automatic refresh, on request.** The option `refresh_every` (minutes; at `create_index` or
+  with the new procedure `alter_index`; off by default) makes a Vertica schedule of the index's own
   (`vfts.refresh_<index>_schedule`) and the trigger `vfts.refresh_<index>`, which runs the new
-  procedure `maintain` every minute (option `refresh_every`, minutes; `0`: off): refresh, repair
-  nodes that are behind, remove leftovers. A failure is written to `refresh_note`. A search writes
-  a warning to the server log (`vertica.log`, `dc_errors`) when the live tail has more than 10,000
-  rows (parameter `tail_warn`).
+  procedure `maintain`: refresh, repair nodes that are behind, remove leftovers. A failure is
+  written to `refresh_note`. Nothing is scheduled without the option; the notices of
+  `create_index` and `info` say how an index is refreshed. A search writes a warning to the server
+  log (`vertica.log`, `dc_errors`) when the live tail has more than 10,000 rows (parameter
+  `tail_warn`).
 - **Node caches survive a reboot.** The default cache directory is `<catalog>/vfts` on each node,
   no longer `/tmp/vfts` (a tmpfs on many systems: after a reboot every search failed until
   `load_all`). The install moves existing caches there (`vfts.upgrade_caches`).
@@ -3016,13 +3256,24 @@ Case-sensitive search: the index option `case=sensitive` keeps the case of words
 in queries (`Apple` finds `Apple`, not `apple`; stems keep the case too). Indexes made without it
 are unchanged, byte for byte.
 
-Fixed: a merge of segments whose documents were all deleted (after a `TRUNCATE`, for example)
-made an empty segment, which the other nodes of a cluster could not load: the merge failed there.
-Such a merge now only retires its inputs.
+Fixed:
 
-After the upgrade: existing indexes keep their settings and get no trigger; give them one with
-`CALL vfts.alter_index(index, 'refresh_every=1')`. On Eon, run `CALL vfts.upgrade_caches()` from a
-session on each subcluster other than the one you installed from. An existing index keeps its `ver`
+- A merge of segments whose documents were all deleted (after a `TRUNCATE`, for example) made an
+  empty segment, which the other nodes of a cluster could not load: the merge failed there. Such a
+  merge now only retires its inputs.
+- `CALL vfts.create_index(index, table)` and `CALL vfts.merge(index)`, the forms without the last
+  argument, printed none of their notices (a procedure called by another procedure cannot send
+  notices to the client). Both now print their own.
+- A user who lost `SELECT` on the source table could still search through the views (above).
+- `scripts/demo.sh` ended with exit status 1, although every step had run.
+- `install.sh` builds the library again after a Vertica upgrade (it notes the Vertica version of
+  each build): `make` alone could keep a library built with the old SDK
+  ([After a Vertica server upgrade](#after-a-vertica-server-upgrade)).
+
+After the upgrade: existing indexes keep their settings, and are refreshed as before (by you);
+for an automatic refresh, `CALL vfts.alter_index(index, 'refresh_every=1')` as a superuser. On Eon,
+run `CALL vfts.upgrade_caches()` from a session on each subcluster other than the one you
+installed from. An existing index keeps its `ver`
 boundary until its next `refresh_index`, which moves it to the epoch; its views' grants follow the
 source table's from its next `refresh_index` or `check_access` (run
 `CALL vfts.alter_index(index, 'grants=manual')` first to keep grants you gave by hand).
@@ -3069,12 +3320,13 @@ vtext with its own `./install.sh --uninstall --drop`, install vfts, and create t
   special handling of repeated words.
 - Words longer than 255 bytes (after normalization) are not indexed.
 - The live tail is analyzed for every query (thousands of rows are fine; above 10,000 a search
-  writes a warning to the server log). The automatic refresh keeps it short.
-- Deleted rows are found by every search until the next refresh (at most `refresh_every` minutes,
-  one by default), unless a journal row hides them at once.
+  writes a warning to the server log). Regular refreshes keep it short (`refresh_index`, or a
+  schedule: `refresh_every`).
+- Deleted rows are found by every search until the next refresh, unless a journal row hides them
+  at once.
 - A search reads the cache of its node; a node that missed a refresh refuses to answer until the
   next refresh on its subcluster or `load_all`. On Eon, a statement reaches only its own
-  subcluster: every subcluster other than the one the trigger runs on needs `maintain` (or
+  subcluster: every subcluster other than the one a refresh runs on needs `maintain` (or
   `load_all`) from a session on it after each refresh.
 - Tested on Vertica 26.3.0-2, single node Enterprise and 5-node Eon. Multi-node Enterprise
   was not available for testing.

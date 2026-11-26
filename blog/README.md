@@ -102,7 +102,8 @@ The source table needs a unique `doc_id`, the text and an optional `lang` per ro
 and the people who write to it follow no rules: vfts finds what changed by Vertica's row epoch.
 `create_index` analyzes every row, writes the index tables, loads the cache on every node, creates
 two views, `demo.cases_live` (every committed row) and `demo.cases_snap` (the rows up to the last
-refresh), and a schedule that refreshes the index every minute. Search functions read one of the
+refresh). It schedules nothing: you refresh the index with `refresh_index`, or ask for a Vertica
+schedule that does it every minute (`refresh_every=1`). Search functions read one of the
 views, and whoever may read the table may search it (the views follow its grants).
 
 ### What the analyzer sees: `vfts.tokenize`
@@ -311,7 +312,7 @@ and its output; `scripts/examples.sh` runs them all.
 | info | `CALL vfts.info(index)` | `CALL vfts.info('notes');` |
 | check_access | `CALL vfts.check_access(index)` | `CALL vfts.check_access('notes');` (after an access policy or a grant changed) |
 | alter_index | `CALL vfts.alter_index(index, options)` | `CALL vfts.alter_index('notes', 'refresh_every=5');` |
-| maintain | `CALL vfts.maintain(index)` | what the index's trigger runs every minute: refresh, repair nodes |
+| maintain | `CALL vfts.maintain(index)` | what the index's trigger runs (option `refresh_every`): refresh, repair nodes |
 | cleanup | `CALL vfts.cleanup()` | indexes whose table is gone, caches of dropped indexes |
 | export_index, import_index | `CALL vfts.export_index(index)`, `CALL vfts.import_index(index, export_table)` | the index in a table of the source's schema, for a backup with the table |
 | drop_index | `CALL vfts.drop_index(index)` | `CALL vfts.drop_index('notes');` |
@@ -336,8 +337,8 @@ A search index that has to be rebuilt after every load is a batch job, not a sea
 works the way Lucene does:
 
 1. New rows go into **small new segments** at every refresh - nothing already indexed is
-   rewritten. The index refreshes itself every minute (a Vertica schedule and trigger made by
-   `create_index`).
+   rewritten. A refresh runs when you call `refresh_index`, or every few minutes from a Vertica
+   schedule and trigger that vfts makes when you ask for one (`refresh_every`).
 2. Rows committed after the last refresh are **searched at query time**: the view `<index>_live`
    returns them (every row whose commit epoch is newer than the refresh) and `tsearch` analyzes
    them on the fly. A search sees every committed insert and update, however it was written

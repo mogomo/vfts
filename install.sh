@@ -93,12 +93,20 @@ esac
 # ---------------------------------------------------------------- 2. build
 step "2. Build (dependencies once, then vfts)"
 mkdir -p build || die "cannot create build/ in $PWD"
+# A library is compiled against the SDK of one Vertica version: after a Vertica upgrade, build again
+# (make alone may keep the old library: the new SDK's files can be older than it)
+stamp=build/vertica_version
+if [ -f "$stamp" ] && [ "$(cat "$stamp")" != "$v" ]; then
+    warn "Vertica changed since the last build ($(cat "$stamp") -> $v): vfts is compiled again with the new SDK"
+    make clean > /dev/null 2>&1; mkdir -p build || die "cannot create build/ in $PWD"
+fi
 [ -f third_party/install/lib/libicuuc.a ] || echo "   building ICU, Snowball and CRoaring once (5 to 20 minutes; log: build/deps.log)"
 timeout 3600 make deps > build/deps.log 2>&1 || die "dependencies failed: see build/deps.log"
 ok "dependencies (third_party/install: ICU, Snowball, CRoaring)"
 J=$(nproc 2> /dev/null || echo 2)
 timeout 3600 make -j"$J" > build/make.log 2>&1 || die "build failed: see build/make.log"
-ok "build/libvfts.so"
+printf '%s\n' "$v" > "$stamp"
+ok "build/libvfts.so (for $v)"
 if [ "$SKIP_TESTS" = no ]; then
     timeout 3600 make -j"$J" test > build/test.log 2>&1 || die "engine tests failed: see build/test.log"
     ok "engine unit tests passed"
@@ -133,12 +141,14 @@ cat << EOF
    - Search:         SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='...', k=10) OVER()
                                     FROM app.docs_live) r;
    - Let users search: whoever may SELECT from app.docs may search it (the views follow the table's grants)
-   - Keep it fresh:  nothing to do: the index refreshes itself every minute (option refresh_every)
+   - Keep it fresh:  CALL vfts.refresh_index('docs');  (new and updated rows are searchable at once without it)
+                     or, to refresh it automatically every minute (a Vertica schedule and trigger, as a superuser):
+                     CALL vfts.alter_index('docs', 'refresh_every=1');
    - Node caches:    <catalog>/vfts on each node (survives a reboot); another place: cache_dir=<dir> at create_index
 EOF
 if [ "${eon:-0}" -gt 1 ]; then
-    echo "   - Eon: the trigger refreshes the index on one subcluster; on each other subcluster run"
-    echo "     CALL vfts.maintain('docs'); every minute or so from a session on it, and once CALL vfts.upgrade_caches();"
+    echo "   - Eon: a refresh loads the nodes of its session's subcluster; on each other subcluster run"
+    echo "     CALL vfts.maintain('docs'); from a session on it after each refresh (README: Several nodes, Eon and subclusters)"
 fi
 echo "   - Many clients:   build/tools/vfts_broker --port 9300 --schema app --mode serve   (README: tserve and vfts_broker)"
 echo "   - More:           scripts/demo.sh (a guided tour), tests/sql/run_all.sh (SQL tests)"

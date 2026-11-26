@@ -417,7 +417,10 @@ Who may search an index, and what the access policies of the source table do to 
 
 ## Automatic refresh
 
-`create_index` (option `refresh_every`, minutes, default 1) makes a Vertica schedule
+On request only: a scheduled job in a database is something its administrators decide on, so an
+index gets one only with the option `refresh_every` (minutes, default 0: none) at `create_index`
+or `alter_index`, run by a superuser. The notices of `create_index` say which an index has, and
+how to change it; `info` says it too. The option makes a Vertica schedule
 of its own (`vfts.refresh_<index>_schedule`, `CREATE SCHEDULE ... USING CRON`; a schedule carries
 one trigger, so indexes cannot share one: found when a second index got the same interval) and a
 trigger `vfts.refresh_<index>` that runs `vfts.maintain('<index>')` as its definer
@@ -434,7 +437,11 @@ trigger `vfts.refresh_<index>` that runs `vfts.maintain('<index>')` as its defin
 
 The trigger runs where Vertica's scheduler runs it; on Eon, subclusters that the scheduler does not
 reach need `maintain` (or `load_all`) from a session on them. Without a trigger (`refresh_every=0`,
-or an index created by a user who is not a superuser) the refresh is the user's.
+the default, or an index created by a user who is not a superuser) the refresh is the user's:
+`refresh_index` by hand or from any scheduler, or `maintain` (which never fails its caller: a
+failure goes to `refresh_note`). Changing the schedule needs a superuser (`alter_index` refuses
+`refresh_every` for anyone else, so that the option and the catalog never disagree).
+`import_index` makes again the schedule the exported index had.
 
 ## Attributes (0.4.0)
 

@@ -30,14 +30,11 @@ clean() {
     return 0
 }
 if [ "${1:-}" = --clean ]; then clean; echo "examples removed"; exit 0; fi
-# The example index is refreshed by its trigger every minute (create_index's default): start just
-# after a minute begins, so that the story (about 40 s) runs before the first automatic refresh.
-[ "$I" = notes ] && while [ "$(date +%S)" -gt 2 ]; do sleep 1; done      # only for the README's run
 FAILS=0
 ex() {   # title, then statements: each is printed with its output; a failed one is counted
     echo; echo "-- $1"; shift
     for s in "$@"; do
-        s=${s//SCHEMA ex;/SCHEMA $S;}; s=${s//ex./$S.}; s=${s//\'notes\'/\'$I\'}; s=${s//notes_live/${I}_live}; s=${s//notes_snap/${I}_snap}; s=${s//notes_journal/${I}_journal}; s=${s//notes_vfts_export/${I}_vfts_export}
+        s=${s//SCHEMA ex;/SCHEMA $S;}; s=${s//ex./$S.}; s=${s//\'notes\'/\'$I\'}; s=${s//notes_live/${I}_live}; s=${s//notes_snap/${I}_snap}; s=${s//notes_journal/${I}_journal}; s=${s//notes_vfts_export/${I}_vfts_export}; s=${s//refresh_notes/refresh_$I}
         echo "$s"
         local out rc
         out=$(vsql -X -v ON_ERROR_STOP=1 -c "$s" 2>&1); rc=$?
@@ -161,7 +158,7 @@ ex "tinfo: the cache of every node" \
 "SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;"
 
 ex "load_all: write missing node caches from the index tables" "CALL vfts.load_all('notes');"
-ex "maintain: what the trigger of the index runs every minute (refresh, then the nodes that are behind)" "CALL vfts.maintain('notes');" \
+ex "maintain: what the trigger of an index runs (refresh, then the nodes that are behind)" "CALL vfts.maintain('notes');" \
 "SELECT index_name, refresh_every, refresh_note FROM vfts.indexes WHERE index_name = 'notes';"
 ex "cleanup: indexes whose table is gone, caches of indexes that are gone" "CALL vfts.cleanup();"
 ex "check_access: read the access policies again and make a new key" "CALL vfts.check_access('notes');" \
@@ -170,6 +167,12 @@ ex "check_access: read the access policies again and make a new key" "CALL vfts.
 ex "export_index: the index in a table of the source table's schema, for a backup with the table" "CALL vfts.export_index('notes');" \
 "SELECT kind, COUNT(*) FROM ex.notes_vfts_export GROUP BY kind ORDER BY kind;"
 ex "alter_index: change options of an index" "CALL vfts.alter_index('notes', 'merge_factor=8 grants=source');"
+ex "alter_index: refresh the index automatically (a Vertica schedule and trigger), then turn it off again" \
+"CALL vfts.alter_index('notes', 'refresh_every=1');" \
+"SELECT s.schedule_name, s.date_time_string AS cron, t.trigger_name, t.procedure_name, t.procedure_args
+FROM v_catalog.user_schedules s JOIN v_catalog.stored_proc_triggers t ON t.trigger_name = s.attached_trigger AND t.schema_name = s.schema_name
+WHERE s.schema_name = 'vfts' AND t.trigger_name = 'refresh_notes';" \
+"CALL vfts.alter_index('notes', 'refresh_every=0');"
 ex "rebuild (recovery only)" "CALL vfts.rebuild('notes');"
 
 ex "tokenize: what the analyzer sees" \

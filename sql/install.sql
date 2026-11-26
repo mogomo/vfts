@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS vfts.indexes (
     reorder            BOOLEAN DEFAULT TRUE,      -- merges number documents by graph bisection (docs/design.md "Merge")
     boundary_epoch     INT,                       -- rows of the source with epoch <= boundary_epoch are in the segments
     grants_opt         VARCHAR(8),                -- source (NULL): the views follow the source table's SELECT grants; manual
-    refresh_every      INT,                       -- minutes between automatic refreshes (trigger vfts.refresh_<index>); 0 or NULL: off
+    refresh_every      INT,                       -- minutes between automatic refreshes (trigger vfts.refresh_<index>); 0 or NULL: off (the default)
     case_sensitive     BOOLEAN DEFAULT FALSE      -- option case=sensitive: words keep their case (docs/design.md "Analysis")
 ) UNSEGMENTED ALL NODES;
 -- tables of vfts 0.1.0

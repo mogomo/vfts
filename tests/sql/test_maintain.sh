@@ -86,7 +86,7 @@ while { [ "$(q "SELECT gen FROM vfts.indexes WHERE index_name = 'vf_mt_a'")" = "
         [ "$(q "SELECT COUNT(*) FROM vf_mt.vf_mt_a_live WHERE doc_id IS NOT NULL")" != 0 ]; } && [ $waited -lt 180 ]; do sleep 5; waited=$((waited + 5)); done
 expect "the scheduler refreshed the index (within 180 s)" "$(q "SELECT (gen > $g0)::INT FROM vfts.indexes WHERE index_name = 'vf_mt_a'")" "1"
 expect "... and the new row is in the index (live tail empty)" "$(q "SELECT COUNT(*) FROM vf_mt.vf_mt_a_live WHERE doc_id IS NOT NULL")" "0"
-expect "info names the automatic refresh" "$(qn "CALL vfts.info('vf_mt_a')" | grep -o 'automatic refresh: every 1 minutes')" "automatic refresh: every 1 minutes"
+expect "info names the automatic refresh" "$(qn "CALL vfts.info('vf_mt_a')" | grep -o 'automatic refresh: every minute')" "automatic refresh: every minute"
 q "CALL vfts.alter_index('vf_mt_a', 'refresh_every=0')" > /dev/null
 expect "alter_index refresh_every=0: no trigger" "$(trig vf_mt_a)" "0"
 q "CALL vfts.alter_index('vf_mt_a', 'refresh_every=120')" > /dev/null

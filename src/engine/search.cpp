@@ -69,6 +69,9 @@ DeadCounts compute_dead_counts(const Segment &seg, const DocSet &dead)
 }
 
 namespace {
+// The masked documents of a tail segment: none. At namespace scope, not a static of an inline
+// function, which would be one object for every copy of the library in the process.
+const std::vector<std::uint32_t> no_masked_docs;
 
 // ---------------------------------------------------------------- plan
 
@@ -691,14 +694,13 @@ struct Searcher::Impl {
     Impl(Searcher &searcher, const SearchOptions &opts) : s(searcher), o(opts)
     {
         const std::size_t n = s.segs_.size() + s.tail_segs_.size();
-        static const std::vector<std::uint32_t> none;
         for (std::size_t i = 0; i < s.segs_.size(); ++i) {
             segs.push_back(s.segs_[i].seg);
             dead.push_back(s.combined_dead_[i].get());
             dcs.push_back(s.segs_[i].dead_counts.get());
             masked.push_back(&s.masked_[i]);
         }
-        for (auto &t : s.tail_segs_) { segs.push_back(t.get()); dead.push_back(nullptr); dcs.push_back(nullptr); masked.push_back(&none); }
+        for (auto &t : s.tail_segs_) { segs.push_back(t.get()); dead.push_back(nullptr); dcs.push_back(nullptr); masked.push_back(&no_masked_docs); }
         skip = dead;
         lf = o.doc_filter;
         if (o.exclude) {

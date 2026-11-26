@@ -5,7 +5,7 @@
 #
 #   --fenced=no     every function runs inside the Vertica process (default: fastest; a crash in
 #                   the library is a crash of the node)
-#   --fenced=yes    every function runs in a separate fenced process (about 10% slower, safer)
+#   --fenced=yes    every function runs in a separate fenced process (slower: the rows cross into that process; safer)
 #   --undeploy      remove the library, its functions and procedures; --drop also drops every
 #                   index (its views and node caches) and then the schema vfts
 #

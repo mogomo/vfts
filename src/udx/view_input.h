@@ -161,7 +161,7 @@ struct ViewInput {
         if (lim <= 0 || static_cast<std::int64_t>(tail.size()) <= lim) return;
         srv.reportWarning(Vertica::ClientMessage(1, "vfts: the live tail of index " + index + " has " + std::to_string(tail.size()) +
                                                     " rows, which every search analyzes again: CALL vfts.refresh_index('" + index +
-                                                    "'), or let it refresh itself (vfts.alter_index option refresh_every)"));
+                                                    "'), or schedule its refresh (vfts.alter_index option refresh_every)"));
     }
 
 private:

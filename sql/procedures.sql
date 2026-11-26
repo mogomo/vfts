@@ -163,7 +163,7 @@ $$;
 --   lang=en  journal=schema.table  accent_fold=latin|none|all  on_unsupported=error|plain
 --   id_col=doc_id  text_col=body  lang_col=lang  threads=0  max_segment_mb=2048
 --   merge_factor=10  cache_dir=/path  build=true|false  access=auto|rows  reorder=true|false
---   grants=source|manual  refresh_every=1 (minutes; 0: off)  case=insensitive|sensitive
+--   grants=source|manual  refresh_every=0 (minutes; 0: off, the default)  case=insensitive|sensitive
 CREATE OR REPLACE PROCEDURE vfts.create_index(nm VARCHAR, src VARCHAR, opts VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
     ident VARCHAR(64) := '^[A-Za-z_][A-Za-z0-9_]*$';
@@ -171,7 +171,7 @@ DECLARE
     o VARCHAR(4000); sch VARCHAR(128); tbl VARCHAR(128);
     idc VARCHAR(128); txt VARCHAR(128); lng VARCHAR(128); vc VARCHAR(128); jt VARCHAR(300);
     lang_ VARCHAR(16); fold VARCHAR(16); unsup VARCHAR(16); margin_ INT; threads_ INT; maxmb INT; mf INT;
-    cdir VARCHAR(1024); build VARCHAR(8); n INT; t VARCHAR(128); iid INT; accopt VARCHAR(8); reord VARCHAR(8); grt VARCHAR(8); every INT; cs VARCHAR(16);
+    cdir VARCHAR(1024); build VARCHAR(8); n INT; t VARCHAR(128); iid INT; accopt VARCHAR(8); reord VARCHAR(8); grt VARCHAR(8); every INT; cs VARCHAR(16); per VARCHAR(32);
 BEGIN
     IF nm IS NULL OR NOT REGEXP_LIKE(nm, '^[A-Za-z0-9_]{1,64}$') THEN
         RAISE EXCEPTION 'vfts.create_index: index name must be 1 to 64 letters, digits or underscores';
@@ -202,7 +202,7 @@ BEGIN
     accopt := COALESCE(REGEXP_SUBSTR(o, ' access=([a-z]+)', 1, 1, '', 1), 'auto');
     reord := COALESCE(REGEXP_SUBSTR(o, ' reorder=([a-z]+)', 1, 1, '', 1), 'true');
     grt := COALESCE(REGEXP_SUBSTR(o, ' grants=([a-z]+)', 1, 1, '', 1), 'source');
-    every := COALESCE(REGEXP_SUBSTR(o, ' refresh_every=([0-9]{1,4})( |$)', 1, 1, '', 1), '1')::INT;
+    every := COALESCE(REGEXP_SUBSTR(o, ' refresh_every=([0-9]{1,4})( |$)', 1, 1, '', 1), '0')::INT;
     cs := COALESCE(REGEXP_SUBSTR(o, ' case=([a-z]+)', 1, 1, '', 1), 'insensitive');
     IF cs NOT IN ('sensitive', 'insensitive') THEN
         RAISE EXCEPTION 'vfts.create_index: case must be insensitive (the default: words are case folded) or sensitive';
@@ -285,17 +285,34 @@ BEGIN
         PERFORM CALL vfts.refresh_index(nm);
     END IF;
     PERFORM CALL vfts.set_schedule(nm, every);
-    IF every > 0 AND (SELECT COUNT(*) FROM v_catalog.users WHERE user_name = CURRENT_USER() AND is_super_user) = 0 THEN
-        RAISE NOTICE 'vfts: index % is not refreshed automatically: scheduling needs a superuser (CALL vfts.alter_index(''%'', ''refresh_every=%'') as one)', nm, nm, every;
-    END IF;
     RAISE NOTICE 'vfts: index % created on %. Search: SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index=''%'', query=''...'', k=10) OVER() FROM %.%_live) r;',
                  nm, src, nm, sch, nm;
+    -- an automatic refresh is a scheduled job in the database: only on request (option refresh_every)
+    IF every = 0 THEN
+        RAISE NOTICE 'vfts: index % is refreshed when you run CALL vfts.refresh_index(''%''); to refresh it automatically, a superuser runs CALL vfts.alter_index(''%'', ''refresh_every=1'') (a Vertica schedule and the trigger vfts.refresh_%, every minute)',
+                     nm, nm, nm, nm;
+    ELSIF (SELECT COUNT(*) FROM v_catalog.users WHERE user_name = CURRENT_USER() AND is_super_user) = 0 THEN
+        RAISE NOTICE 'vfts: index % is not refreshed automatically: scheduling needs a superuser (CALL vfts.alter_index(''%'', ''refresh_every=%'') as one); until then CALL vfts.refresh_index(''%'')',
+                     nm, nm, every, nm;
+    ELSE
+        per := CASE WHEN every = 1 THEN 'every minute' WHEN every < 60 THEN 'every ' || every || ' minutes' WHEN every = 60 THEN 'every hour' ELSE 'every ' || (every // 60) || ' hours' END;
+        RAISE NOTICE 'vfts: index % refreshes itself % (Vertica schedule vfts.refresh_%_schedule, trigger vfts.refresh_%); off: CALL vfts.alter_index(''%'', ''refresh_every=0'')',
+                     nm, per, nm, nm, nm;
+    END IF;
 END;
 $$;
 
+-- Every default. The notices of a nested CALL do not reach the client: this form raises them itself.
 CREATE OR REPLACE PROCEDURE vfts.create_index(nm VARCHAR, src VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    sch VARCHAR(128);
 BEGIN
     PERFORM CALL vfts.create_index(nm, src, '');
+    sch := (SELECT MAX(view_schema) FROM vfts.indexes WHERE index_name = nm);
+    RAISE NOTICE 'vfts: index % created on %. Search: SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index=''%'', query=''...'', k=10) OVER() FROM %.%_live) r;',
+                 nm, src, nm, sch, nm;
+    RAISE NOTICE 'vfts: index % is refreshed when you run CALL vfts.refresh_index(''%''); to refresh it automatically, a superuser runs CALL vfts.alter_index(''%'', ''refresh_every=1'') (a Vertica schedule and the trigger vfts.refresh_%, every minute)',
+                 nm, nm, nm, nm;
 END;
 $$;
 
@@ -795,9 +812,20 @@ BEGIN
 END;
 $$;
 
+-- The tiered policy. The notices of a nested CALL do not reach the client: this form raises its own.
 CREATE OR REPLACE PROCEDURE vfts.merge(nm VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT; before INT; after INT; t0 TIMESTAMPTZ;
 BEGIN
+    iid := (SELECT MAX(index_id) FROM vfts.indexes WHERE index_name = nm);
+    before := (SELECT COUNT(*) FROM vfts.segments WHERE index_id = iid AND gen_removed IS NULL);
+    t0 := (SELECT CLOCK_TIMESTAMP());
     PERFORM CALL vfts.merge(nm, 0);
+    after := (SELECT COUNT(*) FROM vfts.segments WHERE index_id = iid AND gen_removed IS NULL);
+    IF after <> before THEN
+        RAISE NOTICE 'vfts: index % merged (% s); % segments now, % before', nm,
+                     (SELECT TO_CHAR(DATEDIFF('millisecond', t0, CLOCK_TIMESTAMP()) / 1000.0, 'FM999999990.0')), after, before;
+    END IF;
 END;
 $$;
 
@@ -825,8 +853,8 @@ BEGIN
                  TO_CHAR(nbytes / 1048576.0, 'FM999999990.0');
     b := CASE WHEN e IS NOT NULL THEN 'epoch ' || e WHEN b IS NOT NULL THEN b ELSE '(none)' END;
     RAISE NOTICE 'boundary %; live tail % rows (%.%_live); last refresh: %', b, tail, vs, nm, COALESCE(note, '(none)');
-    RAISE NOTICE 'automatic refresh: %', (SELECT CASE WHEN COALESCE(i.refresh_every, 0) = 0 THEN 'off (CALL vfts.alter_index(''' || nm || ''', ''refresh_every=1''))'
-                 ELSE 'every ' || i.refresh_every || ' minutes' || CASE WHEN (SELECT COUNT(*) FROM v_catalog.stored_proc_triggers WHERE schema_name = 'vfts' AND trigger_name = 'refresh_' || nm) = 0 THEN ' (no trigger: run vfts.alter_index as a superuser)' ELSE '' END END
+    RAISE NOTICE 'automatic refresh: %', (SELECT CASE WHEN COALESCE(i.refresh_every, 0) = 0 THEN 'off: refreshed by CALL vfts.refresh_index(''' || nm || '''); scheduled: CALL vfts.alter_index(''' || nm || ''', ''refresh_every=1'')'
+                 ELSE CASE WHEN i.refresh_every = 1 THEN 'every minute' WHEN i.refresh_every < 60 THEN 'every ' || i.refresh_every || ' minutes' WHEN i.refresh_every = 60 THEN 'every hour' ELSE 'every ' || (i.refresh_every // 60) || ' hours' END || CASE WHEN (SELECT COUNT(*) FROM v_catalog.stored_proc_triggers WHERE schema_name = 'vfts' AND trigger_name = 'refresh_' || nm) = 0 THEN ' (no trigger: run vfts.alter_index as a superuser)' ELSE '' END END
                  FROM vfts.indexes i WHERE i.index_id = iid);
     RAISE NOTICE 'access: % (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)',
                  COALESCE(acc, '(no key: run CALL vfts.check_access)');
@@ -1049,7 +1077,7 @@ $$;
 -- option not given keeps its value.
 CREATE OR REPLACE PROCEDURE vfts.alter_index(nm VARCHAR, opts VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
-    o VARCHAR(4000); iid INT; grt VARCHAR(16); mf VARCHAR(16); th VARCHAR(16); mx VARCHAR(16); reord VARCHAR(16); bad VARCHAR(4000); every VARCHAR(16);
+    o VARCHAR(4000); iid INT; grt VARCHAR(16); mf VARCHAR(16); th VARCHAR(16); mx VARCHAR(16); reord VARCHAR(16); bad VARCHAR(4000); every VARCHAR(16); per VARCHAR(32);
 BEGIN
     iid := (SELECT MAX(index_id) FROM vfts.indexes WHERE index_name = nm);
     IF iid IS NULL THEN
@@ -1063,6 +1091,9 @@ BEGIN
     every := REGEXP_SUBSTR(o, ' refresh_every=([^ ]+)', 1, 1, '', 1);
     IF every IS NOT NULL AND NOT REGEXP_LIKE(every, '^[0-9]{1,4}$') THEN
         RAISE EXCEPTION 'vfts.alter_index: refresh_every is in minutes: 0 (off), 1 to 59, or whole hours up to 1440';
+    END IF;
+    IF every IS NOT NULL AND (SELECT COUNT(*) FROM v_catalog.users WHERE user_name = CURRENT_USER() AND is_super_user) = 0 THEN
+        RAISE EXCEPTION 'vfts.alter_index: refresh_every creates or removes a Vertica schedule and trigger: run it as a superuser';
     END IF;
     IF every IS NOT NULL THEN
         PERFORM CALL vfts.set_schedule(nm, every::INT);
@@ -1087,6 +1118,12 @@ BEGIN
         PERFORM CALL vfts.sync_grants(nm, TRUE);
     END IF;
     RAISE NOTICE 'vfts: index % altered: %', nm, TRIM(o);
+    IF every IS NOT NULL AND every::INT = 0 THEN
+        RAISE NOTICE 'vfts: automatic refresh of index % off (schedule and trigger removed); refresh it with CALL vfts.refresh_index(''%'')', nm, nm;
+    ELSIF every IS NOT NULL THEN
+        per := CASE WHEN every::INT = 1 THEN 'every minute' WHEN every::INT < 60 THEN 'every ' || every::INT || ' minutes' WHEN every::INT = 60 THEN 'every hour' ELSE 'every ' || (every::INT // 60) || ' hours' END;
+        RAISE NOTICE 'vfts: index % refreshes itself % (Vertica schedule vfts.refresh_%_schedule, trigger vfts.refresh_%)', nm, per, nm, nm;
+    END IF;
 END;
 $$;
 
@@ -1168,7 +1205,7 @@ CREATE OR REPLACE PROCEDURE vfts.import_index(nm VARCHAR, src_export VARCHAR) LA
 DECLARE
     qual VARCHAR(100) := '^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$';
     info VARCHAR(4000); iid INT; g INT; src VARCHAR(300); sch VARCHAR(128); e INT; t0 TIMESTAMPTZ; n INT; na INT; i INT; a VARCHAR(64); ainfo VARCHAR(4000); sl INT;
-    every INT;
+    every INT; per VARCHAR(32);
 BEGIN
     IF nm IS NULL OR NOT REGEXP_LIKE(nm, '^[A-Za-z0-9_]{1,64}$') THEN
         RAISE EXCEPTION 'vfts.import_index: index name must be 1 to 64 letters, digits or underscores';
@@ -1250,7 +1287,14 @@ BEGIN
     RAISE NOTICE 'vfts: index % imported from % (generation %, % segments) in % s; now a refresh against the table', nm, src_export, g, n,
                  (SELECT ROUND(DATEDIFF('millisecond', t0, CLOCK_TIMESTAMP()) / 1000.0, 1));
     PERFORM CALL vfts.refresh_index(nm);
+    -- the automatic refresh the index had when it was exported (refresh_every), if any
     PERFORM CALL vfts.set_schedule(nm, every);
+    per := CASE WHEN every = 1 THEN 'every minute' WHEN every < 60 THEN 'every ' || every || ' minutes' WHEN every = 60 THEN 'every hour' ELSE 'every ' || (every // 60) || ' hours' END;
+    IF every > 0 AND (SELECT COUNT(*) FROM v_catalog.stored_proc_triggers WHERE schema_name = 'vfts' AND trigger_name = 'refresh_' || nm) > 0 THEN
+        RAISE NOTICE 'vfts: index % refreshes itself %, as when it was exported (trigger vfts.refresh_%; off: CALL vfts.alter_index(''%'', ''refresh_every=0''))', nm, per, nm, nm;
+    ELSIF every > 0 THEN
+        RAISE NOTICE 'vfts: index % refreshed itself % when it was exported; scheduling needs a superuser (CALL vfts.alter_index(''%'', ''refresh_every=%'') as one)', nm, per, nm, every;
+    END IF;
 END;
 $$;
 
