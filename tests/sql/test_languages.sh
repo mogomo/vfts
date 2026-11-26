@@ -52,7 +52,7 @@ ins 80 "लड़कों ने खेला" "'hi'"
 ins 81 "லண்டன் நகரம்" "'ta'"
 ins 82 "გამარჯობა მსოფლიო" "'ka'"
 
-q "CALL vfts.create_index('vf_lang', 'vf_lang.docs', 'lang=en margin=0')" > /dev/null
+q "CALL vfts.create_index('vf_lang', 'vf_lang.docs', 'refresh_every=0 lang=en margin=0')" > /dev/null
 ids() {   # query [extra parameters] -> sorted doc ids, space separated
     q "SELECT LISTAGG(doc_id::VARCHAR USING PARAMETERS separator=' ') FROM (SELECT doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='vf_lang', query='$1', k=100 ${2:-}) OVER() FROM vf_lang.vf_lang_live) r ORDER BY doc_id) x"
 }
@@ -89,9 +89,9 @@ expect "w/N across scripts"                     "$(ids 'contract w/1 العقد'
 
 # unsupported scripts: an error by default, indexed without stemming with on_unsupported='plain'
 q "CREATE TABLE vf_lang.cjk (doc_id INT NOT NULL, body LONG VARCHAR); INSERT INTO vf_lang.cjk VALUES (1, 'hello 北京欢迎你'); COMMIT;" > /dev/null
-expect_error "unsupported script refused" "CALL vfts.create_index('vf_strict', 'vf_lang.cjk', 'margin=0')" "not supported"
+expect_error "unsupported script refused" "CALL vfts.create_index('vf_strict', 'vf_lang.cjk', 'refresh_every=0 margin=0')" "not supported"
 q "CALL vfts.drop_index('vf_strict')" > /dev/null 2>&1
-q "CALL vfts.create_index('vf_plain', 'vf_lang.cjk', 'on_unsupported=plain margin=0')" > /dev/null
+q "CALL vfts.create_index('vf_plain', 'vf_lang.cjk', 'refresh_every=0 on_unsupported=plain margin=0')" > /dev/null
 expect "on_unsupported=plain" "$(q "SELECT COUNT(*) FROM (SELECT vfts.tsearch(* USING PARAMETERS index='vf_plain', query='hello', k=5) OVER() FROM vf_lang.vf_plain_live) r")" "1"
 
 done_test

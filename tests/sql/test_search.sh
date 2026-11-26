@@ -24,7 +24,7 @@ q "INSERT INTO vf_ref.docs (doc_id, body)
    COMMIT;" > /dev/null
 expect "corpus" "$(q "SELECT COUNT(*) FROM vf_ref.docs")" "3072"
 
-q "CALL vfts.create_index('vf_ref', 'vf_ref.docs', 'journal=vf_ref.docs_journal margin=0')" > /dev/null
+q "CALL vfts.create_index('vf_ref', 'vf_ref.docs', 'refresh_every=0 journal=vf_ref.docs_journal margin=0')" > /dev/null
 q "CREATE TABLE vf_ref.tok AS SELECT doc_id, pos, term FROM (SELECT doc_id, vfts.tokenize(body) FROM vf_ref.docs) t; COMMIT;" > /dev/null
 
 S() { echo "SELECT doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='vf_ref', query='$1', k=1000000, mode='exact') OVER() FROM vf_ref.vf_ref_live) r"; }

@@ -191,6 +191,7 @@ private:
         ViewInput v;
         v.read(in, false);
         auto li = v.open(resolve_cache_dir(s), index, srv.getUserName());
+        v.warn_long_tail(srv, s, index);
         const vfts::AnalyzerOptions aopts = parse_index_options(li->options);
         std::unique_ptr<vfts::Searcher> sp = v.searcher(*li);
         vfts::Searcher &searcher = *sp;

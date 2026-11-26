@@ -240,6 +240,10 @@ hold rows that are also in the (old, wider) tail, so results stay exact, and the
 analyzed again): live documents, postings and positions merged term by term, tombstoned documents
 dropped, stem groups carried over. Then the same steps 4 to 8 as a refresh.
 
+A merge whose inputs have no live document left (a `TRUNCATE`, a dropped partition: every
+document tombstoned) retires the inputs and makes no segment: an empty segment has no rows in the
+index tables, so the other nodes could not load it (found on the 3-node Eon subcluster).
+
 **Document order.** A merge numbers the documents by recursive graph bisection
 (`src/engine/reorder.cpp`; Dhulipala et al., KDD 2016; Lucene's `BPIndexReorderer`, PISA), unless
 the index was made with `reorder=false`. Documents that share words get nearby docnos, so
@@ -334,21 +338,63 @@ Who may search an index, and what the access policies of the source table do to 
 ## Node cache
 
 - Layout and files: docs/format.md. cache_dir: function parameter, then session parameter
-  (`ALTER SESSION SET UDPARAMETER FOR vfts.vfts cache_dir = '...'`), then `/tmp/vfts`. The procedures
-  pass an index's `cache_dir` option to the functions they call; a search cannot read the manifest,
-  so searches of such an index set the same directory as a parameter or session parameter.
+  (`ALTER SESSION SET UDPARAMETER FOR vfts.vfts cache_dir = '...'`), then `<catalog>/vfts`: the
+  server process runs in the node's catalog directory and a fenced UDx process in its `UDxLogs`
+  subdirectory (checked on Ubuntu and RHEL), so both find the same persistent, node-local
+  directory without a parameter (src/udx/udx_common.h). Before 0.5.0 the default was `/tmp/vfts`,
+  a tmpfs on many systems: after a reboot every search failed until `load_all` (`/var/tmp` was not
+  taken: systemd removes its files after 30 days). The install moves the caches of `/tmp/vfts` to
+  the new place (`vfts.upgrade_caches`, function `tcaches` with `action='adopt'`: a rename, or a
+  copy in 8 MB pieces across file systems). The procedures pass an index's `cache_dir` option to
+  the functions they call; a search cannot read the manifest, so searches of such an index set
+  the same directory as a parameter or session parameter.
+- Every cache directory holds `INDEX_ID`: the first load or build of an index claims the
+  directory, and a directory of another index of the same name (dropped and created again while a
+  node or a subcluster kept its cache) is emptied first. A cache written by vfts 0.4 has no
+  `INDEX_ID` and is taken as it is (its generation file carries the index's keys, so a cache of
+  another index would still be refused by the token check).
 - `OVER(PARTITION NODES)` runs on every node only for a segmented input: `vfts.probe` (1,024
   rows, segmented) and `vfts.tnode(k)`, which returns one row per node. Loads join the replicated
   index tables with that one row per node: a local join (`DISTRIB(L,L)`), with `SYNTACTIC_JOIN`
   so that the row per node is the inner side (docs/VERTICA_NOTES.md: the planner reserves the
   declared width of LONG VARBINARY for every inner row).
+- **Writing only what is missing** (`vfts.load_missing`): `thave` reports which segments of the
+  generation each node has (header and checksum); only the segments some node lacks are read from
+  the tables. Every refresh and merge does this for all segments of the new generation, not only
+  its new ones, so a node that was down, lost its cache or is new is brought up to date by the
+  next refresh; `load_all` does the same at once.
 - A process keeps its mappings of segment files and reuses them in later generations, so a
   refresh maps only its new segments. What ACTIVE says is trusted for 200 ms; a query whose view
   carries a newer generation reads it at once.
 - A node whose cache is older than the view's generation refuses to answer ("stale: run
-  CALL vfts.load_all"); a node without cache says so too.
+  CALL vfts.load_all"); a node without cache says so too. A search cannot load: a UDx runs no SQL,
+  and its input is the view, not the index tables.
 - Eon: a statement reaches the nodes of the session's subcluster only. Every subcluster keeps its
-  own caches; `load_all` from a session on a secondary subcluster loads it (tested on 3 + 2 nodes).
+  own caches; `load_all` or `maintain` from a session on a subcluster loads it (tested on 3 + 2
+  nodes). A refresh on one subcluster makes the others stale until then.
+- Leftovers: `tcaches` (`action='list'` or `'clean'`) lists the cache directories of a node, and
+  removes those whose index no longer exists (by name and `INDEX_ID`). `vfts.clean_caches` runs it
+  on the session's subcluster: from `load_all`, `maintain`, `cleanup`.
+
+## Automatic refresh
+
+`create_index` (option `refresh_every`, minutes, default 1) makes a Vertica schedule
+(`vfts.every_<n>_min`, `CREATE SCHEDULE ... USING CRON`, shared by all indexes with the same
+interval) and a trigger `vfts.refresh_<index>` that runs `vfts.maintain('<index>')` as its definer
+(stored procedure scheduling, Vertica 12 and later; the database parameter
+`EnableStoredProcedureScheduler` must be 1, its default). Cron has no seconds, so the interval is
+1 to 59 minutes or whole hours. `maintain`:
+
+1. returns at once when a refresh of the index is running (the mark of `refresh_index`);
+2. `refresh_index`; a failure is caught and written to `refresh_note` with its time (a trigger has
+   no client to report to);
+3. when a node of the subcluster does not have the current generation (`tinfo`), `load_all` (a
+   refresh without changes does not touch the nodes);
+4. `clean_caches`.
+
+The trigger runs where Vertica's scheduler runs it; on Eon, subclusters that the scheduler does not
+reach need `maintain` (or `load_all`) from a session on them. Without a trigger (`refresh_every=0`,
+or an index created by a user who is not a superuser) the refresh is the user's.
 
 ## Attributes (0.4.0)
 

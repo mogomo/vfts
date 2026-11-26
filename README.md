@@ -263,20 +263,30 @@ scripts: the connection comes from the `VSQL_*` variables.
    makes its own input for `tsearch` is refused, and row access policies of the source table apply
    to every search ([Access policies](#access-policies)). To manage the views' grants yourself, use
    the option `grants=manual`.
-4. Run `CALL vfts.refresh_index('docs');` on a schedule (a cron job or any scheduler): new rows
-   are searchable at once anyway; refresh keeps the live tail short.
+4. Nothing to schedule: `create_index` sets up a Vertica schedule and trigger that refresh the index
+   every minute (option `refresh_every`, in minutes; `0` turns it off, and then you run
+   `CALL vfts.refresh_index('docs');` from any scheduler). New and updated rows are searchable at
+   once anyway; the refresh keeps the live tail short, removes deleted rows and repairs nodes
+   that are behind. Creating the trigger needs a superuser.
 
-Where the node caches live: `/tmp/vfts` by default. Use a directory that survives a reboot for
-production: the index option `cache_dir=/data/vfts` at `create_index` (it must exist on every node,
-writable by the database's OS user). A lost cache is rebuilt from the index tables with `load_all`.
+Where the node caches live: in `<catalog>/vfts` on each node, the node's catalog directory
+(for example `/home/dbadmin/VDB/v_vdb_node0001_catalog/vfts`), which survives a reboot. Another
+place: the index option `cache_dir=/data/vfts` at `create_index` (it must exist on every node,
+writable by the database's OS user). The cache is a copy of the index tables: a node that lacks
+it (a new node, a lost directory, a node that was down during a refresh) gets it at the next
+refresh, or at once with `CALL vfts.load_all('docs');`, which writes only what is missing.
 
 ### Several nodes, Eon and subclusters
 
-- **Enterprise, several nodes**: nothing more; `create_index` and `refresh_index` load every node.
-- **Eon**: run `create_index` and `refresh_index` on the primary subcluster; on each secondary
-  subcluster, run `CALL vfts.load_all('docs');` from a session connected to it after each
-  refresh (a node that is behind refuses to answer, with that message).
-- **New node**: `CALL vfts.load_all('docs');`.
+- **Enterprise, several nodes**: nothing more; `create_index` and `refresh_index` load every node,
+  and a node that was down during a refresh is brought up to date by the next one.
+- **Eon**: a statement reaches the nodes of its session's subcluster only, so each subcluster
+  keeps its own caches. Run `create_index` on one subcluster; on each other subcluster, run
+  `CALL vfts.maintain('docs');` from a session connected to it every minute or so (cron and
+  `vsql`, or any scheduler that connects there): it refreshes the index when there are changes and
+  loads what that subcluster lacks. Without it, a node of that subcluster refuses to answer after
+  a refresh elsewhere, with what to do (`run CALL vfts.load_all('docs')`).
+- **New node**: `CALL vfts.load_all('docs');` (or wait for the next refresh).
 
 ### Many clients (optional): vfts_broker
 
@@ -409,10 +419,12 @@ A search, part by part:
 | Task | Procedure or function | Typical call |
 |---|---|---|
 | Create an index of a table | [create_index](#create_index) | `CALL vfts.create_index('docs', 'app.docs', 'lang=en');` |
-| Add the rows written since the last refresh | [refresh_index](#refresh_index) | `CALL vfts.refresh_index('docs');` (on a schedule) |
+| Add the rows written since the last refresh | [refresh_index](#refresh_index) | `CALL vfts.refresh_index('docs');` (runs every minute by itself) |
 | Fewer, larger segments | [merge](#merge) | `CALL vfts.merge('docs');` |
 | Look at an index | [info](#info), [tinfo](#tinfo) | `CALL vfts.info('docs');` |
 | Fill the cache of a new node or subcluster | [load_all](#load_all) | `CALL vfts.load_all('docs');` |
+| Refresh and repair, as the trigger does | [maintain](#maintain) | `CALL vfts.maintain('docs');` (every minute by itself) |
+| Remove leftovers of dropped tables and indexes | [cleanup](#cleanup) | `CALL vfts.cleanup();` |
 | Read changed access policies and grants | [check_access](#check_access) | `CALL vfts.check_access('docs');` |
 | Change options of an index | [alter_index](#alter_index) | `CALL vfts.alter_index('docs', 'grants=manual');` |
 | Index everything again (recovery) | [rebuild](#rebuild) | `CALL vfts.rebuild('docs');` |
@@ -438,7 +450,8 @@ The examples run as one story, in this order, on the example table below:
 [tcount](#tcount), [tmatch](#tmatch)); [add_attribute](#add_attribute) `owner` and the searches by
 it; [refresh_attributes](#refresh_attributes-refresh_attribute) (note 3 moves to legal);
 [tsnippet](#tsnippet); [refresh_index](#refresh_index) (note 6 is added); [merge](#merge),
-[tinfo](#tinfo), [load_all](#load_all), [check_access](#check_access), [alter_index](#alter_index),
+[tinfo](#tinfo), [load_all](#load_all), [maintain](#maintain), [cleanup](#cleanup),
+[check_access](#check_access), [alter_index](#alter_index),
 [rebuild](#rebuild);
 [tokenize](#tokenize), [hybrid](#hybrid), [tversion](#tversion), the [broker](#tserve-and-vfts_broker-many-clients);
 then [drop_attribute](#drop_attribute) and [drop_index](#drop_index). An example that depends on an
@@ -498,7 +511,8 @@ every node of the session's subcluster.
 | threads | 0 | build threads per instance (0: a quarter of the cores) |
 | max_segment_mb | 2048 | a build thread starts a new segment above this memory |
 | merge_factor | 10 | segments per tier of the merge policy |
-| cache_dir | /tmp/vfts | directory of the node caches |
+| cache_dir | `<catalog>/vfts` | directory of the node caches (default: `vfts` in each node's catalog directory) |
+| refresh_every | 1 | minutes between automatic refreshes (a Vertica schedule and the trigger `vfts.refresh_<index>`, which runs [maintain](#maintain)): `0` (off), 1 to 59, or whole hours up to 1440. Needs a superuser |
 | build | true | `false`: register and create the views only |
 | access | auto | `auto`: follow the access policies of the source table ([Access policies](#access-policies)); `rows`: apply its row access policies to every search even before one exists |
 | grants | source | `source`: the views' `SELECT` grants follow the source table's (users, roles, `PUBLIC`, its owner, privileges inherited from the schema), checked at every `refresh_index` and `check_access`; `manual`: vfts leaves the views' grants alone |
@@ -594,7 +608,7 @@ node a row to start from.
 | Parameter | Default | Meaning |
 |---|---|---|
 | index | (required) | the index |
-| cache_dir | /tmp/vfts | the node cache directory, if the index uses another one |
+| cache_dir | `<catalog>/vfts` | the node cache directory, if the index uses another one |
 
 **Returns**
 
@@ -638,10 +652,13 @@ it found.
 
     CALL vfts.refresh_index ( 'index' )
 
-When to run it: whenever convenient - every minute, every hour, from cron or any scheduler.
-Inserts and updates are searchable without it (the live view reads the rows committed since);
-deletes need it (or a journal row); a longer live tail costs query time, because every tail row
-is analyzed per query.
+When it runs: by itself, every minute (option `refresh_every` of [create_index](#create_index) and
+[alter_index](#alter_index)); call it yourself whenever you like, for example right after a large
+load. Inserts and updates are searchable without it (the live view reads the rows committed
+since); deletes need it (or a journal row); a longer live tail costs query time, because every
+tail row is analyzed per query (a search warns above 10,000 tail rows: parameter `tail_warn`). A
+refresh also writes every segment a node of the subcluster lacks, so a node that was down or lost
+its cache is repaired by it.
 
 **Arguments**
 
@@ -846,16 +863,18 @@ CALL vfts.rebuild('notes');
 
 #### load_all
 
-Writes the node cache of every node of the session's subcluster from the index tables: for a new
-node, a secondary subcluster (Eon), or a damaged cache directory. Segments a node has already are
-not written again.
+Writes what the node caches of the session's subcluster lack, from the index tables: the segments a
+node does not have (only those are read), the current generation and the attributes. For a new
+node, a secondary subcluster (Eon), a node that was down during a refresh, or a lost or damaged
+cache directory. Then removes the caches of indexes that no longer exist on these nodes.
 
 **Syntax**
 
     CALL vfts.load_all ( 'index' )
 
-On Eon, every subcluster keeps its own caches: run `load_all` from a session on each secondary
-subcluster after a refresh on the primary. A node whose cache is behind refuses to answer:
+On Eon, every subcluster keeps its own caches: run `load_all` (or [maintain](#maintain), which also
+refreshes) from a session on each other subcluster after a refresh elsewhere. A node whose cache is
+behind refuses to answer:
 `cache of index cases is stale on this node (generation 3, the view needs 4): run CALL vfts.load_all('cases')`.
 
 **Arguments**
@@ -881,6 +900,67 @@ CALL vfts.load_all('notes');
    ----------
            0
    (1 row)
+```
+
+#### maintain
+
+What the trigger of an index runs (option `refresh_every`): [refresh_index](#refresh_index) - skipped
+while another refresh of the index runs; a failure is written to `vfts.indexes.refresh_note`
+instead of being lost - then [load_all](#load_all) when a node of the session's subcluster is behind
+(a refresh that finds no change does not touch the nodes), then the removal of caches of indexes
+that no longer exist. Call it yourself from a scheduler of your own, for example from a session on
+each Eon subcluster other than the one the trigger runs on.
+
+**Syntax**
+
+    CALL vfts.maintain ( 'index' )
+
+**Arguments**
+
+| Argument | Meaning |
+|---|---|
+| index | the index name |
+
+**Returns**
+
+0. What it did is reported as `NOTICE` messages (those of the procedures it runs).
+
+**Privileges**
+
+As [refresh_index](#refresh_index). The trigger runs it as the user who created the trigger
+(`create_index` or `alter_index`, a superuser).
+
+**Examples**
+
+```sql
+CALL vfts.maintain('notes');
+SELECT index_name, refresh_every, refresh_note FROM vfts.indexes WHERE index_name = 'notes';
+```
+
+#### cleanup
+
+Drops every index whose source table no longer exists (as [drop_index](#drop_index) does: views,
+rows, trigger, node caches of this subcluster), then removes, on the nodes of the session's
+subcluster, the cache directories of indexes that no longer exist (an index dropped from another
+Eon subcluster, an older index of the same name). The automatic refresh and `load_all` remove such
+caches too.
+
+**Syntax**
+
+    CALL vfts.cleanup ( )
+
+**Returns**
+
+0. What it removed is reported as `NOTICE` messages.
+
+**Privileges**
+
+Superuser (it drops indexes and removes files on the nodes).
+
+**Examples**
+
+```sql
+CALL vfts.cleanup();
 ```
 
 #### check_access
@@ -934,8 +1014,11 @@ SELECT index_name, access, reorder FROM vfts.indexes WHERE index_name = 'notes';
 
 #### drop_index
 
-Removes the index: its rows (partitions), its attributes, the views and the node caches of the
-subcluster. The source table is not touched.
+Removes the index: its automatic refresh (trigger), its rows (partitions), its attributes, the views
+and the node caches of the subcluster. The source table is not touched. Dropping an index that does
+not exist is not an error: it removes any trigger and node cache of that name on this subcluster
+(for example after `drop_index` from another Eon subcluster). Caches on other subclusters are
+removed by the next `load_all`, `maintain` or `cleanup` there.
 
 **Syntax**
 
@@ -1219,7 +1302,8 @@ or to filter, group and aggregate with SQL.
 | filter | | only the matches the filter accepts ([Filter syntax](#filter-syntax)); scores unchanged |
 | filter_cache | true | keep the filter's set of left-out documents per segment; `false`: ask the filter per candidate |
 | threads | 0 | threads for this query (0: one per core). A large segment is cut into slices of documents, so one query can use every core; while many queries run, each gets its share |
-| cache_dir | /tmp/vfts | node cache directory (or the session parameter) |
+| cache_dir | `<catalog>/vfts` | node cache directory (or the session parameter) |
+| tail_warn | 10000 | a warning to the client when the live tail has more rows than this (every search analyzes them all); `0`: never |
 
 Session defaults (any parameter except index and query): `ALTER SESSION SET UDPARAMETER vfts_mode = 'exact';`
 (any user; the name with the prefix `vfts_`), or `ALTER SESSION SET UDPARAMETER FOR vfts.vfts mode = 'exact';`
@@ -1430,6 +1514,25 @@ all matches (a report of matches per owner, per month).
 
 As [tcount](#tcount), without `by`. For counts per value of an attribute, `tcount ... by` is
 faster: no row per match.
+
+**Joining every match with a large table.** Vertica does not know how many rows a function
+returns, and may build its hash table from the large table (with its text) instead of from the
+matches. Make the matches the inner side: an `IN` subquery, or `SYNTACTIC_JOIN` with the matches
+written second (the inner side of a syntactic join is the right one):
+
+    SELECT s.doc_id, s.body FROM app.docs s
+    WHERE s.doc_id IN (SELECT doc_id FROM (SELECT vfts.tmatch(* USING PARAMETERS index='docs', query='...') OVER()
+                                           FROM app.docs_live) m);
+
+    SELECT /*+SYNTACTIC_JOIN*/ m.qid, s.doc_id, s.body
+    FROM app.docs s JOIN (SELECT vfts.tmatch(* USING PARAMETERS index='docs', queries='...') OVER() FROM app.docs_live) m
+    USING (doc_id);
+
+Measured on Enron (517,401 emails, `california w/5 energy`, 6,872 matches, with the start of each
+text): `FROM (tmatch ...) m JOIN bench.enron s` 2.72 s, the `IN` form 1.02 s, the
+`SYNTACTIC_JOIN` form 1.01 s. With a wider declared text column the plain join can be far slower
+(the hash table reserves the declared width per row). For `tsearch` with a small k the forms take
+the same time (12 to 13 ms), and the plain join is fine.
 
 **Returns**
 
@@ -1880,11 +1983,13 @@ and counts while it matches (no rows leave the search):
                    by='custodian') OVER() FROM app.emails_live) c ORDER BY count DESC;
 
 For a column that changes all the time, or a condition that needs a join, join in SQL instead
-(every match leaves the search: `tmatch`, or `tsearch` with a large k):
+(every match leaves the search: `tmatch`, or `tsearch` with a large k; with many matches, make
+them the inner side of the join, [tmatch](#tmatch)):
 
-    SELECT r.doc_id, r.score FROM (SELECT vfts.tsearch(* USING PARAMETERS index='emails', query='fraud', k=1000) OVER()
-                                   FROM app.emails_live) r
-    JOIN app.emails d USING (doc_id) WHERE d.sent > '2001-06-01' ORDER BY r.score DESC LIMIT 10;
+    SELECT /*+SYNTACTIC_JOIN*/ r.doc_id, r.score
+    FROM app.emails d JOIN (SELECT vfts.tsearch(* USING PARAMETERS index='emails', query='fraud', k=1000) OVER()
+                            FROM app.emails_live) r USING (doc_id)
+    WHERE d.sent > '2001-06-01' ORDER BY r.score DESC LIMIT 10;
 
 **E-discovery review set**: every matching document, no ranking needed (`tcount` for the size,
 `tsearch` with a large k for the ids):
@@ -2657,9 +2762,10 @@ results is the same on both scales. The benchmark compares the top 10 of every q
 engines ([Performance](#performance)); the differences that remain come from the analyzers
 (Snowball versions, ICU versions), not from the scoring.
 
-**Do I have to refresh?** For inserts and updates, no: searches over `<index>_live` see every
-committed one. Deletes are seen at the next refresh (or at once with a journal row). A refresh
-also folds the changes into segments, so queries do not analyze them again and again. Search over
+**Do I have to refresh?** No: every index refreshes itself every minute (option `refresh_every`).
+Searches over `<index>_live` see every committed insert and update at once; deleted rows are gone
+at the next refresh (or at once with a journal row). A refresh also folds the changes into
+segments, so queries do not analyze them again and again. Search over
 `<index>_snap` when the changes since the last refresh do not matter and the last millisecond does:
 the live view costs about 1 ms more per statement (Vertica's `UNION ALL` of the tail and the
 sentinel row, measured in docs/VERTICA_NOTES.md). The snap view gives the guarantee Elasticsearch
@@ -2717,7 +2823,27 @@ they copied stops working. Before, a user who lost `SELECT` on the table could s
 through the views. `grants=manual` (with the new procedure `alter_index`) keeps the views' grants
 as you set them.
 
-After the upgrade: nothing to do. An existing index keeps its `ver` boundary until its next
+Indexes look after themselves ([Install](#index-a-table-and-let-users-search)):
+
+- **Automatic refresh.** `create_index` makes a Vertica schedule and the trigger
+  `vfts.refresh_<index>`, which runs the new procedure `maintain` every minute (option
+  `refresh_every`, minutes; `0`: off): refresh, repair nodes that are behind, remove leftovers.
+  A failure is written to `refresh_note`. A search warns when the live tail has more than 10,000
+  rows (parameter `tail_warn`).
+- **Node caches survive a reboot.** The default cache directory is `<catalog>/vfts` on each node,
+  no longer `/tmp/vfts` (a tmpfs on many systems: after a reboot every search failed until
+  `load_all`). The install moves existing caches there (`vfts.upgrade_caches`).
+- **Nodes repair themselves.** A refresh writes every segment a node lacks, not only its new ones,
+  so a node that was down or lost its cache is up to date after the next refresh; `load_all`
+  writes only what is missing (after a reboot with the cache in place it reads nothing).
+- **No leftovers.** `drop_index` also removes the trigger, and works for an index that is already
+  gone (it removes that name's caches on this subcluster); the new procedure `cleanup` drops the
+  indexes whose table is gone and the caches of indexes that no longer exist; a cache knows its
+  index's id, so an index created again with the same name never meets an old cache.
+
+After the upgrade: existing indexes keep their settings and get no trigger; give them one with
+`CALL vfts.alter_index(index, 'refresh_every=1')`. On Eon, run `CALL vfts.upgrade_caches()` from a
+session on each subcluster other than the one you installed from. An existing index keeps its `ver` boundary until its next
 `refresh_index`, which moves it to the epoch, and from then on its views' grants follow the source
 table's (`CALL vfts.alter_index(index, 'grants=manual')` first to keep grants you gave by hand).
 
@@ -2762,9 +2888,14 @@ vtext with its own `./install.sh --uninstall --drop`, install vfts, and create t
 - A sloppy phrase with the same word twice (`"run run"~2`) uses Lucene's rules without its
   special handling of repeated words.
 - Words longer than 255 bytes (after normalization) are not indexed.
-- The live tail is analyzed for every query: refresh when it grows (thousands of rows are fine).
-- A search reads the cache of its node; a node that missed a refresh or a load refuses to answer
-  until `load_all`. On Eon, every subcluster is loaded from a session on it.
+- The live tail is analyzed for every query (thousands of rows are fine; a search warns above
+  10,000). The automatic refresh keeps it short.
+- Deleted rows are found by every search until the next refresh (at most `refresh_every` minutes,
+  one by default), unless a journal row hides them at once.
+- A search reads the cache of its node; a node that missed a refresh refuses to answer until the
+  next refresh on its subcluster or `load_all`. On Eon, a statement reaches only its own
+  subcluster: every subcluster other than the one the trigger runs on needs `maintain` (or
+  `load_all`) from a session on it after each refresh.
 - Tested on Vertica 26.3.0-2, single node Enterprise and 5-node Eon. Multi-node Enterprise
   was not available for testing.
 

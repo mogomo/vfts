@@ -28,7 +28,7 @@ q "CREATE TABLE vf_attr.meta (doc_id INT NOT NULL, custodian INT, status VARCHAR
           '2001-05-15'::DATE + (doc_id % 40)::INT, doc_id % 2 = 0
    FROM vf_attr.docs WHERE doc_id % 17 <> 0;
    COMMIT;" > /dev/null
-q "CALL vfts.create_index('vf_attr', 'vf_attr.docs', 'margin=0')" > /dev/null
+q "CALL vfts.create_index('vf_attr', 'vf_attr.docs', 'refresh_every=0 margin=0')" > /dev/null
 for a in custodian status sent flag; do
     q "CALL vfts.add_attribute('vf_attr', '$a', 'vf_attr.meta', 'doc_id', '$a')" > /dev/null
 done

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <dirent.h>
 #include <fcntl.h>
@@ -360,6 +361,24 @@ CacheWriter::CacheWriter(const std::string &cache_dir, const std::string &index)
     mkdirs(dir_);
 }
 
+void CacheWriter::claim(std::int64_t index_id)
+{
+    static std::mutex mu;                   // instances of one statement claim in parallel
+    std::lock_guard<std::mutex> lock(mu);
+    std::string cur;
+    if (read_small(dir_ + "/INDEX_ID", cur) && !cur.empty()) {
+        if (std::strtoll(cur.c_str(), nullptr, 10) == index_id) return;
+        // the cache of an index that had this name before: none of its files belong to this one
+        // (a cache without INDEX_ID was written by vfts 0.4 and is taken as it is: its generation
+        // file carries the index's keys, so a cache of another index would be refused anyway)
+        const std::string base = dir_.substr(0, dir_.rfind('/')), name = dir_.substr(dir_.rfind('/') + 1);
+        drop_cache(base, name);
+        mkdirs(dir_);
+    }
+    const std::string v = std::to_string(index_id) + "\n";
+    write_atomic(dir_, "INDEX_ID", v.data(), v.size());
+}
+
 bool CacheWriter::has_segment(std::int64_t id, std::uint64_t checksum) const
 {
     const int fd = ::open((dir_ + "/" + seg_name(id)).c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
@@ -546,10 +565,108 @@ void drop_cache(const std::string &cache_dir, const std::string &index)
     if (!d) return;
     while (dirent *e = ::readdir(d)) {
         const std::string n = e->d_name;
-        if (n == "ACTIVE" || n.rfind("seg_", 0) == 0 || n.rfind("gen_", 0) == 0 || n.rfind("attr_", 0) == 0) ::unlink((dir + "/" + n).c_str());
+        if (n == "ACTIVE" || n == "INDEX_ID" || n.rfind("seg_", 0) == 0 || n.rfind("gen_", 0) == 0 || n.rfind("attr_", 0) == 0)
+            ::unlink((dir + "/" + n).c_str());
     }
     ::closedir(d);
     ::rmdir(dir.c_str());
+}
+
+static bool vfts_file(const std::string &n)
+{
+    return n == "ACTIVE" || n == "INDEX_ID" || n.rfind("seg_", 0) == 0 || n.rfind("gen_", 0) == 0 || n.rfind("attr_", 0) == 0;
+}
+
+std::vector<CacheDirEntry> list_caches(const std::string &cache_dir)
+{
+    std::vector<CacheDirEntry> out;
+    DIR *d = ::opendir(cache_dir.c_str());
+    if (!d) return out;
+    while (dirent *e = ::readdir(d)) {
+        const std::string n = e->d_name;
+        if (!valid_index_name(n)) continue;
+        const std::string dir = cache_dir + "/" + n;
+        struct stat st;
+        if (::lstat(dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != ::geteuid()) continue;
+        CacheDirEntry c;
+        c.index = n;
+        bool ours = false;
+        if (DIR *f = ::opendir(dir.c_str())) {
+            while (dirent *x = ::readdir(f)) {
+                const std::string fn = x->d_name;
+                if (!vfts_file(fn)) continue;
+                ours = true;
+                struct stat fs;
+                if (::lstat((dir + "/" + fn).c_str(), &fs) == 0 && S_ISREG(fs.st_mode)) c.bytes += static_cast<std::uint64_t>(fs.st_size);
+            }
+            ::closedir(f);
+        }
+        if (!ours) continue;
+        std::string v;
+        if (read_small(dir + "/INDEX_ID", v) && !v.empty()) c.index_id = std::strtoll(v.c_str(), nullptr, 10);
+        std::int64_t g;
+        if (read_active(dir, g)) c.gen = g;
+        out.push_back(c);
+    }
+    ::closedir(d);
+    std::sort(out.begin(), out.end(), [](const CacheDirEntry &a, const CacheDirEntry &b) { return a.index < b.index; });
+    return out;
+}
+
+// Copies a file in pieces (a segment can be gigabytes) to a temporary name, syncs it and renames it.
+static void copy_file(const std::string &from, const std::string &dir, const std::string &name)
+{
+    const int in = ::open(from.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (in < 0) sys_fail("cannot read " + from);
+    const std::string tmp = dir + "/" + name + ".tmp." + std::to_string(::getpid());
+    const int out = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (out < 0) { const int e = errno; ::close(in); errno = e; sys_fail("cannot create " + tmp); }
+    std::vector<char> buf(8 << 20);
+    for (;;) {
+        const ssize_t r = ::read(in, buf.data(), buf.size());
+        if (r < 0 && errno == EINTR) continue;
+        if (r < 0) { const int e = errno; ::close(in); ::close(out); ::unlink(tmp.c_str()); errno = e; sys_fail("cannot read " + from); }
+        if (r == 0) break;
+        for (ssize_t done = 0; done < r;) {
+            const ssize_t w = ::write(out, buf.data() + done, static_cast<std::size_t>(r - done));
+            if (w < 0 && errno == EINTR) continue;
+            if (w < 0) { const int e = errno; ::close(in); ::close(out); ::unlink(tmp.c_str()); errno = e; sys_fail("cannot write " + tmp); }
+            done += w;
+        }
+    }
+    ::close(in);
+    if (::fsync(out) != 0) { const int e = errno; ::close(out); ::unlink(tmp.c_str()); errno = e; sys_fail("cannot sync " + tmp); }
+    ::close(out);
+    if (::rename(tmp.c_str(), (dir + "/" + name).c_str()) != 0) { const int e = errno; ::unlink(tmp.c_str()); errno = e; sys_fail("cannot rename " + tmp); }
+}
+
+std::vector<std::string> adopt_caches(const std::string &from_dir, const std::string &to_dir)
+{
+    std::vector<std::string> moved;
+    if (from_dir == to_dir) return moved;
+    for (const CacheDirEntry &c : list_caches(from_dir)) {
+        const std::string src = from_dir + "/" + c.index, dst = to_dir + "/" + c.index;
+        struct stat st;
+        if (::stat(dst.c_str(), &st) == 0) continue;            // the new place has it already
+        mkdirs(to_dir);
+        if (::rename(src.c_str(), dst.c_str()) != 0) {
+            if (errno != EXDEV) sys_fail("cannot move " + src);
+            // another file system: copy every vfts file atomically, then remove the old directory
+            mkdirs(dst);
+            DIR *d = ::opendir(src.c_str());
+            if (!d) sys_fail("cannot read " + src);
+            std::vector<std::string> names;
+            while (dirent *e = ::readdir(d)) if (vfts_file(e->d_name)) names.push_back(e->d_name);
+            ::closedir(d);
+            std::sort(names.begin(), names.end(), [](const std::string &a, const std::string &b) {
+                return (a == "ACTIVE") < (b == "ACTIVE");           // ACTIVE last
+            });
+            for (const std::string &n : names) copy_file(src + "/" + n, dst, n);
+            drop_cache(from_dir, c.index);
+        }
+        moved.push_back(c.index);
+    }
+    return moved;
 }
 
 } // namespace vfts

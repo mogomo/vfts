@@ -71,6 +71,7 @@ private:
         if (queries.empty()) return;
         const auto t1 = clk::now();
         auto li = v.open(resolve_cache_dir(s), index, srv.getUserName());
+        v.warn_long_tail(srv, s, index);
         const auto t2 = clk::now();
         std::unique_ptr<vfts::Searcher> sp = v.searcher(*li);
         vfts::Searcher &searcher = *sp;

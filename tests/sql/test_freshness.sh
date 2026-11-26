@@ -22,7 +22,7 @@ gen_docs() {   # first last seed -> INSERT of documents doc_id first..last
        GROUP BY doc_id; COMMIT;" > /dev/null
 }
 gen_docs 1 2000 1
-q "CALL vfts.create_index('vf_fr', 'vf_fr.docs', 'journal=vf_fr.docs_journal margin=0')" > /dev/null
+q "CALL vfts.create_index('vf_fr', 'vf_fr.docs', 'refresh_every=0 journal=vf_fr.docs_journal margin=0')" > /dev/null
 
 # Changes after the index was built: 100 new rows, 60 updated (ver bumped), 20 updated with only a
 # journal row (ver unchanged), 50 deleted, and 5 rows updated twice.
@@ -39,7 +39,7 @@ q "UPDATE vf_fr.docs SET body = body || ' settlement holmes', ver = CLOCK_TIMEST
 
 # Reference: an index built from scratch on a copy of the current rows.
 q "CREATE TABLE vf_fr.ref AS SELECT doc_id, body, lang FROM vf_fr.docs; COMMIT;" > /dev/null
-q "CALL vfts.create_index('vf_fr_ref', 'vf_fr.ref')" > /dev/null
+q "CALL vfts.create_index('vf_fr_ref', 'vf_fr.ref', 'refresh_every=0')" > /dev/null
 
 QUERIES=("holmes" "contract indemnity" "watson AND breach" "settlement OR holmes -court" "\"contract indemnity\"" "contract w/3 indemnity" "agree*" "NOT contract")
 R() {   # index view query -> doc_id:rank:score lines
@@ -73,7 +73,7 @@ q "UPDATE vf_fr.docs SET body = 'holmes holmes holmes', ver = CLOCK_TIMESTAMP() 
    DELETE FROM vf_fr.docs WHERE doc_id BETWEEN 300 AND 309;
    INSERT INTO vf_fr.docs_journal (doc_id, op) SELECT k, 'D' FROM vfts.probe WHERE k BETWEEN 300 AND 309; COMMIT;" > /dev/null
 q "CALL vfts.drop_index('vf_fr_ref'); DROP TABLE vf_fr.ref; CREATE TABLE vf_fr.ref AS SELECT doc_id, body, lang FROM vf_fr.docs; COMMIT;" > /dev/null
-q "CALL vfts.create_index('vf_fr_ref', 'vf_fr.ref')" > /dev/null
+q "CALL vfts.create_index('vf_fr_ref', 'vf_fr.ref', 'refresh_every=0')" > /dev/null
 compare_all "second round without refresh"
 q "CALL vfts.refresh_index('vf_fr')" > /dev/null
 compare_all "second refresh"
@@ -96,7 +96,7 @@ done
 expect "tiered merge keeps the segment count below merge_factor" \
        "$(q "SELECT (COUNT(*) < 10)::INT FROM vfts.segments s JOIN vfts.indexes i USING (index_id) WHERE i.index_name = 'vf_fr' AND s.gen_removed IS NULL")" "1"
 q "CALL vfts.drop_index('vf_fr_ref'); DROP TABLE vf_fr.ref; CREATE TABLE vf_fr.ref AS SELECT doc_id, body, lang FROM vf_fr.docs; COMMIT;" > /dev/null
-q "CALL vfts.create_index('vf_fr_ref', 'vf_fr.ref')" > /dev/null
+q "CALL vfts.create_index('vf_fr_ref', 'vf_fr.ref', 'refresh_every=0')" > /dev/null
 compare_all "after tiered merges"
 g_before=$(q "SELECT gen FROM vfts.indexes WHERE index_name = 'vf_fr'")
 q "CALL vfts.rebuild('vf_fr')" > /dev/null

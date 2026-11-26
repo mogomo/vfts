@@ -35,7 +35,7 @@ for u in $USERS; do q "CREATE USER $u IDENTIFIED BY 'Pw_${u}_9'; GRANT USAGE ON 
 q "GRANT SELECT ON vf_gr.docs TO vf_gr_a;
    CREATE ROLE vf_gr_r1; CREATE ROLE vf_gr_r2; GRANT vf_gr_r1 TO vf_gr_r2; GRANT vf_gr_r2 TO vf_gr_c;
    ALTER USER vf_gr_c DEFAULT ROLE vf_gr_r2; GRANT SELECT ON vf_gr.docs TO vf_gr_r1;" > /dev/null 2>&1
-q "CALL vfts.create_index('vf_gr', 'vf_gr.docs')" > /dev/null
+q "CALL vfts.create_index('vf_gr', 'vf_gr.docs', 'refresh_every=0')" > /dev/null
 
 S="SELECT COUNT(*) FROM (SELECT vfts.tsearch(* USING PARAMETERS index='vf_gr', query='contract') OVER() FROM vf_gr.vf_gr_live) r"
 expect "SELECT on the table: may search, without a grant on the views" "$(as vf_gr_a "$S")" "2"

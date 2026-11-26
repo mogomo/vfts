@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS vfts.indexes (
     access             VARCHAR(256),              -- open, rows or masked:<column> (docs/design.md "Access")
     reorder            BOOLEAN DEFAULT TRUE,      -- merges number documents by graph bisection (docs/design.md "Merge")
     boundary_epoch     INT,                       -- rows of the source with epoch <= boundary_epoch are in the segments
-    grants_opt         VARCHAR(8)                 -- source (NULL): the views follow the source table's SELECT grants; manual
+    grants_opt         VARCHAR(8),                -- source (NULL): the views follow the source table's SELECT grants; manual
+    refresh_every      INT                        -- minutes between automatic refreshes (trigger vfts.refresh_<index>); 0 or NULL: off
 ) UNSEGMENTED ALL NODES;
 -- tables of vfts 0.1.0
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS access_opt VARCHAR(8);
@@ -51,6 +52,7 @@ ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS reorder BOOLEAN DEFAULT TRUE;
 -- tables of vfts 0.4
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS boundary_epoch INT;
 ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS grants_opt VARCHAR(8);
+ALTER TABLE vfts.indexes ADD COLUMN IF NOT EXISTS refresh_every INT;
 
 -- The secret key of every index: the views prove with a token made from it that they are the
 -- input of a search. Readable by the owner of the views only (no grant): a view reads it with its
@@ -196,6 +198,7 @@ CREATE OR REPLACE TRANSFORM FUNCTION vfts.tnode    AS LANGUAGE 'C++' NAME 'TNode
 CREATE OR REPLACE TRANSFORM FUNCTION vfts.tinfo    AS LANGUAGE 'C++' NAME 'TInfoFactory'    LIBRARY vfts.vfts :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vfts.thave    AS LANGUAGE 'C++' NAME 'THaveFactory'    LIBRARY vfts.vfts :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vfts.tdrop    AS LANGUAGE 'C++' NAME 'TDropFactory'    LIBRARY vfts.vfts :fenced;
+CREATE OR REPLACE TRANSFORM FUNCTION vfts.tcaches  AS LANGUAGE 'C++' NAME 'TCachesFactory'  LIBRARY vfts.vfts :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vfts.tattr    AS LANGUAGE 'C++' NAME 'TAttrIntFactory'  LIBRARY vfts.vfts :fenced;
 CREATE OR REPLACE TRANSFORM FUNCTION vfts.tattr    AS LANGUAGE 'C++' NAME 'TAttrTextFactory' LIBRARY vfts.vfts :fenced;
 
@@ -225,3 +228,10 @@ GRANT EXECUTE ON PROCEDURE vfts.info(VARCHAR) TO PUBLIC;
 -- Indexes made by vfts 0.1.0 get a key, their access mode and new views (best effort: a node
 -- without cache reports it, and CALL vfts.check_access('<index>') can be run again later).
 CALL vfts.upgrade_access();
+
+-- Caches of vfts 0.4 and older (in /tmp/vfts) move to the new default, <catalog>/vfts, on the nodes
+-- of this subcluster (on Eon: CALL vfts.upgrade_caches() from a session on each other subcluster).
+CALL vfts.upgrade_caches();
+
+-- The automatic refresh of every index that has one (an uninstall removed the triggers).
+CALL vfts.upgrade_schedules();

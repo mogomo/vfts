@@ -30,6 +30,9 @@ clean() {
     return 0
 }
 if [ "${1:-}" = --clean ]; then clean; echo "examples removed"; exit 0; fi
+# The example index is refreshed by its trigger every minute (create_index's default): start just
+# after a minute begins, so that the story (about 40 s) runs before the first automatic refresh.
+while [ "$(date +%S)" -gt 2 ]; do sleep 1; done
 FAILS=0
 ex() {   # title, then statements: each is printed with its output; a failed one is counted
     echo; echo "-- $1"; shift
@@ -158,6 +161,9 @@ ex "tinfo: the cache of every node" \
 "SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;"
 
 ex "load_all: write missing node caches from the index tables" "CALL vfts.load_all('notes');"
+ex "maintain: what the trigger of the index runs every minute (refresh, then the nodes that are behind)" "CALL vfts.maintain('notes');" \
+"SELECT index_name, refresh_every, refresh_note FROM vfts.indexes WHERE index_name = 'notes';"
+ex "cleanup: indexes whose table is gone, caches of indexes that are gone" "CALL vfts.cleanup();"
 ex "check_access: read the access policies again and make a new key" "CALL vfts.check_access('notes');" \
 "SELECT index_name, access, reorder FROM vfts.indexes WHERE index_name = 'notes';"
 

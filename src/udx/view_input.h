@@ -152,6 +152,17 @@ struct ViewInput {
                               std::to_string(s1) + ":" + std::to_string(s2) + ":" + key);
     }
 
+    // Every search analyzes every row of the live tail: a warning to the client when the tail has
+    // more than tail_warn rows (parameter or session parameter; default 10,000; 0: never).
+    void warn_long_tail(Vertica::ServerInterface &srv, Settings &s, const std::string &index) const
+    {
+        const std::int64_t lim = s.integer("tail_warn", 10000);
+        if (lim <= 0 || static_cast<std::int64_t>(tail.size()) <= lim) return;
+        srv.reportWarning(Vertica::ClientMessage(1, "vfts: the live tail of index " + index + " has " + std::to_string(tail.size()) +
+                                                    " rows, which every search analyzes again: CALL vfts.refresh_index('" + index +
+                                                    "'), or let it refresh itself (vfts.alter_index option refresh_every)"));
+    }
+
 private:
     void check(const vfts::LoadedIndex &li, const std::string &index, const std::string &user) const
     {

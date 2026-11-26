@@ -43,6 +43,7 @@ private:
         const std::string cache_dir = resolve_cache_dir(s);
         const bool activate = s.has("gen");
         vfts::CacheWriter w(cache_dir, index);
+        if (s.has("index_id")) w.claim(s.integer("index_id", 0));
         std::map<std::int64_t, vfts::SegmentAssembler> asm_;
         std::map<std::int64_t, std::uint64_t> expect;           // segment -> checksum (S rows)
         std::map<std::int64_t, std::int64_t> max_ver;
@@ -181,6 +182,7 @@ public:
         p.addVarchar(1024, "cache_dir");
         p.addInt("gen");
         p.addVarchar(256, "options");
+        p.addInt("index_id");
     }
     TransformFunction *createTransformFunction(ServerInterface &srv) override { return vt_createFuncObject<TLoad>(srv.allocator); }
 };

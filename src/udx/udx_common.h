@@ -13,6 +13,7 @@
 
 #include <cerrno>
 #include <cmath>
+#include <unistd.h>
 #include <cstdlib>
 #include <initializer_list>
 #include <stdexcept>
@@ -145,8 +146,26 @@ inline std::string index_options_string(const vfts::AnalyzerOptions &o)
            ";on_unsupported=" + (o.unsupported_plain ? "plain" : "error");
 }
 
-// cache_dir: function parameter, then session parameter, then /tmp/vfts.
-inline std::string resolve_cache_dir(Settings &s) { return s.text("cache_dir", vfts::DEFAULT_CACHE_DIR); }
+// The default cache directory: <catalog>/vfts, in the node's catalog directory (persistent, local
+// to the node, owned by the database's OS user). The server runs in the catalog directory, a fenced
+// UDx process in its subdirectory UDxLogs, so both find the same place without a parameter. A
+// process that runs anywhere else (not a Vertica node) falls back to /tmp/vfts.
+inline std::string default_cache_dir()
+{
+    static const std::string dir = [] {
+        char buf[4096];
+        if (!::getcwd(buf, sizeof buf)) return std::string(vfts::DEFAULT_CACHE_DIR);
+        std::string c = buf;
+        const std::string udx = "/UDxLogs", cat = "_catalog";
+        if (c.size() > udx.size() && c.compare(c.size() - udx.size(), udx.size(), udx) == 0) c.resize(c.size() - udx.size());
+        if (c.size() > cat.size() && c.compare(c.size() - cat.size(), cat.size(), cat) == 0) return c + "/vfts";
+        return std::string(vfts::DEFAULT_CACHE_DIR);
+    }();
+    return dir;
+}
+
+// cache_dir: function parameter, then session parameter, then default_cache_dir().
+inline std::string resolve_cache_dir(Settings &s) { return s.text("cache_dir", default_cache_dir()); }
 
 inline std::string read_index_name(Settings &s)
 {

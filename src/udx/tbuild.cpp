@@ -37,6 +37,7 @@ class TBuild : public TransformFunction {
     int threads_ = 4;
     std::size_t max_bytes_ = 0;
     std::string index_, cache_dir_;     // with index: segments are also written into this node's cache
+    std::int64_t index_id_ = -1;
 
 public:
     void setup(ServerInterface &srv, const SizedColumnTypes &) override
@@ -52,6 +53,7 @@ public:
             if (mb < 1) fail("max_segment_mb must be at least 1");
             max_bytes_ = static_cast<std::size_t>(mb) << 20;
             if (s.has("index")) { index_ = read_index_name(s); cache_dir_ = resolve_cache_dir(s); }
+            if (s.has("index_id")) index_id_ = s.integer("index_id", -1);
         } catch (const std::exception &e) {
             vt_report_error(0, "tbuild: %s", e.what());
         }
@@ -77,6 +79,7 @@ private:
 
     void run(ServerInterface &srv, PartitionReader &in, PartitionWriter &out)
     {
+        if (!index_.empty() && index_id_ >= 0) vfts::CacheWriter(cache_dir_, index_).claim(index_id_);   // before the workers write
         std::mutex mu;
         std::condition_variable cv_work, cv_room;
         std::deque<std::vector<DocIn>> queue;
@@ -217,6 +220,7 @@ public:
         p.addVarchar(128, "index");
         p.addVarchar(1024, "cache_dir");
         p.addInt("row_bytes");
+        p.addInt("index_id");
     }
     TransformFunction *createTransformFunction(ServerInterface &srv) override { return vt_createFuncObject<TBuild>(srv.allocator); }
 };

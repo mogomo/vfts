@@ -40,7 +40,7 @@ gen_docs() {   # first last seed
        GROUP BY doc_id; COMMIT;" > /dev/null
 }
 gen_docs 1 600 7
-q "CALL vfts.create_index('vf_ac', 'vf_ac.docs', 'margin=0')" > /dev/null
+q "CALL vfts.create_index('vf_ac', 'vf_ac.docs', 'refresh_every=0 margin=0')" > /dev/null
 for u in $USERS; do
     q "CREATE USER $u IDENTIFIED BY 'Pw_${u}_9'; GRANT USAGE ON SCHEMA vf_ac TO $u;" > /dev/null
 done
@@ -77,7 +77,7 @@ expect "access mode rows" "$(q "SELECT access FROM vfts.indexes WHERE index_name
 # references: indexes built from the rows each user sees
 for u in a b; do
     q "CREATE TABLE vf_ac.ref_$u AS SELECT doc_id, body FROM vf_ac.docs WHERE owner = 'vf_ac_$u'; COMMIT;" > /dev/null
-    q "CALL vfts.create_index('vf_ac_ref_$u', 'vf_ac.ref_$u', 'margin=0')" > /dev/null
+    q "CALL vfts.create_index('vf_ac_ref_$u', 'vf_ac.ref_$u', 'refresh_every=0 margin=0')" > /dev/null
 done
 compare_users() {   # label view
     for u in a b; do
@@ -131,7 +131,7 @@ gen_docs 601 700 8
 q "UPDATE vf_ac.docs SET owner = 'vf_ac_b', ver = CLOCK_TIMESTAMP() WHERE doc_id IN (1, 2, 4); COMMIT;" > /dev/null
 for u in a b; do
     q "CALL vfts.drop_index('vf_ac_ref_$u'); DROP TABLE vf_ac.ref_$u; CREATE TABLE vf_ac.ref_$u AS SELECT doc_id, body FROM vf_ac.docs WHERE owner = 'vf_ac_$u'; COMMIT;" > /dev/null
-    q "CALL vfts.create_index('vf_ac_ref_$u', 'vf_ac.ref_$u', 'margin=0')" > /dev/null
+    q "CALL vfts.create_index('vf_ac_ref_$u', 'vf_ac.ref_$u', 'refresh_every=0 margin=0')" > /dev/null
 done
 compare_users "live tail, before refresh" vf_ac_live
 q "CALL vfts.refresh_index('vf_ac')" > /dev/null
@@ -152,7 +152,7 @@ q "CALL vfts.refresh_index('vf_ac')" > /dev/null
 expect "refresh_index follows the policies (open)" "$(q "SELECT access FROM vfts.indexes WHERE index_name = 'vf_ac'")" "open"
 expect "user b sees every row again" "$(as vf_ac_b "SELECT count FROM (SELECT vfts.tcount(* USING PARAMETERS index='vf_ac', query='contract') OVER() FROM vf_ac.vf_ac_snap) r")" \
     "$(q "SELECT COUNT(*) FROM vf_ac.docs WHERE body::VARCHAR(65000) ILIKE '%contract%'")"
-expect "access=rows option without a policy" "$(q "CALL vfts.drop_index('vf_ac_ref_b'); CALL vfts.create_index('vf_ac_ref_b', 'vf_ac.ref_b', 'margin=0 access=rows')" > /dev/null; q "SELECT access FROM vfts.indexes WHERE index_name = 'vf_ac_ref_b'")" "rows"
+expect "access=rows option without a policy" "$(q "CALL vfts.drop_index('vf_ac_ref_b'); CALL vfts.create_index('vf_ac_ref_b', 'vf_ac.ref_b', 'refresh_every=0 margin=0 access=rows')" > /dev/null; q "SELECT access FROM vfts.indexes WHERE index_name = 'vf_ac_ref_b'")" "rows"
 
 cleanup
 done_test

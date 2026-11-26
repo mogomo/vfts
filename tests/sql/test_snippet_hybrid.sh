@@ -16,7 +16,7 @@ q "CREATE SCHEMA vf_hy;
    INSERT INTO vf_hy.docs (doc_id, body, vec) VALUES (4, 'Sherlock Holmes, the detective.', ARRAY[0.0, 1.0, 0.0]);
    INSERT INTO vf_hy.docs (doc_id, body, vec) VALUES (5, 'Contracts are signed by both parties after review.', ARRAY[0.0, 0.0, 1.0]);
    COMMIT;" > /dev/null
-q "CALL vfts.create_index('vf_hy', 'vf_hy.docs', 'margin=0')" > /dev/null
+q "CALL vfts.create_index('vf_hy', 'vf_hy.docs', 'refresh_every=0 margin=0')" > /dev/null
 
 # tsnippet
 expect "snippet marks hits" \

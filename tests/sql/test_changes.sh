@@ -27,8 +27,8 @@ gen_docs() {   # table first last seed -> INSERT of documents doc_id first..last
 }
 gen_docs docs 1 2000 1
 gen_docs other 3001 3300 7
-q "CALL vfts.create_index('vf_ch', 'vf_ch.docs')" > /dev/null
-q "CALL vfts.create_index('vf_ch2', 'vf_ch.other')" > /dev/null
+q "CALL vfts.create_index('vf_ch', 'vf_ch.docs', 'refresh_every=0')" > /dev/null
+q "CALL vfts.create_index('vf_ch2', 'vf_ch.other', 'refresh_every=0')" > /dev/null
 expect "no version column: the index records an epoch boundary" \
        "$(q "SELECT (boundary_epoch IS NOT NULL AND ver_col IS NULL)::INT FROM vfts.indexes WHERE index_name = 'vf_ch'")" "1"
 
@@ -41,7 +41,7 @@ C() { q "SELECT count FROM (SELECT vfts.tcount(* USING PARAMETERS index='$1', qu
 compare() {
     q "CALL vfts.drop_index('vf_ch_ref')" > /dev/null 2>&1
     q "DROP TABLE IF EXISTS vf_ch.ref; CREATE TABLE vf_ch.ref AS SELECT doc_id, body FROM vf_ch.$1; COMMIT;" > /dev/null
-    q "CALL vfts.create_index('vf_ch_ref', 'vf_ch.ref')" > /dev/null
+    q "CALL vfts.create_index('vf_ch_ref', 'vf_ch.ref', 'refresh_every=0')" > /dev/null
     local bad=0 qq a b
     for qq in "${QUERIES[@]}"; do
         a=$(R "$2" "$3" "$qq"); b=$(R vf_ch_ref vf_ch_ref_live "$qq")
@@ -99,7 +99,7 @@ compare other vf_ch2 vf_ch2_snap "COPY_PARTITIONS_TO_TABLE, after refresh"
 # 7. A journal without a version column (doc_id, op): deletes visible at once
 q "CREATE TABLE vf_ch.journal (doc_id INT, op CHAR(1)); COMMIT;" > /dev/null
 q "CALL vfts.drop_index('vf_ch')" > /dev/null
-q "CALL vfts.create_index('vf_ch', 'vf_ch.docs', 'journal=vf_ch.journal')" > /dev/null
+q "CALL vfts.create_index('vf_ch', 'vf_ch.docs', 'refresh_every=0 journal=vf_ch.journal')" > /dev/null
 q "DELETE FROM vf_ch.docs WHERE doc_id BETWEEN 300 AND 349; INSERT INTO vf_ch.journal SELECT k, 'D' FROM vfts.probe WHERE k BETWEEN 300 AND 349; COMMIT;" > /dev/null
 compare docs vf_ch vf_ch_live "journal (doc_id, op): delete in the live view at once"
 q "CALL vfts.refresh_index('vf_ch')" > /dev/null
@@ -114,6 +114,10 @@ expect "a refresh without changes keeps the generation" "$(gen_of vf_ch) $(q "SE
 q "TRUNCATE TABLE vf_ch.other" > /dev/null
 q "CALL vfts.refresh_index('vf_ch2')" > /dev/null
 expect "TRUNCATE, after refresh: nothing found" "$(C vf_ch2 vf_ch2_snap "contract OR holmes OR zebra OR watson")" "0"
+# the merge after that refresh found segments whose every document was deleted: retired, no empty
+# segment made (one could not be loaded on the other nodes: it has no rows)
+expect "TRUNCATE, after refresh: no active segment left" \
+       "$(q "SELECT COUNT(*) FROM vfts.segments s JOIN vfts.indexes i USING (index_id) WHERE i.index_name = 'vf_ch2' AND s.gen_removed IS NULL")" "0"
 gen_docs other 5001 5050 9
 compare other vf_ch2 vf_ch2_live "rows loaded after TRUNCATE, live view"
 
@@ -121,7 +125,7 @@ compare other vf_ch2 vf_ch2_live "rows loaded after TRUNCATE, live view"
 q "CALL vfts.drop_index('vf_ch')" > /dev/null
 q "CREATE TABLE vf_ch.old (doc_id INT NOT NULL, p INT NOT NULL, body LONG VARCHAR, ver TIMESTAMPTZ NOT NULL DEFAULT CLOCK_TIMESTAMP()); COMMIT;" > /dev/null
 gen_docs old 1 1000 3
-q "CALL vfts.create_index('vf_ch', 'vf_ch.old')" > /dev/null
+q "CALL vfts.create_index('vf_ch', 'vf_ch.old', 'refresh_every=0')" > /dev/null
 q "UPDATE vfts.indexes SET ver_col = 'ver', boundary_epoch = NULL, boundary_lit = 'TIMESTAMPTZ ''' || TO_CHAR(CLOCK_TIMESTAMP() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') || '+00''' WHERE index_name = 'vf_ch'; COMMIT;" > /dev/null
 q "CALL vfts.make_views('vf_ch')" > /dev/null
 sleep 1

@@ -48,6 +48,13 @@ if [ "$UNDEPLOY" = no ]; then
     install -m 0644 "$LIBFILE" "$SHARED"
     trap 'rm -f "$SHARED"' EXIT
 fi
+if [ "$UNDEPLOY" = yes ]; then
+    # the triggers of the automatic refresh call vfts procedures: remove them first (an install
+    # makes them again from vfts.indexes.refresh_every)
+    for nm in $(vsql -X -A -t -q -c "SELECT index_name FROM vfts.indexes WHERE COALESCE(refresh_every, 0) > 0" 2> /dev/null); do
+        vsql -X -q -c "CALL vfts.set_schedule('$nm', 0);" > /dev/null 2>&1 || echo "deploy.sh: could not remove the trigger vfts.refresh_$nm" >&2
+    done
+fi
 if [ "$UNDEPLOY" = yes ] && [ "$DROP" = yes ]; then
     # every index first: its partitions, views (in the source table's schema) and node caches
     for nm in $(vsql -X -A -t -q -c "SELECT index_name FROM vfts.indexes" 2> /dev/null); do

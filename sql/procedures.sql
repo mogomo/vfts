@@ -163,7 +163,7 @@ $$;
 --   lang=en  journal=schema.table  accent_fold=latin|none|all  on_unsupported=error|plain
 --   id_col=doc_id  text_col=body  lang_col=lang  threads=0  max_segment_mb=2048
 --   merge_factor=10  cache_dir=/path  build=true|false  access=auto|rows  reorder=true|false
---   grants=source|manual
+--   grants=source|manual  refresh_every=1 (minutes; 0: off)
 CREATE OR REPLACE PROCEDURE vfts.create_index(nm VARCHAR, src VARCHAR, opts VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
     ident VARCHAR(64) := '^[A-Za-z_][A-Za-z0-9_]*$';
@@ -171,7 +171,7 @@ DECLARE
     o VARCHAR(4000); sch VARCHAR(128); tbl VARCHAR(128);
     idc VARCHAR(128); txt VARCHAR(128); lng VARCHAR(128); vc VARCHAR(128); jt VARCHAR(300);
     lang_ VARCHAR(16); fold VARCHAR(16); unsup VARCHAR(16); margin_ INT; threads_ INT; maxmb INT; mf INT;
-    cdir VARCHAR(1024); build VARCHAR(8); n INT; t VARCHAR(128); iid INT; accopt VARCHAR(8); reord VARCHAR(8); grt VARCHAR(8);
+    cdir VARCHAR(1024); build VARCHAR(8); n INT; t VARCHAR(128); iid INT; accopt VARCHAR(8); reord VARCHAR(8); grt VARCHAR(8); every INT;
 BEGIN
     IF nm IS NULL OR NOT REGEXP_LIKE(nm, '^[A-Za-z0-9_]{1,64}$') THEN
         RAISE EXCEPTION 'vfts.create_index: index name must be 1 to 64 letters, digits or underscores';
@@ -202,8 +202,15 @@ BEGIN
     accopt := COALESCE(REGEXP_SUBSTR(o, ' access=([a-z]+)', 1, 1, '', 1), 'auto');
     reord := COALESCE(REGEXP_SUBSTR(o, ' reorder=([a-z]+)', 1, 1, '', 1), 'true');
     grt := COALESCE(REGEXP_SUBSTR(o, ' grants=([a-z]+)', 1, 1, '', 1), 'source');
+    every := COALESCE(REGEXP_SUBSTR(o, ' refresh_every=([0-9]{1,4})( |$)', 1, 1, '', 1), '1')::INT;
+    IF REGEXP_LIKE(o, ' refresh_every=') AND NOT REGEXP_LIKE(o, ' refresh_every=[0-9]{1,4} ') THEN
+        RAISE EXCEPTION 'vfts.create_index: refresh_every is in minutes: 0 (off), 1 to 59, or whole hours up to 1440';
+    END IF;
     IF grt NOT IN ('source', 'manual') THEN
         RAISE EXCEPTION 'vfts.create_index: grants must be source (the views follow the SELECT grants of the table) or manual';
+    END IF;
+    IF every < 0 OR (every >= 60 AND (MOD(every, 60) <> 0 OR every > 1440)) THEN
+        RAISE EXCEPTION 'vfts.create_index: refresh_every is in minutes: 0 (off), 1 to 59, or whole hours up to 1440';
     END IF;
     IF reord NOT IN ('true', 'false') THEN
         RAISE EXCEPTION 'vfts.create_index: reorder must be true or false';
@@ -263,8 +270,8 @@ BEGIN
     iid := (SELECT NEXTVAL('vfts.index_seq'));
     PERFORM INSERT INTO vfts.indexes (index_id, index_name, source_table, id_col, text_col, lang_col, ver_col, journal_table,
                                        lang, accent_fold, on_unsupported, margin_s, threads, max_segment_mb, merge_factor,
-                                       cache_dir, view_schema, gen, created_at, access_opt, reorder, grants_opt)
-            VALUES (iid, nm, src, idc, txt, lng, vc, jt, lang_, fold, unsup, margin_, threads_, maxmb, mf, cdir, sch, 0, CLOCK_TIMESTAMP(), accopt, reord = 'true', grt);
+                                       cache_dir, view_schema, gen, created_at, access_opt, reorder, grants_opt, refresh_every)
+            VALUES (iid, nm, src, idc, txt, lng, vc, jt, lang_, fold, unsup, margin_, threads_, maxmb, mf, cdir, sch, 0, CLOCK_TIMESTAMP(), accopt, reord = 'true', grt, every);
     PERFORM CALL vfts.new_key(iid);
     PERFORM CALL vfts.detect_access(nm);
     PERFORM COMMIT;
@@ -272,6 +279,10 @@ BEGIN
     PERFORM CALL vfts.sync_grants(nm, FALSE);
     IF build = 'true' THEN
         PERFORM CALL vfts.refresh_index(nm);
+    END IF;
+    PERFORM CALL vfts.set_schedule(nm, every);
+    IF every > 0 AND (SELECT COUNT(*) FROM v_catalog.users WHERE user_name = CURRENT_USER() AND is_super_user) = 0 THEN
+        RAISE NOTICE 'vfts: index % is not refreshed automatically: scheduling needs a superuser (CALL vfts.alter_index(''%'', ''refresh_every=%'') as one)', nm, nm, every;
     END IF;
     RAISE NOTICE 'vfts: index % created on %. Search: SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index=''%'', query=''...'', k=10) OVER() FROM %.%_live) r;',
                  nm, src, nm, sch, nm;
@@ -297,7 +308,8 @@ DECLARE
     want INT; got INT; params VARCHAR(2000);
 BEGIN
     want := (SELECT COUNT(*) FROM (SELECT vfts.tnode(k) OVER(PARTITION NODES) FROM vfts.probe) n);
-    params := 'index=' || QUOTE_LITERAL(nm) || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
+    params := 'index=' || QUOTE_LITERAL(nm) || ', index_id=' || (SELECT MAX(index_id) FROM vfts.indexes WHERE index_name = nm)
+           || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
     got := EXECUTE 'SELECT /*+LABEL(vfts_load)*/ COUNT(DISTINCT node_name) FROM (SELECT vfts.tload(r.kind, r.segment_id, r.term_id, r.chunk_id, '
         || 'r.docno, r.doc_id, r.n, r.term, r.stem, r.lang, r.bin USING PARAMETERS ' || params || ') OVER(PARTITION NODES) '
         || 'FROM (SELECT /*+SYNTACTIC_JOIN*/ s.* FROM (' || rows_sql || ') s CROSS JOIN /*+DISTRIB(L,L)*/ '
@@ -331,7 +343,7 @@ BEGIN
         || ' UNION ALL SELECT ''K'', 1, NULL, NULL, NULL, NULL, NULL, i.access::VARCHAR(256), k.prev_secret::VARCHAR(256), NULL, NULL '
         || 'FROM vfts.index_keys k JOIN vfts.indexes i ON i.index_id = k.index_id WHERE k.index_id = ' || iid || ' AND k.prev_secret IS NOT NULL';
     want := (SELECT COUNT(*) FROM (SELECT vfts.tnode(k) OVER(PARTITION NODES) FROM vfts.probe) n);
-    params := 'index=' || QUOTE_LITERAL(nm) || ', gen=' || g || ', options=' || QUOTE_LITERAL(opts)
+    params := 'index=' || QUOTE_LITERAL(nm) || ', index_id=' || iid || ', gen=' || g || ', options=' || QUOTE_LITERAL(opts)
            || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
     got := EXECUTE 'SELECT /*+LABEL(vfts_activate)*/ COUNT(DISTINCT node_name) FROM (SELECT vfts.tload(r.kind, r.segment_id, r.term_id, r.chunk_id, '
         || 'r.docno, r.doc_id, r.n, r.term, r.stem, r.lang, r.bin USING PARAMETERS ' || params || ') OVER(PARTITION NODES) '
@@ -344,23 +356,35 @@ BEGIN
 END;
 $$;
 
--- Loads every active segment of an index from the tables into the caches of the session's
--- subcluster and activates the current generation. For new nodes, a secondary subcluster, or a
--- damaged cache. Segments a node already has are not written again.
-CREATE OR REPLACE PROCEDURE vfts.load_all(nm VARCHAR) LANGUAGE PLvSQL AS $$
+-- Writes the segments of generation g that a node of the session's subcluster lacks into its cache,
+-- from the index tables (a node that was down during a refresh, a new node, a lost or damaged
+-- cache, a secondary subcluster). Segments every node has are not read. (verbose: unused; a
+-- notice of a procedure called by another one does not reach the client.)
+CREATE OR REPLACE PROCEDURE vfts.load_missing(nm VARCHAR, g INT, verbose BOOLEAN) LANGUAGE PLvSQL AS $$
 DECLARE
-    iid INT; g INT; cdir VARCHAR(1024); seg INT; n INT; i INT; rows_sql VARCHAR(8000); t0 TIMESTAMPTZ; na INT; a VARCHAR(64);
+    iid INT; cdir VARCHAR(1024); nodes INT; lst VARCHAR(65000); missing VARCHAR(65000); params VARCHAR(65000);
+    seg INT; n INT; i INT; rows_sql VARCHAR(8000); total INT;
 BEGIN
-    SELECT index_id, gen, cache_dir INTO iid, g, cdir FROM vfts.indexes WHERE index_name = nm;
-    IF iid IS NULL THEN
-        RAISE EXCEPTION 'vfts.load_all: index % does not exist', nm;
+    SELECT index_id, cache_dir INTO iid, cdir FROM vfts.indexes WHERE index_name = nm;
+    nodes := (SELECT COUNT(*) FROM (SELECT vfts.tnode(k) OVER(PARTITION NODES) FROM vfts.probe) n);
+    lst := (SELECT LISTAGG(segment_id || ':' || checksum USING PARAMETERS max_length = 60000) FROM vfts.segments
+            WHERE index_id = iid AND gen_added <= g AND (gen_removed IS NULL OR gen_removed > g));
+    total := (SELECT COUNT(*) FROM vfts.segments WHERE index_id = iid AND gen_added <= g AND (gen_removed IS NULL OR gen_removed > g));
+    n := 0;
+    IF lst IS NOT NULL AND lst <> '' THEN
+        params := 'index=' || QUOTE_LITERAL(nm) || ', segments=''' || lst || '''' ||    -- digits, : and , only
+                  CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
+        missing := EXECUTE 'SELECT LISTAGG(s.segment_id::VARCHAR USING PARAMETERS max_length = 65000) FROM (SELECT segment_id FROM vfts.segments WHERE index_id = '
+                || iid || ' AND gen_added <= ' || g || ' AND (gen_removed IS NULL OR gen_removed > ' || g || ')) s '
+                || 'LEFT JOIN (SELECT segment_id, COUNT(DISTINCT node_name) AS n FROM (SELECT vfts.thave(USING PARAMETERS ' || params
+                || ') OVER(PARTITION NODES) FROM vfts.probe) h GROUP BY 1) h USING (segment_id) WHERE COALESCE(h.n, 0) < ' || nodes;
+        IF missing IS NOT NULL AND missing <> '' THEN
+            n := REGEXP_COUNT(missing, ',') + 1;
+        END IF;
     END IF;
-    t0 := (SELECT CLOCK_TIMESTAMP());
-    n := (SELECT COUNT(*) FROM vfts.segments WHERE index_id = iid AND gen_removed IS NULL);
     i := 0;
     WHILE i < n LOOP
-        seg := (SELECT MAX(segment_id) FROM (SELECT segment_id, ROW_NUMBER() OVER(ORDER BY segment_id) AS rn
-                FROM vfts.segments WHERE index_id = iid AND gen_removed IS NULL) s WHERE rn = i + 1);
+        seg := SPLIT_PART(missing, ',', i + 1)::INT;
         rows_sql := 'SELECT ''D''::VARCHAR(1) AS kind, segment_id, NULL::INT AS term_id, NULL::INT AS chunk_id, docno, doc_id, length AS n, '
             || 'NULL::VARCHAR(256) AS term, NULL::VARCHAR(256) AS stem, NULL::VARCHAR(8) AS lang, NULL::LONG VARBINARY(65000) AS bin '
             || 'FROM vfts.doc_stats WHERE index_id = ' || iid || ' AND segment_id = ' || seg
@@ -375,6 +399,35 @@ BEGIN
         PERFORM CALL vfts.load_rows(nm, cdir, rows_sql);
         i := i + 1;
     END LOOP;
+END;
+$$;
+
+-- Fills the caches of the session's subcluster with the current generation: the segments a node
+-- lacks (load_missing), the generation, the attributes; then removes the caches of indexes that no
+-- longer exist on these nodes (clean_caches). For new nodes, a secondary subcluster, a node that
+-- was down during a refresh, or a damaged cache.
+CREATE OR REPLACE PROCEDURE vfts.load_all(nm VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    iid INT; g INT; n INT; i INT; t0 TIMESTAMPTZ; na INT; a VARCHAR(64); cdir VARCHAR(1024); nodes INT; lst VARCHAR(65000); missing INT;
+BEGIN
+    SELECT index_id, gen, cache_dir INTO iid, g, cdir FROM vfts.indexes WHERE index_name = nm;
+    IF iid IS NULL THEN
+        RAISE EXCEPTION 'vfts.load_all: index % does not exist', nm;
+    END IF;
+    t0 := (SELECT CLOCK_TIMESTAMP());
+    -- how many segments some node lacks (load_missing writes them)
+    nodes := (SELECT COUNT(*) FROM (SELECT vfts.tnode(k) OVER(PARTITION NODES) FROM vfts.probe) n);
+    lst := (SELECT LISTAGG(segment_id || ':' || checksum USING PARAMETERS max_length = 60000) FROM vfts.segments
+            WHERE index_id = iid AND gen_added <= g AND (gen_removed IS NULL OR gen_removed > g));
+    missing := 0;
+    IF lst IS NOT NULL AND lst <> '' THEN
+        missing := EXECUTE 'SELECT COUNT(*) FROM (SELECT segment_id FROM vfts.segments WHERE index_id = ' || iid || ' AND gen_added <= ' || g
+                || ' AND (gen_removed IS NULL OR gen_removed > ' || g || ')) s LEFT JOIN (SELECT segment_id, COUNT(DISTINCT node_name) AS n FROM '
+                || '(SELECT vfts.thave(USING PARAMETERS index=' || QUOTE_LITERAL(nm) || ', segments=''' || lst || ''''
+                || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END
+                || ') OVER(PARTITION NODES) FROM vfts.probe) h GROUP BY 1) h USING (segment_id) WHERE COALESCE(h.n, 0) < ' || nodes;
+    END IF;
+    PERFORM CALL vfts.load_missing(nm, g, FALSE);
     PERFORM CALL vfts.activate(nm, g);
     -- the attributes, from their copies (not from the tables: those may have changed since)
     na := (SELECT COUNT(*) FROM vfts.attributes WHERE index_id = iid AND slot IS NOT NULL);
@@ -385,8 +438,10 @@ BEGIN
         PERFORM CALL vfts.load_attribute(nm, a);
         i := i + 1;
     END LOOP;
-    RAISE NOTICE 'vfts: index % generation % (% segments) loaded on the nodes of this subcluster in % s', nm, g, n,
-                 (SELECT ROUND(DATEDIFF('millisecond', t0, CLOCK_TIMESTAMP()) / 1000.0, 1));
+    PERFORM CALL vfts.clean_caches();
+    n := (SELECT COUNT(*) FROM vfts.segments WHERE index_id = iid AND gen_removed IS NULL);
+    RAISE NOTICE 'vfts: index % generation % (% segments, % written: the others were in every cache) loaded on the nodes of this subcluster in % s',
+                 nm, g, n, missing, (SELECT ROUND(DATEDIFF('millisecond', t0, CLOCK_TIMESTAMP()) / 1000.0, 1));
 END;
 $$;
 
@@ -411,27 +466,6 @@ BEGIN
          || 'doc_id INT, n INT, term VARCHAR(256), stem VARCHAR(256), lang VARCHAR(8), bin LONG VARBINARY(65000)) '
          || 'ON COMMIT DELETE ROWS UNSEGMENTED ALL NODES';
     EXECUTE 'CREATE LOCAL TEMPORARY TABLE IF NOT EXISTS vfts_recon (doc_id INT, kind VARCHAR(1)) ON COMMIT DELETE ROWS UNSEGMENTED ALL NODES';
-END;
-$$;
-
--- Loads the segments of the session temp table vfts_build on the nodes that do not have them yet
--- (the node that built a segment wrote it into its cache already).
-CREATE OR REPLACE PROCEDURE vfts.load_build(nm VARCHAR, cdir VARCHAR) LANGUAGE PLvSQL AS $$
-DECLARE
-    nodes INT; lst VARCHAR(30000); missing VARCHAR(30000); params VARCHAR(32000);
-BEGIN
-    nodes := (SELECT COUNT(*) FROM (SELECT vfts.tnode(k) OVER(PARTITION NODES) FROM vfts.probe) n);
-    lst := (SELECT LISTAGG(segment_id || ':' || doc_id USING PARAMETERS max_length = 30000) FROM vfts_build WHERE kind = 'S');
-    IF lst IS NULL OR lst = '' THEN
-        RETURN;
-    END IF;
-    params := 'index=' || QUOTE_LITERAL(nm) || ', segments=' || QUOTE_LITERAL(lst) || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
-    missing := EXECUTE 'SELECT LISTAGG(s.segment_id::VARCHAR USING PARAMETERS max_length = 30000) FROM (SELECT segment_id FROM vfts_build WHERE kind = ''S'') s '
-            || 'LEFT JOIN (SELECT segment_id, COUNT(DISTINCT node_name) AS n FROM (SELECT vfts.thave(USING PARAMETERS ' || params
-            || ') OVER(PARTITION NODES) FROM vfts.probe) h GROUP BY 1) h USING (segment_id) WHERE COALESCE(h.n, 0) < ' || nodes;
-    IF missing IS NOT NULL AND missing <> '' THEN
-        PERFORM CALL vfts.load_rows(nm, cdir, 'SELECT * FROM vfts_build WHERE segment_id IN (' || missing || ')');
-    END IF;
 END;
 $$;
 
@@ -583,7 +617,7 @@ BEGIN
     IF n_rows > 0 THEN
         EXECUTE 'INSERT /*+DIRECT, LABEL(vfts_build)*/ INTO vfts_build SELECT vfts.tbuild(0, doc_id, body, lang, NULL::INT USING PARAMETERS seg_base='
              || seg_base || ', lang=' || QUOTE_LITERAL(lang_) || ', accent_fold=' || QUOTE_LITERAL(fold) || ', on_unsupported=' || QUOTE_LITERAL(unsup)
-             || ', threads=' || th || ', max_segment_mb=' || maxmb || ', index=' || QUOTE_LITERAL(nm)
+             || ', threads=' || th || ', max_segment_mb=' || maxmb || ', index=' || QUOTE_LITERAL(nm) || ', index_id=' || iid
              || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END || ') OVER('
              || CASE WHEN n_rows < 200000 THEN '' ELSE 'PARTITION BEST' END || ') FROM (' || sel || ') x';
         IF (SELECT COUNT(*) - COUNT(DISTINCT segment_id) FROM vfts_build WHERE kind = 'S') > 0
@@ -616,9 +650,9 @@ BEGIN
 
     -- 7. Every node: the new segment files, then the new generation (with the access mode the
     --    table's policies give now).
-    IF n_segs > 0 THEN
-        PERFORM CALL vfts.load_build(nm, cdir);
-    END IF;
+    --    Every segment of the new generation a node lacks is written, not only the new ones: a node
+    --    that was down or behind is repaired by the next refresh.
+    PERFORM CALL vfts.load_missing(nm, g_new, FALSE);
     PERFORM CALL vfts.detect_access(nm);
     PERFORM CALL vfts.activate(nm, g_new);
 
@@ -669,10 +703,15 @@ BEGIN
            || ', reorder=' || CASE WHEN reord IS FALSE THEN 'false' ELSE 'true' END
            || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
     EXECUTE 'INSERT /*+DIRECT, LABEL(vfts_merge)*/ INTO vfts_build SELECT vfts.tmerge(USING PARAMETERS ' || params || ') OVER()';
+    -- every document of the inputs was deleted (a TRUNCATE, a dropped partition): no new segment,
+    -- the inputs are only retired (an empty segment has no rows to load the other nodes from)
+    IF (SELECT COALESCE(MAX(b.n), 0) FROM vfts_build b WHERE b.kind = 'S') = 0 THEN
+        PERFORM DELETE FROM vfts_build;
+    END IF;
     PERFORM CALL vfts.store_build(iid, g_new);
     n := EXECUTE 'UPDATE vfts.segments SET state = ''merged'', gen_removed = ' || g_new || ' WHERE index_id = ' || iid
                  || ' AND gen_removed IS NULL AND segment_id IN (' || seg_list || ')';
-    PERFORM CALL vfts.load_build(nm, cdir);
+    PERFORM CALL vfts.load_missing(nm, g_new, FALSE);
     PERFORM CALL vfts.detect_access(nm);
     PERFORM CALL vfts.activate(nm, g_new);
     -- statistics of the new generation (as refresh_index writes them)
@@ -780,6 +819,9 @@ BEGIN
                  TO_CHAR(nbytes / 1048576.0, 'FM999999990.0');
     b := CASE WHEN e IS NOT NULL THEN 'epoch ' || e WHEN b IS NOT NULL THEN b ELSE '(none)' END;
     RAISE NOTICE 'boundary %; live tail % rows (%.%_live); last refresh: %', b, tail, vs, nm, COALESCE(note, '(none)');
+    RAISE NOTICE 'automatic refresh: %', (SELECT CASE WHEN COALESCE(i.refresh_every, 0) = 0 THEN 'off (CALL vfts.alter_index(''' || nm || ''', ''refresh_every=1''))'
+                 ELSE 'every ' || i.refresh_every || ' minutes' || CASE WHEN (SELECT COUNT(*) FROM v_catalog.stored_proc_triggers WHERE schema_name = 'vfts' AND trigger_name = 'refresh_' || nm) = 0 THEN ' (no trigger: run vfts.alter_index as a superuser)' ELSE '' END END
+                 FROM vfts.indexes i WHERE i.index_id = iid);
     RAISE NOTICE 'access: % (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)',
                  COALESCE(acc, '(no key: run CALL vfts.check_access)');
     RAISE NOTICE 'attributes: %', COALESCE((SELECT LISTAGG(attr_name || ' ' || attr_type || ' from ' || source_table || '.' || value_col || ' ('
@@ -790,16 +832,25 @@ BEGIN
 END;
 $$;
 
+-- Removes an index: its automatic refresh, the node caches of this subcluster, the views, its rows
+-- in the index tables. Without the index (dropped before, for example from another subcluster) it
+-- still removes that name's trigger and caches here. Caches on other subclusters go at the next
+-- load_all, automatic refresh or cleanup there.
 CREATE OR REPLACE PROCEDURE vfts.drop_index(nm VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
     iid INT; vs VARCHAR(128); cdir VARCHAR(1024); params VARCHAR(2000); n INT; na INT; sl INT;
 BEGIN
-    SELECT index_id, view_schema, cache_dir INTO iid, vs, cdir FROM vfts.indexes WHERE index_name = nm;
-    IF iid IS NULL THEN
-        RAISE EXCEPTION 'vfts.drop_index: index % does not exist', nm;
+    IF nm IS NULL OR NOT REGEXP_LIKE(nm, '^[A-Za-z0-9_]{1,64}$') THEN
+        RAISE EXCEPTION 'vfts.drop_index: index name must be 1 to 64 letters, digits or underscores';
     END IF;
+    SELECT index_id, view_schema, cache_dir INTO iid, vs, cdir FROM vfts.indexes WHERE index_name = nm;
+    PERFORM CALL vfts.set_schedule(nm, 0);
     params := 'index=' || QUOTE_LITERAL(nm) || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
     n := EXECUTE 'SELECT COUNT(*) FROM (SELECT vfts.tdrop(USING PARAMETERS ' || params || ') OVER(PARTITION NODES) FROM vfts.probe) d';
+    IF iid IS NULL THEN
+        RAISE NOTICE 'vfts: index % does not exist (any cache of that name removed on % nodes of this subcluster)', nm, n;
+        RETURN;
+    END IF;
     EXECUTE 'DROP VIEW IF EXISTS ' || vs || '.' || nm || '_live';
     EXECUTE 'DROP VIEW IF EXISTS ' || vs || '.' || nm || '_snap';
     PERFORM SELECT DROP_PARTITIONS('vfts.term_dict', iid, iid);
@@ -824,20 +875,191 @@ BEGIN
 END;
 $$;
 
+-- ------------------------------------------------------------------ automatic refresh, node caches
+
+-- The automatic refresh of an index: a Vertica schedule (cron, every `minutes`) and a trigger
+-- vfts.refresh_<index> that runs vfts.maintain('<index>') as its definer. minutes = 0 removes the
+-- trigger. Allowed: 1 to 59, or whole hours up to 1440 (cron has no seconds). Creating triggers
+-- needs a superuser; for anyone else it says so and leaves the refresh to them.
+CREATE OR REPLACE PROCEDURE vfts.set_schedule(nm VARCHAR, minutes INT) LANGUAGE PLvSQL AS $$
+DECLARE
+    cron VARCHAR(64); sched VARCHAR(128); sup INT;
+BEGIN
+    IF nm IS NULL OR NOT REGEXP_LIKE(nm, '^[A-Za-z0-9_]{1,64}$') THEN
+        RAISE EXCEPTION 'vfts: index name must be 1 to 64 letters, digits or underscores';
+    END IF;
+    IF minutes IS NULL OR minutes < 0 OR (minutes >= 60 AND (MOD(minutes, 60) <> 0 OR minutes > 1440)) THEN
+        RAISE EXCEPTION 'vfts: refresh_every is in minutes: 0 (off), 1 to 59, or whole hours up to 1440';
+    END IF;
+    sup := (SELECT COUNT(*) FROM v_catalog.users WHERE user_name = CURRENT_USER() AND is_super_user);
+    IF minutes = 0 THEN
+        IF sup > 0 THEN
+            EXECUTE 'DROP TRIGGER IF EXISTS vfts.refresh_' || nm;
+        END IF;
+        RETURN;
+    END IF;
+    IF sup = 0 THEN
+        RAISE NOTICE 'vfts: index % is not refreshed automatically: scheduling needs a superuser (CALL vfts.alter_index(''%'', ''refresh_every=%'') as one); run CALL vfts.refresh_index(''%'') yourself meanwhile',
+                     nm, nm, minutes, nm;
+        RETURN;
+    END IF;
+    cron := CASE WHEN minutes < 60 THEN '*/' || minutes || ' * * * *' WHEN minutes < 1440 THEN '0 */' || (minutes // 60) || ' * * *' ELSE '0 0 * * *' END;
+    sched := 'vfts.every_' || minutes || '_min';
+    EXECUTE 'CREATE SCHEDULE IF NOT EXISTS ' || sched || ' USING CRON ' || QUOTE_LITERAL(cron);
+    EXECUTE 'DROP TRIGGER IF EXISTS vfts.refresh_' || nm;
+    EXECUTE 'CREATE TRIGGER vfts.refresh_' || nm || ' ON SCHEDULE ' || sched || ' EXECUTE PROCEDURE vfts.maintain(' || QUOTE_LITERAL(nm) || ') AS DEFINER';
+END;
+$$;
+
+-- Run by the trigger of an index (set_schedule): refresh_index (skipped while another refresh of
+-- the index runs; a failure is written to vfts.indexes.refresh_note), then clean_caches. Also fine
+-- to call by hand or from a scheduler of your own, for example from a session on each Eon
+-- subcluster.
+CREATE OR REPLACE PROCEDURE vfts.maintain(nm VARCHAR) LANGUAGE PLvSQL AS $$
+DECLARE
+    busy INT; err VARCHAR(1800); g INT; ok INT; nodes INT; cdir VARCHAR(1024); params VARCHAR(2000);
+BEGIN
+    IF (SELECT COUNT(*) FROM vfts.indexes WHERE index_name = nm) = 0 THEN
+        -- a trigger left behind by an index dropped elsewhere
+        PERFORM CALL vfts.set_schedule(nm, 0);
+        RETURN;
+    END IF;
+    busy := (SELECT COUNT(*) FROM vfts.indexes i WHERE i.index_name = nm AND i.refresh_started_at IS NOT NULL
+             AND i.refresh_started_at > CLOCK_TIMESTAMP() - INTERVAL '6 hours'
+             AND i.refresh_started_by IN (SELECT session_id FROM v_monitor.sessions));
+    IF busy > 0 THEN
+        RETURN;
+    END IF;
+    BEGIN
+        PERFORM CALL vfts.refresh_index(nm);
+    EXCEPTION WHEN OTHERS THEN
+        err := LEFT('automatic refresh failed at ' || TO_CHAR(CLOCK_TIMESTAMP(), 'YYYY-MM-DD HH24:MI:SS') || ': ' || SQLERRM, 1800);
+        PERFORM ROLLBACK;
+        PERFORM UPDATE vfts.indexes SET refresh_note = err, refresh_started_at = NULL WHERE index_name = nm;
+        PERFORM COMMIT;
+    END;
+    -- a refresh with no changes does not touch the nodes: bring the ones that are behind up to date
+    SELECT gen, cache_dir INTO g, cdir FROM vfts.indexes WHERE index_name = nm;
+    IF g > 0 THEN
+        params := 'index=' || QUOTE_LITERAL(nm) || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
+        nodes := (SELECT COUNT(*) FROM (SELECT vfts.tnode(k) OVER(PARTITION NODES) FROM vfts.probe) n);
+        ok := EXECUTE 'SELECT COUNT(*) FROM (SELECT vfts.tinfo(USING PARAMETERS ' || params || ') OVER(PARTITION NODES) FROM vfts.probe) i WHERE gen = ' || g;
+        IF ok < nodes THEN
+            BEGIN
+                PERFORM CALL vfts.load_all(nm);
+            EXCEPTION WHEN OTHERS THEN
+                NULL;
+            END;
+        END IF;
+    END IF;
+    BEGIN
+        PERFORM CALL vfts.clean_caches();
+    EXCEPTION WHEN OTHERS THEN
+        NULL;
+    END;
+END;
+$$;
+
+-- Removes, on the nodes of the session's subcluster, the caches of indexes that no longer exist
+-- (dropped from another subcluster, or an older index of the same name), in the default cache
+-- directory and in every cache_dir an index names.
+CREATE OR REPLACE PROCEDURE vfts.clean_caches() LANGUAGE PLvSQL AS $$
+DECLARE
+    keep VARCHAR(65000); n INT; m INT; i INT; nd INT; d VARCHAR(1024);
+BEGIN
+    keep := COALESCE((SELECT LISTAGG(index_name || ':' || index_id USING PARAMETERS max_length = 65000) FROM vfts.indexes), '');
+    n := EXECUTE 'SELECT COUNT(*) FROM (SELECT vfts.tcaches(USING PARAMETERS action=''clean'', keep=''' || keep || ''''
+               || ') OVER(PARTITION NODES) FROM vfts.probe) c WHERE action = ''removed''';
+    nd := (SELECT COUNT(DISTINCT cache_dir) FROM vfts.indexes WHERE cache_dir IS NOT NULL);
+    i := 0;
+    WHILE i < nd LOOP
+        d := (SELECT MAX(cache_dir) FROM (SELECT cache_dir, DENSE_RANK() OVER(ORDER BY cache_dir) AS rn FROM vfts.indexes WHERE cache_dir IS NOT NULL) x WHERE rn = i + 1);
+        m := EXECUTE 'SELECT COUNT(*) FROM (SELECT vfts.tcaches(USING PARAMETERS action=''clean'', keep=''' || keep || '''' || ', cache_dir='
+                   || QUOTE_LITERAL(d) || ') OVER(PARTITION NODES) FROM vfts.probe) c WHERE action = ''removed''';
+        n := n + m;
+        i := i + 1;
+    END LOOP;
+    IF n > 0 THEN
+        RAISE NOTICE 'vfts: % node caches of indexes that no longer exist removed on this subcluster', n;
+    END IF;
+END;
+$$;
+
+-- Drops every index whose source table no longer exists (vfts.drop_index: views, rows, trigger,
+-- caches here), then clean_caches. Run it after dropping tables, and on each Eon subcluster after
+-- dropping an index from another one.
+CREATE OR REPLACE PROCEDURE vfts.cleanup() LANGUAGE PLvSQL AS $$
+DECLARE
+    nm VARCHAR(64); last VARCHAR(64); n INT;
+BEGIN
+    last := '';
+    n := 0;
+    LOOP
+        nm := (SELECT MIN(i.index_name) FROM vfts.indexes i WHERE i.index_name > last
+               AND NOT EXISTS (SELECT 1 FROM v_catalog.tables t WHERE LOWER(t.table_schema || '.' || t.table_name) = LOWER(i.source_table)));
+        EXIT WHEN nm IS NULL;
+        last := nm;
+        RAISE NOTICE 'vfts: the source table of index % is gone: dropping the index', nm;
+        PERFORM CALL vfts.drop_index(nm);
+        n := n + 1;
+    END LOOP;
+    PERFORM CALL vfts.clean_caches();
+    RAISE NOTICE 'vfts: cleanup done (% indexes without a source table dropped)', n;
+END;
+$$;
+
+-- The triggers of every index with refresh_every > 0 (sql/install.sql: an uninstall removes them,
+-- an install makes them again).
+CREATE OR REPLACE PROCEDURE vfts.upgrade_schedules() LANGUAGE PLvSQL AS $$
+DECLARE
+    nm VARCHAR(64); last VARCHAR(64);
+BEGIN
+    last := '';
+    LOOP
+        nm := (SELECT MIN(index_name) FROM vfts.indexes WHERE COALESCE(refresh_every, 0) > 0 AND index_name > last);
+        EXIT WHEN nm IS NULL;
+        last := nm;
+        PERFORM CALL vfts.set_schedule(nm, (SELECT refresh_every FROM vfts.indexes WHERE index_name = nm));
+    END LOOP;
+END;
+$$;
+
+-- vfts 0.4 and older kept the node caches in /tmp/vfts (a tmpfs on many systems: lost at every
+-- reboot); 0.5.0 keeps them in <catalog>/vfts. Moves the caches of /tmp/vfts there on the nodes of
+-- the session's subcluster. Run by sql/install.sql; best effort.
+CREATE OR REPLACE PROCEDURE vfts.upgrade_caches() LANGUAGE PLvSQL AS $$
+DECLARE
+    n INT;
+BEGIN
+    n := (SELECT COUNT(*) FROM (SELECT vfts.tcaches(USING PARAMETERS action='adopt') OVER(PARTITION NODES) FROM vfts.probe) c WHERE action = 'adopted');
+    IF n > 0 THEN
+        RAISE NOTICE 'vfts: % node caches moved from /tmp/vfts to the catalog directory of their node', n;
+    END IF;
+END;
+$$;
+
 -- Changes options of an index (the same names as create_index): grants=source|manual,
--- merge_factor, threads, max_segment_mb, reorder=true|false. An option not given keeps its value.
+-- refresh_every (minutes, 0: off), merge_factor, threads, max_segment_mb, reorder=true|false. An
+-- option not given keeps its value.
 CREATE OR REPLACE PROCEDURE vfts.alter_index(nm VARCHAR, opts VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
-    o VARCHAR(4000); iid INT; grt VARCHAR(16); mf VARCHAR(16); th VARCHAR(16); mx VARCHAR(16); reord VARCHAR(16); bad VARCHAR(4000);
+    o VARCHAR(4000); iid INT; grt VARCHAR(16); mf VARCHAR(16); th VARCHAR(16); mx VARCHAR(16); reord VARCHAR(16); bad VARCHAR(4000); every VARCHAR(16);
 BEGIN
     iid := (SELECT MAX(index_id) FROM vfts.indexes WHERE index_name = nm);
     IF iid IS NULL THEN
         RAISE EXCEPTION 'vfts.alter_index: index % does not exist', nm;
     END IF;
     o := ' ' || COALESCE(REPLACE(opts, ',', ' '), '') || ' ';
-    bad := REGEXP_REPLACE(o, ' (grants|merge_factor|threads|max_segment_mb|reorder)=[^ ]+', '');
+    bad := REGEXP_REPLACE(o, ' (grants|refresh_every|merge_factor|threads|max_segment_mb|reorder)=[^ ]+', '');
     IF TRIM(bad) <> '' THEN
-        RAISE EXCEPTION 'vfts.alter_index: unknown or malformed option(s): % (allowed: grants, merge_factor, threads, max_segment_mb, reorder)', TRIM(bad);
+        RAISE EXCEPTION 'vfts.alter_index: unknown or malformed option(s): % (allowed: grants, refresh_every, merge_factor, threads, max_segment_mb, reorder)', TRIM(bad);
+    END IF;
+    every := REGEXP_SUBSTR(o, ' refresh_every=([^ ]+)', 1, 1, '', 1);
+    IF every IS NOT NULL AND NOT REGEXP_LIKE(every, '^[0-9]{1,4}$') THEN
+        RAISE EXCEPTION 'vfts.alter_index: refresh_every is in minutes: 0 (off), 1 to 59, or whole hours up to 1440';
+    END IF;
+    IF every IS NOT NULL THEN
+        PERFORM CALL vfts.set_schedule(nm, every::INT);
     END IF;
     grt := REGEXP_SUBSTR(o, ' grants=([^ ]+)', 1, 1, '', 1);
     mf := REGEXP_SUBSTR(o, ' merge_factor=([^ ]+)', 1, 1, '', 1);
@@ -853,9 +1075,9 @@ BEGIN
     END IF;
     PERFORM UPDATE vfts.indexes SET grants_opt = COALESCE(grt, grants_opt), merge_factor = COALESCE(mf::INT, merge_factor),
                    threads = COALESCE(th::INT, threads), max_segment_mb = COALESCE(mx::INT, max_segment_mb),
-                   reorder = COALESCE((reord = 'true'), reorder) WHERE index_id = iid;
+                   reorder = COALESCE((reord = 'true'), reorder), refresh_every = COALESCE(every::INT, refresh_every) WHERE index_id = iid;
     PERFORM COMMIT;
-    IF grt = 'source' THEN
+    IF COALESCE(grt, '') = 'source' THEN
         PERFORM CALL vfts.sync_grants(nm, TRUE);
     END IF;
     RAISE NOTICE 'vfts: index % altered: %', nm, TRIM(o);

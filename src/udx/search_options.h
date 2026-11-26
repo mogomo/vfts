@@ -64,6 +64,7 @@ inline void add_search_parameters(Vertica::SizedColumnTypes &p)
     p.addVarchar(1024, "cache_dir");
     p.addVarchar(65000, "filter");
     p.addBool("filter_cache");
+    p.addInt("tail_warn");
 }
 
 // A filter over the index's attributes (parameter filter, attribute.h) and the attribute to count

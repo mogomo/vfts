@@ -23,7 +23,7 @@ if [ "${SKIP_COPY:-0}" != 1 ]; then       # SKIP_COPY=1: the table is loaded alr
     Q "COPY bench.$DS (doc_id, lang, body) FROM '$DATA/$DS/docs.dat' DELIMITER E'\001' RECORD TERMINATOR E'\002' NO ESCAPE DIRECT ABORT ON ERROR" > /dev/null
 fi
 t1=$(date +%s.%N)
-Q "CALL vfts.create_index('$DS', 'bench.$DS', '$OPTS margin=0')" > /dev/null
+Q "CALL vfts.create_index('$DS', 'bench.$DS', 'refresh_every=0 $OPTS margin=0')" > /dev/null
 t2=$(date +%s.%N)
 # merged into one segment, as the engines are force-merged into one segment per shard (VFTS_MERGE=0: not merged)
 [ "${VFTS_MERGE:-1}" = 1 ] && Q "CALL vfts.merge('$DS', 1)" > /dev/null

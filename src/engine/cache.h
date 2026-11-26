@@ -27,6 +27,8 @@
 
 namespace vfts {
 
+// The fallback cache directory, where no node catalog directory is found (the functions use
+// <catalog>/vfts, src/udx/udx_common.h), and the one of vfts 0.4 and older.
 constexpr const char *DEFAULT_CACHE_DIR = "/tmp/vfts";
 constexpr int ACTIVE_CHECK_MS = 200;
 
@@ -56,6 +58,9 @@ public:
     CacheWriter(const std::string &cache_dir, const std::string &index);
     const std::string &dir() const { return dir_; }
 
+    // Marks the directory as the cache of the index with this id (file INDEX_ID). A directory of
+    // another index of the same name (dropped and created again) is emptied first.
+    void claim(std::int64_t index_id);
     // True when the cache holds the segment with this checksum (header check).
     bool has_segment(std::int64_t id, std::uint64_t checksum) const;
     // Verifies the bytes completely, then writes the file atomically.
@@ -101,6 +106,19 @@ CacheInfo cache_info(const std::string &cache_dir, const std::string &index);
 
 // Removes an index's cache directory (only files that vfts writes).
 void drop_cache(const std::string &cache_dir, const std::string &index);
+
+// The index caches in a cache directory (directories with an ACTIVE file or segment files).
+struct CacheDirEntry {
+    std::string index;
+    std::int64_t index_id = -1;             // from INDEX_ID; -1 when the cache was written by vfts 0.4 or older
+    std::int64_t gen = -1;                  // ACTIVE; -1 when there is none
+    std::uint64_t bytes = 0;
+};
+std::vector<CacheDirEntry> list_caches(const std::string &cache_dir);
+
+// Moves the index caches of from_dir (vfts 0.4's /tmp/vfts) into to_dir, each one that to_dir does
+// not have yet: a rename, or a copy and remove across file systems. Returns the names moved.
+std::vector<std::string> adopt_caches(const std::string &from_dir, const std::string &to_dir);
 
 } // namespace vfts
 

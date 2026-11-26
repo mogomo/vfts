@@ -15,7 +15,7 @@ q "CREATE SCHEMA vf_sv;
    INSERT INTO vf_sv.docs SELECT k, 'alpha ' || CASE WHEN MOD(k, 3) = 0 THEN 'bravo charlie ' ELSE 'delta ' END ||
        CASE WHEN MOD(k, 7) = 0 THEN 'echo echo ' ELSE '' END || 'doc' || k::VARCHAR FROM vfts.probe;
    COMMIT;" > /dev/null
-q "CALL vfts.create_index('vf_sv', 'vf_sv.docs', '')" > /dev/null
+q "CALL vfts.create_index('vf_sv', 'vf_sv.docs', 'refresh_every=0 ')" > /dev/null
 # an attribute: filters and counts through the broker (0.4.0)
 q "CREATE TABLE vf_sv.meta AS SELECT doc_id, MOD(doc_id, 5)::INT AS grp FROM vf_sv.docs WHERE MOD(doc_id, 11) <> 0; COMMIT;" > /dev/null
 q "CALL vfts.add_attribute('vf_sv', 'grp', 'vf_sv.meta', 'doc_id', 'grp')" > /dev/null
