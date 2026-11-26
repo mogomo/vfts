@@ -264,6 +264,21 @@ cannot be found this way; the procedure says so, and `rebuild` is the remedy.
 analyzed again): live documents, postings and positions merged term by term, tombstoned documents
 dropped, stem groups carried over. Then the same steps 4 to 8 as a refresh.
 
+**In parallel (0.5.0).** The terms are cut into runs of about equal work (the documents to read);
+each run is written by its own thread into a part of the segment writer (`SegmentWriter::part`),
+and the parts are appended in term order (`append`): every term's postings start 8-aligned, so
+shifting a part's offsets by its 8-aligned start gives the bytes one thread writes. The postings of
+the stem groups (`finish`) are made the same way. The new segment is the same byte for byte
+whatever the number of threads (`tests/engine/test_merge.cpp`; MS MARCO's merged segment of
+2.79 GB compared with `cmp`). Threads: the index option `threads`, 0 = half the cores (searches
+keep the other half); at most a wave of `threads` parts is in memory besides the writer. Measured
+with `vfts_cli merge` on the 22 segments of MS MARCO (8,841,823 passages, no reordering, the
+benchmark host): 68.7 s on one thread, 25.4 s on 11. Inside Vertica (`vfts.merge(index, 1)` of a
+copy of MS MARCO in 16 segments, threads 11): 164 s in all, of which the `tmerge` statement took
+88 s (the merge, then the new segment written out as index rows into the session's temporary
+table) and storing those rows in the index tables 70 s (positions 36.5 s, postings 29.5 s). The
+merge itself is no longer the larger part; writing 2.8 GB of index rows into Vertica tables is.
+
 A merge whose inputs have no live document left (a `TRUNCATE`, a dropped partition: every
 document tombstoned) retires the inputs and makes no segment: an empty segment has no rows in the
 index tables, so the other nodes could not load it (found on the 3-node Eon subcluster).

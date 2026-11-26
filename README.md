@@ -510,7 +510,7 @@ every node of the session's subcluster.
 | on_unsupported | error | `error` or `plain` for Chinese, Japanese, Korean, Thai, Lao, Khmer, Myanmar text |
 | id_col, text_col, lang_col | doc_id, body, lang | column names in the source table |
 | ver_col, margin | | options of vfts 0.4 and older: accepted and not used (changes are found by the row epoch) |
-| threads | 0 | build threads per instance (0: a quarter of the cores) |
+| threads | 0 | build threads per instance (0: a quarter of the cores); for a merge, its threads (0: half the cores) |
 | max_segment_mb | 2048 | a build thread starts a new segment above this memory |
 | merge_factor | 10 | segments per tier of the merge policy |
 | cache_dir | `<catalog>/vfts` | directory of the node caches (default: `vfts` in each node's catalog directory) |
@@ -808,7 +808,7 @@ from the next refresh or merge (`grants=source`: at once).
 |---|---|
 | grants | `source` or `manual`, as at [create_index](#create_index); `source` makes the views' grants follow the source table's at once |
 | merge_factor | segments per tier of the merge policy (at least 2) |
-| threads | build threads per instance (0: a quarter of the cores) |
+| threads | build threads per instance (0: a quarter of the cores); for a merge, its threads (0: half the cores) |
 | max_segment_mb | a build thread starts a new segment above this memory |
 | reorder | `true` or `false`: whether merges number the documents by graph bisection |
 
@@ -2632,7 +2632,7 @@ engines' caches off. Method, every configuration and the answers:
 vfts: `create_index` (analysis, index tables, node cache) and `merge(name, 1)`; the COPY of the
 text into Vertica is not included (MS MARCO 275 s). The engines: bulk load, refresh and force merge
 into one segment. Without the merge, vfts's MS MARCO build takes 167 s (16 segments); the merge
-is single-threaded (future work). Enron and PubMed are merged with document reordering (a few
+was single-threaded in 0.4.1 (0.5.0 merges in parallel: [Changes](#changes)). Enron and PubMed are merged with document reordering (a few
 seconds of their merge; [Document order](#document-order-graph-bisection)), which also makes their
 node cache 1 to 5% and their index tables 3 to 16% smaller.
 
@@ -2725,7 +2725,9 @@ by doc_id in vfts and by internal order in the engines.
 - **Phrases of very frequent words and single fuzzy words**: Lucene's phrase matching and its
   Levenshtein automaton are faster for these (vfts's engine: "case report" on PubMed 3.0 ms; fuzzy
   words about 1.7 ms against about 1.4 ms in Elasticsearch's profile).
-- **Build of large collections**: the merge into one segment is single-threaded.
+- **Build of large collections** (as measured with vfts 0.4.1, above): the merge into one segment
+  ran on one thread; vfts 0.5.0 merges in parallel (MS MARCO's merge, outside Vertica: 68.7 s on
+  one thread, 25.4 s on 11; [Changes](#changes)).
 - **The live view** costs about 1 ms more than the snap view per statement (a `UNION ALL` in the
   plan); and a large live tail is analyzed for every query. `tserve` serves the snap view.
 
@@ -2931,6 +2933,12 @@ again after a restore. Without them, one `refresh_index` after a restore makes t
 the restored table (before 0.5.0 an index answered with rows the restore had taken away, also
 after a refresh).
 
+Faster merges: a merge writes its postings and stem groups on several threads (index option
+`threads`; 0 = half the cores), with the same bytes as one thread. MS MARCO's 22 segments into one,
+measured outside Vertica with `vfts_cli merge`: 68.7 s on one thread, 25.4 s on 11. Inside Vertica
+most of a large merge is now storing the new segment's rows in the index tables (MS MARCO in 16
+segments: 164 s in all, 70 s of it storing; docs/design.md "Merge").
+
 Case-sensitive search: the index option `case=sensitive` keeps the case of words in the index and
 in queries (`Apple` finds `Apple`, not `apple`; stems keep the case too). Indexes made without it
 are unchanged, byte for byte.
@@ -3001,7 +3009,8 @@ vtext with its own `./install.sh --uninstall --drop`, install vfts, and create t
 
 **Future work** (out of scope for this version):
 
-- A parallel merge (the merge into one segment is single-threaded: 210 s of MS MARCO's 377 s).
+- Storing a large merged segment in the index tables (70 s of the 164 s that MS MARCO's merge into
+  one segment takes in Vertica): fewer, wider rows, or a load straight from the merging node.
 - Slices by work rather than by document count for a reordered segment (so one search on all cores
   scales as in doc_id order).
 - Row policies without a join per statement (allowed-document bitmaps per user and role set,

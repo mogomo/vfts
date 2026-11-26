@@ -1,8 +1,9 @@
 // vfts_cli: the engine without Vertica, for measurements and debugging.
 //
 //   vfts_cli build  <docs.dat> <cache_dir> <index> [--threads N] [--lang en] [--max-segment-mb M]
-//   vfts_cli merge  <cache_dir> <index> <max_segments> [--no-reorder] [--force]   --force: rewrite even
-//                    when there are max_segments or fewer (one segment: reorder it)
+//   vfts_cli merge  <cache_dir> <index> <max_segments> [--no-reorder] [--force] [--threads N]
+//                    --force: rewrite even when there are max_segments or fewer (one segment: reorder
+//                    it); --threads: postings and stem groups in parallel (the same bytes)
 //   vfts_cli explain <queries.tsv> [--lang en] [--plain]   the parsed queries as JSON lines (for the
 //                    Elasticsearch / OpenSearch translation in bench/run_engines.py)
 //   vfts_cli search <cache_dir> <index> <queries.tsv> [--k 10] [--threads N] [--mode stem|exact]
@@ -137,6 +138,7 @@ static int merge(int argc, char **argv)
     for (auto &r : li->refs) new_id = std::max(new_id, r.seg->id());
     MergeOptions mo;
     mo.reorder = !flag(argc, argv, "--no-reorder");
+    mo.threads = static_cast<unsigned>(std::atoi(opt(argc, argv, "--threads", "1")));
     mo.bisection.min_df = static_cast<std::uint32_t>(std::atoi(opt(argc, argv, "--min-df", "0")));
     mo.bisection.max_iters = static_cast<std::uint32_t>(std::atoi(opt(argc, argv, "--iters", "20")));
     mo.bisection.min_partition = static_cast<std::uint32_t>(std::atoi(opt(argc, argv, "--min-partition", "32")));

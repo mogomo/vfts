@@ -3,8 +3,10 @@
 #include "segment_writer.h"
 
 #include <algorithm>
+#include <exception>
 #include <queue>
 #include <stdexcept>
+#include <thread>
 
 namespace vfts {
 
@@ -118,40 +120,72 @@ std::string merge_segments(const std::vector<SegmentRef> &in, std::int64_t new_i
         }
     }
 
-    // 4. postings and positions, term by term, in the new docnos
-    struct Post { std::uint32_t docno, tf, at; };
-    std::vector<Post> posts;
-    std::vector<std::uint32_t> pos, tmp;
-    for (std::size_t t = 0; t < n_terms; ++t) {
-        posts.clear();
-        pos.clear();
-        bool ascending = true;
-        for (std::uint32_t e = term_start[t]; e < term_start[t + 1]; ++e) {
-            const std::uint32_t s = entries[e].first;
-            PostingIter it(*in[s].seg, entries[e].second);
-            for (std::uint32_t d = it.next(); d != NO_DOC; d = it.next()) {
-                const std::uint32_t nd2 = remap[s][d];
-                if (nd2 == NO_DOC) continue;
-                tmp.clear();
-                it.positions(tmp);
-                if (!posts.empty() && posts.back().docno > nd2) ascending = false;
-                posts.push_back({nd2, it.tf(), static_cast<std::uint32_t>(pos.size())});
-                pos.insert(pos.end(), tmp.begin(), tmp.end());
+    // 4. postings and positions, term by term, in the new docnos. The terms are cut into runs of
+    //    about equal work (documents to read); each run is written by one thread into a part of the
+    //    writer, and the parts are appended in term order: the same bytes as one thread.
+    auto write_terms = [&](std::size_t t0, std::size_t t1, SegmentWriter &out) {
+        struct Post { std::uint32_t docno, tf, at; };
+        std::vector<Post> posts;
+        std::vector<std::uint32_t> pos, tmp;
+        for (std::size_t t = t0; t < t1; ++t) {
+            posts.clear();
+            pos.clear();
+            bool ascending = true;
+            for (std::uint32_t e = term_start[t]; e < term_start[t + 1]; ++e) {
+                const std::uint32_t s = entries[e].first;
+                PostingIter it(*in[s].seg, entries[e].second);
+                for (std::uint32_t d = it.next(); d != NO_DOC; d = it.next()) {
+                    const std::uint32_t nd2 = remap[s][d];
+                    if (nd2 == NO_DOC) continue;
+                    tmp.clear();
+                    it.positions(tmp);
+                    if (!posts.empty() && posts.back().docno > nd2) ascending = false;
+                    posts.push_back({nd2, it.tf(), static_cast<std::uint32_t>(pos.size())});
+                    pos.insert(pos.end(), tmp.begin(), tmp.end());
+                }
+            }
+            if (posts.empty()) continue;
+            // the new docnos follow the input order only when neither side is reordered
+            if (!ascending) std::sort(posts.begin(), posts.end(), [](const Post &a, const Post &b) { return a.docno < b.docno; });
+            const std::uint32_t first = entries[term_start[t]].first;
+            out.begin_term(in[first].seg->term(entries[term_start[t]].second));
+            for (const Post &p : posts) out.add_doc(p.docno, pos.data() + p.at, p.tf);
+            const std::uint32_t id = out.end_term();
+            for (std::uint32_t e = term_start[t]; e < term_start[t + 1]; ++e) {
+                const std::uint32_t s = entries[e].first;
+                for (std::uint32_t se : term_stems[s][entries[e].second]) out.add_stem(std::string(in[s].seg->stem_key_at(se)), id);
             }
         }
-        if (posts.empty()) continue;
-        // the new docnos follow the input order only when neither side is reordered
-        if (!ascending) std::sort(posts.begin(), posts.end(), [](const Post &a, const Post &b) { return a.docno < b.docno; });
-        const std::uint32_t first = entries[term_start[t]].first;
-        w.begin_term(in[first].seg->term(entries[term_start[t]].second));
-        for (const Post &p : posts) w.add_doc(p.docno, pos.data() + p.at, p.tf);
-        const std::uint32_t id = w.end_term();
-        for (std::uint32_t e = term_start[t]; e < term_start[t + 1]; ++e) {
-            const std::uint32_t s = entries[e].first;
-            for (std::uint32_t se : term_stems[s][entries[e].second]) w.add_stem(std::string(in[s].seg->stem_key_at(se)), id);
+    };
+    const unsigned nt = std::max(1u, std::min<unsigned>(o.threads, 64));
+    if (nt == 1) {
+        write_terms(0, n_terms, w);
+    } else {
+        std::vector<std::uint64_t> work(n_terms + 1, 0);
+        for (std::size_t t = 0; t < n_terms; ++t) work[t + 1] = work[t] + term_df[t] + 1;
+        const std::size_t runs = 4 * nt;
+        std::vector<std::size_t> cut(runs + 1, 0);
+        for (std::size_t r = 1; r < runs; ++r)
+            cut[r] = std::max<std::size_t>(cut[r - 1], static_cast<std::size_t>(std::lower_bound(work.begin(), work.end(), work.back() * r / runs) - work.begin()));
+        cut[runs] = n_terms;
+        // waves of nt runs: at most nt parts in memory besides the writer
+        for (std::size_t w0 = 0; w0 < runs; w0 += nt) {
+            const std::size_t w1 = std::min(runs, w0 + nt);
+            std::vector<SegmentWriter> parts;
+            for (std::size_t r = w0; r < w1; ++r) parts.push_back(w.part());
+            std::vector<std::thread> pool;
+            std::vector<std::exception_ptr> err(w1 - w0);
+            for (std::size_t r = w0; r < w1; ++r)
+                pool.emplace_back([&, r] {
+                    try { write_terms(cut[r], std::min(cut[r + 1], n_terms), parts[r - w0]); }
+                    catch (...) { err[r - w0] = std::current_exception(); }
+                });
+            for (auto &t : pool) t.join();
+            for (auto &e : err) if (e) std::rethrow_exception(e);
+            for (auto &p : parts) w.append(std::move(p));
         }
     }
-    return w.finish();
+    return w.finish(nt);
 }
 
 } // namespace vfts

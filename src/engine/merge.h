@@ -16,6 +16,9 @@ struct MergeOptions {
     bool reorder = true;
     ReorderOptions bisection;
     ReorderStats *stats = nullptr;      // filled when set
+    // Threads for the postings (runs of terms) and the stem groups. The bytes of the new segment do
+    // not depend on it.
+    unsigned threads = 1;
 };
 
 // The new segment's bytes. Every doc_id must be live in at most one input segment.

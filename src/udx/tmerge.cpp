@@ -9,6 +9,7 @@
 
 #include <set>
 #include <sstream>
+#include <thread>
 
 using namespace Vertica;
 using namespace vfts_udx;
@@ -34,6 +35,10 @@ public:
             if (inputs.size() != want.size()) fail("some of the segments " + s.text("segments", "") + " are not in the active generation");
             vfts::MergeOptions mo;
             mo.reorder = s.boolean("reorder", true);
+            // threads: 0 (the default) is half the cores, so that searches keep theirs
+            const std::int64_t th = s.integer("threads", 0);
+            if (th < 0 || th > 64) fail("threads must be 0 to 64");
+            mo.threads = th > 0 ? static_cast<unsigned>(th) : std::max(1u, std::thread::hardware_concurrency() / 2);
             const std::string merged = vfts::merge_segments(inputs, s.integer("new_id", 0), mo);
             vfts::CacheWriter(resolve_cache_dir(s), index).write_segment(merged);     // this node has it now
             write_segment_rows(out, merged);
@@ -55,6 +60,7 @@ public:
         p.addVarchar(65000, "segments");
         p.addInt("new_id");
         p.addBool("reorder");
+        p.addInt("threads");
     }
     TransformFunction *createTransformFunction(ServerInterface &srv) override { return vt_createFuncObject<TMerge>(srv.allocator); }
 };

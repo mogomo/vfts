@@ -4,7 +4,9 @@
 #include <roaring.h>
 
 #include <algorithm>
+#include <exception>
 #include <stdexcept>
+#include <thread>
 
 namespace vfts {
 
@@ -62,7 +64,7 @@ void SegmentWriter::begin_term(std::string_view term)
 
 void SegmentWriter::add_doc(std::uint32_t docno, const std::uint32_t *positions, std::uint32_t tf)
 {
-    if (docno >= doc_ids_.size()) throw std::runtime_error("segment writer: docno out of range");
+    if (docno >= n_docs()) throw std::runtime_error("segment writer: docno out of range");
     if (!docs_.empty() && docs_.back() >= docno) throw std::runtime_error("segment writer: docnos not ascending in a term");
     if (tf == 0) throw std::runtime_error("segment writer: tf 0");
     if (docs_.size() % BLOCK == 0) block_pos_.push_back(pos_.size());
@@ -85,7 +87,8 @@ TermInfo SegmentWriter::write_postings(const std::vector<std::uint32_t> &docs, c
     ti.pos_off = pos_off;
     ti.max_tf = *std::max_element(tfs.begin(), tfs.end());
     ti.min_len = 0xFFFFFFFFu;
-    for (std::uint32_t d : docs) ti.min_len = std::min(ti.min_len, doc_len_[d]);
+    const std::vector<std::uint32_t> &len = lens();
+    for (std::uint32_t d : docs) ti.min_len = std::min(ti.min_len, len[d]);
     if (df == 1) {
         ti.n_blocks = 0;
         ti.post_off = docs[0];
@@ -109,7 +112,7 @@ TermInfo SegmentWriter::write_postings(const std::vector<std::uint32_t> &docs, c
             tfm1[k] = tfs[at + k] - 1;
             gmax |= gaps[k];
             tmax |= tfm1[k];
-            pairs.emplace_back(tfs[at + k], length_to_norm(doc_len_[docs[at + k]]));
+            pairs.emplace_back(tfs[at + k], length_to_norm(len[docs[at + k]]));
         }
         const std::uint32_t db = bits_needed(gmax), tb = bits_needed(tmax);
         meta[b].last_doc = docs[at + n - 1];
@@ -175,7 +178,45 @@ void SegmentWriter::add_stem(std::string key, std::uint32_t term_id)
     stems_.emplace_back(std::move(key), term_id);
 }
 
-std::string SegmentWriter::finish()
+SegmentWriter SegmentWriter::part() const
+{
+    SegmentWriter p(segment_id_, max_ver_);
+    p.shared_len_ = &lens();
+    return p;
+}
+
+void SegmentWriter::append(SegmentWriter &&p)
+{
+    if (in_term_ || p.in_term_) throw std::runtime_error("segment writer: append inside a term");
+    if (&p.lens() != &lens()) throw std::runtime_error("segment writer: append of a part of another writer");
+    if (!info_.empty() && !p.info_.empty()) {
+        const std::string_view first(p.pool_.data(), p.term_off_[1]);
+        if (!(std::string_view(last_term_) < first)) throw std::runtime_error("segment writer: appended terms not in ascending order");
+    }
+    const std::uint32_t tbase = static_cast<std::uint32_t>(info_.size());
+    // every term's postings start 8-aligned (write_postings): a part starts at an aligned offset
+    std::uint64_t pbase = post_.size();
+    if (!p.post_.empty()) { align8(post_); pbase = post_.size(); post_.append(p.post_); }
+    const std::uint64_t posbase = pos_.size();
+    pos_.append(p.pos_);
+    for (TermInfo ti : p.info_) {
+        if (ti.n_blocks > 0) ti.post_off += pbase;      // else post_off is the one document's docno
+        ti.pos_off += posbase;
+        info_.push_back(ti);
+    }
+    const std::uint32_t poolbase = static_cast<std::uint32_t>(pool_.size());
+    pool_.append(p.pool_);
+    if (pool_.size() > 0xFFFFFFFFull) throw std::runtime_error("segment writer: term pool exceeds 4 GB");
+    for (std::size_t i = 1; i < p.term_off_.size(); ++i) term_off_.push_back(p.term_off_[i] + poolbase);
+    std::uint64_t bbase = bitmaps_.size();
+    if (!p.bitmaps_.empty()) { align8(bitmaps_); bbase = bitmaps_.size(); bitmaps_.append(p.bitmaps_); }
+    for (BitmapEntry e : p.bitmap_dir_) { e.off += bbase; e.term += tbase; bitmap_dir_.push_back(e); }
+    for (auto &s : p.stems_) stems_.emplace_back(std::move(s.first), s.second + tbase);
+    if (!p.info_.empty()) last_term_ = p.last_term_;
+    p = SegmentWriter(segment_id_, max_ver_);       // its memory back
+}
+
+std::string SegmentWriter::finish(unsigned threads)
 {
     if (in_term_) throw std::runtime_error("segment writer: finish inside a term");
     const std::uint32_t n_docs = static_cast<std::uint32_t>(doc_ids_.size());
@@ -224,29 +265,70 @@ std::string SegmentWriter::finish()
 
     // Postings of every stem group of more than one term: its documents with the summed tf (no
     // positions), so that a stemmed word is scored from one list. Found on a first assembly.
+    // Groups are cut into runs of about equal work; each run is written by one thread into a part,
+    // and the parts are appended in order: the same bytes as one thread.
     std::vector<TermInfo> groups(entries.size());
     {
         const std::string first = assemble(h, norms, entries, stem_pool, stem_terms, groups);
-        Segment seg(first.data(), first.size());
-        std::vector<std::pair<std::uint32_t, std::uint32_t>> dt;
-        std::vector<std::uint32_t> gdocs, gtfs;
+        const Segment seg(first.data(), first.size());
+        std::vector<std::uint64_t> work(entries.size() + 1, 0);
         for (std::uint32_t i = 0; i < entries.size(); ++i) {
-            StemEntry &e = entries[i];
-            if (e.count == 1) { e.union_df = info_[stem_terms[e.first]].df; groups[i] = info_[stem_terms[e.first]]; continue; }
-            dt.clear();
-            for (std::uint32_t k = 0; k < e.count; ++k) {
-                PostingIter it(seg, stem_terms[e.first + k]);
-                for (std::uint32_t d = it.next(); d != NO_DOC; d = it.next()) dt.emplace_back(d, it.tf());
+            std::uint64_t w = 0;
+            if (entries[i].count > 1)
+                for (std::uint32_t k = 0; k < entries[i].count; ++k) w += info_[stem_terms[entries[i].first + k]].df;
+            work[i + 1] = work[i] + w;
+        }
+        const unsigned nt = std::max(1u, std::min<unsigned>(threads, 64));
+        const std::size_t runs = nt == 1 ? 1 : 4 * nt;
+        std::vector<std::uint32_t> cut(runs + 1, 0);
+        for (std::size_t r = 1; r < runs; ++r)
+            cut[r] = static_cast<std::uint32_t>(std::lower_bound(work.begin(), work.end(), work.back() * r / runs) - work.begin());
+        cut[runs] = static_cast<std::uint32_t>(entries.size());
+        for (std::size_t r = 1; r <= runs; ++r) cut[r] = std::max(cut[r], cut[r - 1]);
+        auto run = [&](std::size_t r, SegmentWriter &part) {
+            std::vector<std::pair<std::uint32_t, std::uint32_t>> dt;
+            std::vector<std::uint32_t> gdocs, gtfs;
+            for (std::uint32_t i = cut[r]; i < cut[r + 1]; ++i) {
+                StemEntry &e = entries[i];
+                if (e.count == 1) { e.union_df = info_[stem_terms[e.first]].df; groups[i] = info_[stem_terms[e.first]]; continue; }
+                dt.clear();
+                for (std::uint32_t k = 0; k < e.count; ++k) {
+                    PostingIter it(seg, stem_terms[e.first + k]);
+                    for (std::uint32_t d = it.next(); d != NO_DOC; d = it.next()) dt.emplace_back(d, it.tf());
+                }
+                std::sort(dt.begin(), dt.end());
+                gdocs.clear();
+                gtfs.clear();
+                for (const auto &x : dt) {
+                    if (!gdocs.empty() && gdocs.back() == x.first) gtfs.back() += x.second;
+                    else { gdocs.push_back(x.first); gtfs.push_back(x.second); }
+                }
+                e.union_df = static_cast<std::uint32_t>(gdocs.size());
+                groups[i] = part.write_postings(gdocs, gtfs, NO_POSITIONS, nullptr);
             }
-            std::sort(dt.begin(), dt.end());
-            gdocs.clear();
-            gtfs.clear();
-            for (const auto &x : dt) {
-                if (!gdocs.empty() && gdocs.back() == x.first) gtfs.back() += x.second;
-                else { gdocs.push_back(x.first); gtfs.push_back(x.second); }
+        };
+        // waves of nt runs: at most nt parts in memory besides this writer
+        for (std::size_t w0 = 0; w0 < runs; w0 += nt) {
+            const std::size_t w1 = std::min(runs, w0 + nt);
+            std::vector<SegmentWriter> parts;
+            for (std::size_t r = w0; r < w1; ++r) parts.push_back(part());
+            if (w1 - w0 == 1) run(w0, parts[0]);
+            else {
+                std::vector<std::thread> pool;
+                std::vector<std::exception_ptr> err(w1 - w0);
+                for (std::size_t r = w0; r < w1; ++r)
+                    pool.emplace_back([&, r] { try { run(r, parts[r - w0]); } catch (...) { err[r - w0] = std::current_exception(); } });
+                for (auto &t : pool) t.join();
+                for (auto &e : err) if (e) std::rethrow_exception(e);
             }
-            e.union_df = static_cast<std::uint32_t>(gdocs.size());
-            groups[i] = write_postings(gdocs, gtfs, NO_POSITIONS, nullptr);
+            for (std::size_t r = w0; r < w1; ++r) {
+                SegmentWriter &p = parts[r - w0];
+                std::uint64_t pbase = post_.size();
+                if (!p.post_.empty()) { align8(post_); pbase = post_.size(); post_.append(p.post_); }
+                for (std::uint32_t i = cut[r]; i < cut[r + 1]; ++i)
+                    if (entries[i].count > 1 && groups[i].n_blocks > 0) groups[i].post_off += pbase;
+                std::string().swap(p.post_);
+            }
         }
     }
     std::string out = assemble(h, norms, entries, stem_pool, stem_terms, groups);

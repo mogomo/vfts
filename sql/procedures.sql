@@ -699,14 +699,14 @@ $$;
 -- segment from the node cache (tmerge), store it, mark the inputs merged, load every node, activate.
 CREATE OR REPLACE PROCEDURE vfts.merge_step(nm VARCHAR, seg_list VARCHAR) LANGUAGE PLvSQL AS $$
 DECLARE
-    iid INT; g INT; g_new INT; cdir VARCHAR(1024); new_id INT; params VARCHAR(65000); n INT; n_dead INT; reord BOOLEAN;
+    iid INT; g INT; g_new INT; cdir VARCHAR(1024); new_id INT; params VARCHAR(65000); n INT; n_dead INT; reord BOOLEAN; th INT;
 BEGIN
-    SELECT index_id, gen, cache_dir, reorder INTO iid, g, cdir, reord FROM vfts.indexes WHERE index_name = nm;
+    SELECT index_id, gen, cache_dir, reorder, threads INTO iid, g, cdir, reord, th FROM vfts.indexes WHERE index_name = nm;
     g_new := g + 1;
     new_id := EXECUTE 'SELECT NEXTVAL(''vfts.segment_seq'') * 2147483648';
     PERFORM CALL vfts.build_table();
     params := 'index=' || QUOTE_LITERAL(nm) || ', gen=' || g || ', segments=' || QUOTE_LITERAL(seg_list) || ', new_id=' || new_id
-           || ', reorder=' || CASE WHEN reord IS FALSE THEN 'false' ELSE 'true' END
+           || ', reorder=' || CASE WHEN reord IS FALSE THEN 'false' ELSE 'true' END || ', threads=' || COALESCE(th, 0)
            || CASE WHEN cdir IS NULL THEN '' ELSE ', cache_dir=' || QUOTE_LITERAL(cdir) END;
     EXECUTE 'INSERT /*+DIRECT, LABEL(vfts_merge)*/ INTO vfts_build SELECT vfts.tmerge(USING PARAMETERS ' || params || ') OVER()';
     -- every document of the inputs was deleted (a TRUNCATE, a dropped partition): no new segment,

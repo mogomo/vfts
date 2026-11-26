@@ -33,10 +33,20 @@ public:
 
     std::uint32_t n_terms() const { return static_cast<std::uint32_t>(term_off_.size() - 1); }
 
-    // The finished segment. The writer cannot be used afterwards.
-    std::string finish();
+    // Writing in parallel (merge): part() is a writer for a run of terms, with the documents of
+    // this one (shared, read only; this writer must outlive it). Its term ids start at 0.
+    // append(part) puts the part's terms, postings, positions, bitmaps and stems behind this
+    // writer's, as if they had been written here: the bytes are the same as one writer's.
+    SegmentWriter part() const;
+    void append(SegmentWriter &&part);
+
+    // The finished segment. The writer cannot be used afterwards. threads: stem groups' postings
+    // are made in parallel (the bytes do not depend on it).
+    std::string finish(unsigned threads = 1);
 
 private:
+    const std::vector<std::uint32_t> &lens() const { return shared_len_ ? *shared_len_ : doc_len_; }
+    std::size_t n_docs() const { return shared_len_ ? shared_len_->size() : doc_ids_.size(); }
     void flush_block();
     TermInfo write_postings(const std::vector<std::uint32_t> &docs, const std::vector<std::uint32_t> &tfs,
                             std::uint64_t pos_off, const std::vector<std::uint64_t> *block_pos);
@@ -48,6 +58,7 @@ private:
     std::vector<std::int64_t> doc_ids_;
     std::vector<std::uint32_t> order_;          // docnos by doc_id; empty when doc ids ascend
     std::vector<std::uint32_t> doc_len_;
+    const std::vector<std::uint32_t> *shared_len_ = nullptr;   // a part(): the main writer's lengths
     std::string pool_;
     std::vector<std::uint32_t> term_off_;
     std::vector<TermInfo> info_;

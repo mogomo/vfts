@@ -62,6 +62,16 @@ int main()
     bp.stats = &rs;
     const std::string merged = merge_segments(refs, 99, bp);
     const std::string merged_plain = merge_segments(refs, 99, plain);
+    {
+        // in parallel: the same bytes, reordered or not
+        MergeOptions bp8 = bp, plain8 = plain;
+        bp8.threads = 8;
+        plain8.threads = 8;
+        CHECK(merge_segments(refs, 99, bp8) == merged);
+        CHECK(merge_segments(refs, 99, plain8) == merged_plain);
+        plain8.threads = 3;
+        CHECK(merge_segments(refs, 99, plain8) == merged_plain);
+    }
     Segment m(merged.data(), merged.size()), mp(merged_plain.data(), merged_plain.size());
     m.verify();
     mp.verify();
