@@ -18,7 +18,7 @@ if [ "${1:-}" = --clean ]; then
 fi
 
 B=$(tput bold 2>/dev/null || true); N=$(tput sgr0 2>/dev/null || true)
-step() { echo; echo "${B}== $1${N}"; shift; for l in "$@"; do echo "   $l"; done; [ "$PAUSE" = yes ] && read -r -p "   (Enter) " _; }
+step() { echo; echo "${B}== $1${N}"; shift; for l in "$@"; do echo "   $l"; done; if [ "$PAUSE" = yes ]; then read -r -p "   (Enter) " _; fi; }
 sql() { echo "${B}SQL>${N} $1"; vsql -X -c "$1" 2>&1 | grep -v "^$"; }
 
 step "0. Start clean" "The demo uses the schema demo and the index cases."

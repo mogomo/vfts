@@ -58,9 +58,10 @@ refuse to search, rather than search the masked text ([Access policies](#access-
 
 **Contents**
 
+- New: [Improvements in 0.5.0](#improvements-in-050-an-index-that-looks-after-itself)
 - Start: [Quick start](#quick-start) · [Install](#install) · [Prepare a table](#prepare-a-table)
 - Use: [Reference](#reference) ([how to call the functions](#how-to-call-the-functions), [at a glance](#every-procedure-and-function-at-a-glance))
-  - [Index management](#index-management): [create_index](#create_index), [info](#info), [tinfo](#tinfo), [refresh_index](#refresh_index), [merge](#merge), [rebuild](#rebuild), [load_all](#load_all), [check_access](#check_access), [drop_index](#drop_index), [add_attribute](#add_attribute), [refresh_attributes](#refresh_attributes-refresh_attribute), [drop_attribute](#drop_attribute), [the views](#the-views-_live-and-_snap), [access policies](#access-policies)
+  - [Index management](#index-management): [create_index](#create_index), [info](#info), [tinfo](#tinfo), [refresh_index](#refresh_index), [merge](#merge), [rebuild](#rebuild), [load_all](#load_all), [maintain](#maintain), [cleanup](#cleanup), [check_access](#check_access), [alter_index](#alter_index), [export_index](#export_index), [import_index](#import_index), [drop_index](#drop_index), [add_attribute](#add_attribute), [refresh_attributes](#refresh_attributes-refresh_attribute), [drop_attribute](#drop_attribute), [the views](#the-views-_live-and-_snap), [access policies](#access-policies)
   - [Search functions](#search-functions): [tsearch](#tsearch), [tcount](#tcount), [tmatch](#tmatch), [tserve and vfts_broker](#tserve-and-vfts_broker-many-clients), [tsnippet](#tsnippet), [hybrid](#hybrid), [tokenize](#tokenize), [tversion](#tversion)
   - [Query syntax](#query-syntax), [Filter syntax](#filter-syntax)
   - [Search patterns](#search-patterns), [Semantic search](#semantic-search)
@@ -68,9 +69,46 @@ refuse to search, rather than search the masked text ([Access policies](#access-
 - Measure: [Performance](#performance) · [Run the benchmark yourself](#run-the-benchmark-yourself)
 - More: [FAQ](#faq) · [Changes](#changes) · [Restrictions and future work](#restrictions-and-future-work) · [Files](#files) · [License](#license) · [Disclaimer](#disclaimer)
 
+## Improvements in 0.5.0: an index that looks after itself
+
+vfts 0.5.0 makes an index behave like part of its table: it needs nothing from the people who
+write to the table, follows the table's grants, refreshes and repairs itself, survives reboots and
+backups, and leaves nothing behind when it goes. Every change below was tested on one node
+(Ubuntu) and on the 5-node Eon cluster (3 + 2 nodes, fenced), and is described in the reference
+entries it changes; [Changes](#changes) lists what to do after an upgrade.
+
+| Area | Before (0.4.1) | Now (0.5.0) |
+|---|---|---|
+| What the table needs | a `ver` column set on every write, and a journal row for every delete and for every update that kept `ver` | a unique doc_id: changes are found by Vertica's row epoch ([Prepare a table](#prepare-a-table)) |
+| An `UPDATE` that sets no version column | never found | searchable at once through `<index>_live` |
+| `DELETE`, `DROP_PARTITIONS`, `MOVE_PARTITIONS_TO_TABLE`, `TRUNCATE` without a journal row | the rows stayed searchable until a rebuild | gone at the next refresh, found by a count check ([refresh_index](#refresh_index)) |
+| Rows moved, swapped or copied in by partition functions, a restore | not seen (their version was older) | searchable at once through `<index>_live` |
+| Who may search | whoever had `SELECT` on the views, also after losing `SELECT` on the table | whoever may read the source table; a `REVOKE` counts at the next refresh or `check_access`, and old tokens stop working ([Access policies](#access-policies)) |
+| Refresh | yours to schedule | every minute by itself (option `refresh_every`; [maintain](#maintain)) |
+| Node caches after a reboot | lost (`/tmp/vfts`): every search failed until `load_all` | kept (`<catalog>/vfts` on each node) |
+| A node that was down during a refresh | refused to answer until `load_all` | repaired by the next refresh; `load_all` writes only what is missing |
+| `drop_index`, a dropped source table | caches left on other subclusters; the index of a dropped table stayed | `drop_index` works from anywhere and twice; [cleanup](#cleanup) removes the rest |
+| Backup and restore of the source schema | the index answered with rows the restore took away | one refresh makes it equal to the restored table; [export_index](#export_index) / [import_index](#import_index) keep the index with the table |
+| Case | always case folded | option `case=sensitive` ([create_index](#create_index)) |
+| Merge into one segment | one thread | in parallel, the same bytes (MS MARCO, outside Vertica: 68.7 s on one thread, 25.4 s on 11) |
+| Joining every match with a large table | the plain join could put the whole table in the hash table | the `IN` and `SYNTACTIC_JOIN` forms ([tmatch](#tmatch)): 1.0 s instead of 2.7 s on Enron |
+
+What it costs, measured on a copy of MS MARCO (8,841,823 passages, one segment, one node): a
+refresh that finds nothing 0.31 to 0.33 s; a refresh after deleting 1% of the rows (88,419, no
+journal) 4.8 s, after updating 1% 5.6 s. The live view's filter on the row epoch skips every
+storage container older than the last refresh (1.4 ms on the 8.8 million rows when nothing is
+newer). Searches run the same engine code as in 0.4.1 (an index without `case=sensitive` analyzes
+and stems exactly as before, and a merge on several threads writes the same bytes as one thread),
+so the published search timings stay those of 0.4.1.
+
+What stays the same: a deleted row is found until the next refresh (at most a minute with the
+default schedule) unless a journal row hides it at once; on Eon, a statement reaches only its own
+subcluster, so subclusters other than the one the trigger runs on need `maintain` from a session
+on them ([Several nodes, Eon and subclusters](#several-nodes-eon-and-subclusters)).
+
 ## Quick start
 
-Three steps on a Vertica node. The output shown is real (vfts 0.4.1, Vertica 26.3, one node).
+Three steps on a Vertica node. The output shown is real (vfts 0.5.0, Vertica 26.3, one node).
 
 **1. Install.** As the Linux user that runs Vertica (dbadmin), in a directory whose path has no
 spaces, with a superuser's connection:
@@ -86,7 +124,7 @@ the first problem and says what to fix. It ends with:
 
 ```
 == 4. Verify
-   ok    vfts 0.4.1 (-O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0, ICU 79.1)
+   ok    vfts 0.5.0 (-O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0, ICU 79.1)
    ok    every function ran on a test table (schema vfts_selftest, then removed)
 
 == Installed
@@ -105,7 +143,7 @@ COMMIT;
    COMMIT
 CALL vfts.create_index('docs', 'quick.docs', 'lang=en');
    NOTICE 2005:  vfts: index docs created on quick.docs. Search: SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='...', k=10) OVER() FROM quick.docs_live) r;
-    create_index
+    create_index 
    --------------
                0
    (1 row)
@@ -118,7 +156,7 @@ SELECT r.rank, r.doc_id, ROUND(r.score, 4) AS score, d.body
 FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='contracts', k=10) OVER() FROM quick.docs_live) r
 JOIN quick.docs d USING (doc_id)
 ORDER BY r.rank;
-    rank | doc_id | score  |                            body
+    rank | doc_id | score  |                            body                             
    ------+--------+--------+-------------------------------------------------------------
        1 |      2 | 0.2308 | Contract renewal: payment within 30 days.
        2 |      1 | 0.1955 | The supplier shall indemnify the buyer under this contract.
@@ -135,7 +173,7 @@ SELECT r.rank, r.doc_id, d.body
 FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='contract w/5 indemn*', k=10) OVER() FROM quick.docs_live) r
 JOIN quick.docs d USING (doc_id)
 ORDER BY r.rank;
-    rank | doc_id |                            body
+    rank | doc_id |                            body                             
    ------+--------+-------------------------------------------------------------
        1 |      4 | The new contract has an indemnity cap.
        2 |      1 | The supplier shall indemnify the buyer under this contract.
@@ -146,7 +184,7 @@ How many documents match:
 
 ```sql
 SELECT * FROM (SELECT vfts.tcount(* USING PARAMETERS index='docs', query='holmes OR contract*') OVER() FROM quick.docs_live) c;
-    qid | count
+    qid | count 
    -----+-------
       0 |     4
    (1 row)
@@ -380,7 +418,7 @@ what it does, **Syntax**, **Arguments** and **Parameters**, **Returns**, **Privi
   `PUBLIC`: what limits a search is `SELECT` on the index's views, which vfts grants to whoever
   may read the source table ([The views](#the-views-_live-and-_snap)).
 - Every example that shows output is real: `scripts/examples.sh` runs them all, one after the
-  other, on a table of its own (schema `ex`, index `notes`; vfts 0.4.1, Vertica 26.3, one node),
+  other, on a table of its own (schema `ex`, index `notes`; vfts 0.5.0, Vertica 26.3, one node),
   and the blocks show each statement, then what vsql printed. Run it yourself after an install
   (`scripts/examples.sh`; `scripts/examples.sh --clean` removes it).
 
@@ -452,7 +490,7 @@ The examples run as one story, in this order, on the example table below:
 it; [refresh_attributes](#refresh_attributes-refresh_attribute) (note 3 moves to legal);
 [tsnippet](#tsnippet); [refresh_index](#refresh_index) (note 6 is added); [merge](#merge),
 [tinfo](#tinfo), [load_all](#load_all), [maintain](#maintain), [cleanup](#cleanup),
-[check_access](#check_access), [alter_index](#alter_index),
+[check_access](#check_access), [export_index](#export_index), [alter_index](#alter_index),
 [rebuild](#rebuild);
 [tokenize](#tokenize), [hybrid](#hybrid), [tversion](#tversion), the [broker](#tserve-and-vfts_broker-many-clients);
 then [drop_attribute](#drop_attribute) and [drop_index](#drop_index). An example that depends on an
@@ -578,7 +616,8 @@ Any user (`EXECUTE` is granted to `PUBLIC`).
 ```sql
 CALL vfts.info('notes');
    NOTICE 2005:  index notes: source ex.notes, generation 1, 1 segments, 5 documents (0 deleted), 0.0 MB
-   NOTICE 2005:  boundary TIMESTAMPTZ '2026-11-23 22:32:53.077523+00'; live tail 0 rows (ex.notes_live); last refresh: full build: 5 rows into 1 segments, 0 tombstones, 0 journal rows
+   NOTICE 2005:  boundary epoch 24944; live tail 0 rows (ex.notes_live); last refresh: full build: 5 rows into 1 segments, 0 tombstones, 0 journal rows
+   NOTICE 2005:  automatic refresh: every 1 minutes
    NOTICE 2005:  access: open (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)
    NOTICE 2005:  attributes: (none)
    NOTICE 2005:  node caches: 1 of 1 nodes of this subcluster have generation 1 (details: SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;)
@@ -658,7 +697,8 @@ When it runs: by itself, every minute (option `refresh_every` of [create_index](
 [alter_index](#alter_index)); call it yourself whenever you like, for example right after a large
 load. Inserts and updates are searchable without it (the live view reads the rows committed
 since); deletes need it (or a journal row); a longer live tail costs query time, because every
-tail row is analyzed per query (a search warns above 10,000 tail rows: parameter `tail_warn`). A
+tail row is analyzed per query (above 10,000 tail rows a search writes a warning to the server
+log: parameter `tail_warn`). A
 refresh also writes every segment a node of the subcluster lacks, so a node that was down or lost
 its cache is repaired by it.
 
@@ -694,7 +734,7 @@ SELECT 'snap', doc_id FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes'
     live |      6
    (1 row)
 CALL vfts.refresh_index('notes');
-   NOTICE 2005:  vfts: index notes generation 2: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows (0.3 s)
+   NOTICE 2005:  vfts: index notes generation 2: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows (0.4 s)
     refresh_index 
    ---------------
                 0
@@ -770,9 +810,10 @@ CALL vfts.merge('notes', 1);
    (1 row)
 CALL vfts.info('notes');
    NOTICE 2005:  index notes: source ex.notes, generation 3, 1 segments, 6 documents (0 deleted), 0.0 MB
-   NOTICE 2005:  boundary TIMESTAMPTZ '2026-11-23 22:32:54.585445+00'; live tail 0 rows (ex.notes_live); last refresh: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows
+   NOTICE 2005:  boundary epoch 24960; live tail 0 rows (ex.notes_live); last refresh: incremental: 1 rows into 1 segments, 0 tombstones, 0 journal rows
+   NOTICE 2005:  automatic refresh: every 1 minutes
    NOTICE 2005:  access: open (open: no access policy; rows: each user searches the rows that row access policies show; masked:<column>: searches refused)
-   NOTICE 2005:  attributes: owner text from ex.owners.owner (5 values, refreshed 2026-11-24 00:32:54)
+   NOTICE 2005:  attributes: owner text from ex.owners.owner (5 values, refreshed 2026-11-26 02:53:02)
    NOTICE 2005:  node caches: 1 of 1 nodes of this subcluster have generation 3 (details: SELECT * FROM (SELECT vfts.tinfo(USING PARAMETERS index='notes') OVER(PARTITION NODES) FROM vfts.probe) i;)
     info 
    ------
@@ -862,6 +903,23 @@ As [create_index](#create_index), and `CREATE` on the source table's schema.
 
 ```sql
 CALL vfts.export_index('notes');
+   NOTICE 2005:  vfts: index notes (generation 3, 1 segments) exported to ex.notes_vfts_export in 0.100000000000000 s; vfts.import_index('notes', 'ex.notes_vfts_export') makes it again
+    export_index 
+   --------------
+               0
+   (1 row)
+SELECT kind, COUNT(*) FROM ex.notes_vfts_export GROUP BY kind ORDER BY kind;
+    kind | COUNT 
+   ------+-------
+    A    |     1
+    D    |     6
+    M    |     1
+    P    |    38
+    Q    |    38
+    S    |     1
+    T    |    38
+    V    |     5
+   (8 rows)
 ```
 
 #### import_index
@@ -977,7 +1035,7 @@ Superuser, or a user with `EXECUTE` on the procedure and write access to the `vf
 
 ```sql
 CALL vfts.load_all('notes');
-   NOTICE 2005:  vfts: index notes generation 3 (1 segments) loaded on the nodes of this subcluster in 0.200000000000000 s
+   NOTICE 2005:  vfts: index notes generation 3 (1 segments, 0 written: the others were in every cache) loaded on the nodes of this subcluster in 0.300000000000000 s
     load_all 
    ----------
            0
@@ -1016,7 +1074,15 @@ As [refresh_index](#refresh_index). The trigger runs it as the user who created 
 
 ```sql
 CALL vfts.maintain('notes');
+    maintain 
+   ----------
+           0
+   (1 row)
 SELECT index_name, refresh_every, refresh_note FROM vfts.indexes WHERE index_name = 'notes';
+    index_name | refresh_every | refresh_note 
+   ------------+---------------+--------------
+    notes      |             1 | no changes
+   (1 row)
 ```
 
 #### cleanup
@@ -1043,6 +1109,11 @@ Superuser (it drops indexes and removes files on the nodes).
 
 ```sql
 CALL vfts.cleanup();
+   NOTICE 2005:  vfts: cleanup done (0 indexes without a source table dropped)
+    cleanup 
+   ---------
+          0
+   (1 row)
 ```
 
 #### check_access
@@ -1238,7 +1309,7 @@ One attribute, and its row in `vfts.attributes` (`version` counts the copies mad
 
 ```sql
 CALL vfts.refresh_attribute('notes', 'owner');
-   NOTICE 2005:  vfts: attribute owner of index notes refreshed: 5 values in 0.126 s
+   NOTICE 2005:  vfts: attribute owner of index notes refreshed: 5 values in 0.116 s
     refresh_attribute 
    -------------------
                     0
@@ -1385,7 +1456,7 @@ or to filter, group and aggregate with SQL.
 | filter_cache | true | keep the filter's set of left-out documents per segment; `false`: ask the filter per candidate |
 | threads | 0 | threads for this query (0: one per core). A large segment is cut into slices of documents, so one query can use every core; while many queries run, each gets its share |
 | cache_dir | `<catalog>/vfts` | node cache directory (or the session parameter) |
-| tail_warn | 10000 | a warning to the client when the live tail has more rows than this (every search analyzes them all); `0`: never |
+| tail_warn | 10000 | a warning in the server log (`vertica.log` and the Data Collector table `dc_errors`; Vertica does not pass a function's warnings to the client) when the live tail has more rows than this (every search analyzes them all); `0`: never |
 
 Session defaults (any parameter except index and query): `ALTER SESSION SET UDPARAMETER vfts_mode = 'exact';`
 (any user; the name with the prefix `vfts_`), or `ALTER SESSION SET UDPARAMETER FOR vfts.vfts mode = 'exact';`
@@ -1982,7 +2053,7 @@ compiler and flags, the ICU version, and the Snowball stemmers linked in.
 SELECT version, build, icu FROM (SELECT vfts.tversion() OVER()) v;
     version |                       build                        | icu  
    ---------+----------------------------------------------------+------
-    0.4.1   | -O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0 | 79.1
+    0.5.0   | -O3 -ffp-contract=off -std=c++17 x86_64 g++-15.2.0 | 79.1
    (1 row)
 ```
 
@@ -2631,10 +2702,11 @@ engines' caches off. Method, every configuration and the answers:
 
 vfts: `create_index` (analysis, index tables, node cache) and `merge(name, 1)`; the COPY of the
 text into Vertica is not included (MS MARCO 275 s). The engines: bulk load, refresh and force merge
-into one segment. Without the merge, vfts's MS MARCO build takes 167 s (16 segments); the merge
-was single-threaded in 0.4.1 (0.5.0 merges in parallel: [Changes](#changes)). Enron and PubMed are merged with document reordering (a few
-seconds of their merge; [Document order](#document-order-graph-bisection)), which also makes their
-node cache 1 to 5% and their index tables 3 to 16% smaller.
+into one segment. Without the merge, vfts's MS MARCO build takes 167 s (16 segments); the merge was
+single-threaded in 0.4.1 (0.5.0 merges in parallel: [Changes](#changes)). Enron and PubMed are
+merged with document reordering (a few seconds of their merge;
+[Document order](#document-order-graph-bisection)), which also makes their node cache 1 to 5% and
+their index tables 3 to 16% smaller.
 
 ### Document order (graph bisection)
 
@@ -2911,10 +2983,11 @@ as you set them.
 
 Indexes look after themselves ([Install](#index-a-table-and-let-users-search)):
 
-- **Automatic refresh.** `create_index` makes a Vertica schedule and the trigger
-  `vfts.refresh_<index>`, which runs the new procedure `maintain` every minute (option
-  `refresh_every`, minutes; `0`: off): refresh, repair nodes that are behind, remove leftovers.
-  A failure is written to `refresh_note`. A search warns when the live tail has more than 10,000
+- **Automatic refresh.** `create_index` makes a Vertica schedule of the index's own
+  (`vfts.refresh_<index>_schedule`) and the trigger `vfts.refresh_<index>`, which runs the new
+  procedure `maintain` every minute (option `refresh_every`, minutes; `0`: off): refresh, repair
+  nodes that are behind, remove leftovers. A failure is written to `refresh_note`. A search writes
+  a warning to the server log (`vertica.log`, `dc_errors`) when the live tail has more than 10,000
   rows (parameter `tail_warn`).
 - **Node caches survive a reboot.** The default cache directory is `<catalog>/vfts` on each node,
   no longer `/tmp/vfts` (a tmpfs on many systems: after a reboot every search failed until
@@ -2943,11 +3016,16 @@ Case-sensitive search: the index option `case=sensitive` keeps the case of words
 in queries (`Apple` finds `Apple`, not `apple`; stems keep the case too). Indexes made without it
 are unchanged, byte for byte.
 
+Fixed: a merge of segments whose documents were all deleted (after a `TRUNCATE`, for example)
+made an empty segment, which the other nodes of a cluster could not load: the merge failed there.
+Such a merge now only retires its inputs.
+
 After the upgrade: existing indexes keep their settings and get no trigger; give them one with
 `CALL vfts.alter_index(index, 'refresh_every=1')`. On Eon, run `CALL vfts.upgrade_caches()` from a
-session on each subcluster other than the one you installed from. An existing index keeps its `ver` boundary until its next
-`refresh_index`, which moves it to the epoch, and from then on its views' grants follow the source
-table's (`CALL vfts.alter_index(index, 'grants=manual')` first to keep grants you gave by hand).
+session on each subcluster other than the one you installed from. An existing index keeps its `ver`
+boundary until its next `refresh_index`, which moves it to the epoch; its views' grants follow the
+source table's from its next `refresh_index` or `check_access` (run
+`CALL vfts.alter_index(index, 'grants=manual')` first to keep grants you gave by hand).
 
 **0.4.1.** Counts faster: `tcount`, `tcount ... by=` and `tmatch` read the documents of frequent
 words as bit sets, and a batch of counts (`queries`) shares the cores slice by slice. The answers
@@ -2990,8 +3068,8 @@ vtext with its own `./install.sh --uninstall --drop`, install vfts, and create t
 - A sloppy phrase with the same word twice (`"run run"~2`) uses Lucene's rules without its
   special handling of repeated words.
 - Words longer than 255 bytes (after normalization) are not indexed.
-- The live tail is analyzed for every query (thousands of rows are fine; a search warns above
-  10,000). The automatic refresh keeps it short.
+- The live tail is analyzed for every query (thousands of rows are fine; above 10,000 a search
+  writes a warning to the server log). The automatic refresh keeps it short.
 - Deleted rows are found by every search until the next refresh (at most `refresh_every` minutes,
   one by default), unless a journal row hides them at once.
 - A search reads the cache of its node; a node that missed a refresh refuses to answer until the

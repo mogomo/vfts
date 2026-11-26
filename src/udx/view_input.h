@@ -152,8 +152,9 @@ struct ViewInput {
                               std::to_string(s1) + ":" + std::to_string(s2) + ":" + key);
     }
 
-    // Every search analyzes every row of the live tail: a warning to the client when the tail has
-    // more than tail_warn rows (parameter or session parameter; default 10,000; 0: never).
+    // Every search analyzes every row of the live tail: a warning when the tail has more than
+    // tail_warn rows (parameter or session parameter; default 10,000; 0: never). Vertica writes a
+    // function's warnings to vertica.log and the Data Collector (dc_errors), not to the client.
     void warn_long_tail(Vertica::ServerInterface &srv, Settings &s, const std::string &index) const
     {
         const std::int64_t lim = s.integer("tail_warn", 10000);

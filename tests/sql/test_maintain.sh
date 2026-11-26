@@ -14,7 +14,7 @@ cd "$(dirname "$0")"; source ./lib.sh
 echo "$TEST_NAME"
 
 cleanup() {
-    for i in vf_mt vf_mt_a vf_mt_l vf_mt_o vf_mt_g; do q "CALL vfts.drop_index('$i')" > /dev/null 2>&1; done
+    for i in vf_mt vf_mt_a vf_mt_b vf_mt_l vf_mt_o vf_mt_g; do q "CALL vfts.drop_index('$i')" > /dev/null 2>&1; done
     q "DROP SCHEMA IF EXISTS vf_mt CASCADE" > /dev/null 2>&1
 }
 cleanup
@@ -71,12 +71,21 @@ expect "a tail above tail_warn: a warning (dc_errors), tail_warn=0: none" \
 echo "-- the automatic refresh"
 q "CALL vfts.create_index('vf_mt_a', 'vf_mt.docs', 'refresh_every=1')" > /dev/null
 expect "refresh_every=1: a trigger" "$(trig vf_mt_a)" "1"
+# a second index with the same interval (each index has its own schedule: one trigger per schedule)
+q "CALL vfts.create_index('vf_mt_b', 'vf_mt.docs', 'refresh_every=1')" > /dev/null
+expect "a second index with the same interval gets its trigger too" "$(trig vf_mt_b) $(trig vf_mt_a)" "1 1"
+q "CALL vfts.drop_index('vf_mt_b')" > /dev/null
+expect "drop_index removes its trigger and schedule" \
+       "$(trig vf_mt_b) $(q "SELECT COUNT(*) FROM v_catalog.user_schedules WHERE schema_name = 'vfts' AND schedule_name = 'refresh_vf_mt_b_schedule'")" "0 0"
 g0=$(q "SELECT gen FROM vfts.indexes WHERE index_name = 'vf_mt_a'")
 q "INSERT INTO vf_mt.docs VALUES (2001, 'contract by the scheduler'); COMMIT;" > /dev/null
+# a refresh that started just before the INSERT committed takes the row at the next one: wait
+# until the row is in the index (the tail empty), at most 180 s
 waited=0
-while [ "$(q "SELECT gen FROM vfts.indexes WHERE index_name = 'vf_mt_a'")" = "$g0" ] && [ $waited -lt 150 ]; do sleep 5; waited=$((waited + 5)); done
-expect "the scheduler refreshed the index (within 150 s)" "$(q "SELECT (gen > $g0)::INT FROM vfts.indexes WHERE index_name = 'vf_mt_a'")" "1"
-expect "... and its live tail is empty" "$(q "SELECT COUNT(*) FROM vf_mt.vf_mt_a_live WHERE doc_id IS NOT NULL")" "0"
+while { [ "$(q "SELECT gen FROM vfts.indexes WHERE index_name = 'vf_mt_a'")" = "$g0" ] ||
+        [ "$(q "SELECT COUNT(*) FROM vf_mt.vf_mt_a_live WHERE doc_id IS NOT NULL")" != 0 ]; } && [ $waited -lt 180 ]; do sleep 5; waited=$((waited + 5)); done
+expect "the scheduler refreshed the index (within 180 s)" "$(q "SELECT (gen > $g0)::INT FROM vfts.indexes WHERE index_name = 'vf_mt_a'")" "1"
+expect "... and the new row is in the index (live tail empty)" "$(q "SELECT COUNT(*) FROM vf_mt.vf_mt_a_live WHERE doc_id IS NOT NULL")" "0"
 expect "info names the automatic refresh" "$(qn "CALL vfts.info('vf_mt_a')" | grep -o 'automatic refresh: every 1 minutes')" "automatic refresh: every 1 minutes"
 q "CALL vfts.alter_index('vf_mt_a', 'refresh_every=0')" > /dev/null
 expect "alter_index refresh_every=0: no trigger" "$(trig vf_mt_a)" "0"

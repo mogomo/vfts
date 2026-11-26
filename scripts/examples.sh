@@ -32,12 +32,12 @@ clean() {
 if [ "${1:-}" = --clean ]; then clean; echo "examples removed"; exit 0; fi
 # The example index is refreshed by its trigger every minute (create_index's default): start just
 # after a minute begins, so that the story (about 40 s) runs before the first automatic refresh.
-while [ "$(date +%S)" -gt 2 ]; do sleep 1; done
+[ "$I" = notes ] && while [ "$(date +%S)" -gt 2 ]; do sleep 1; done      # only for the README's run
 FAILS=0
 ex() {   # title, then statements: each is printed with its output; a failed one is counted
     echo; echo "-- $1"; shift
     for s in "$@"; do
-        s=${s//SCHEMA ex;/SCHEMA $S;}; s=${s//ex./$S.}; s=${s//\'notes\'/\'$I\'}; s=${s//notes_live/${I}_live}; s=${s//notes_snap/${I}_snap}; s=${s//notes_journal/${I}_journal}
+        s=${s//SCHEMA ex;/SCHEMA $S;}; s=${s//ex./$S.}; s=${s//\'notes\'/\'$I\'}; s=${s//notes_live/${I}_live}; s=${s//notes_snap/${I}_snap}; s=${s//notes_journal/${I}_journal}; s=${s//notes_vfts_export/${I}_vfts_export}
         echo "$s"
         local out rc
         out=$(vsql -X -v ON_ERROR_STOP=1 -c "$s" 2>&1); rc=$?

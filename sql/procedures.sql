@@ -883,10 +883,11 @@ $$;
 
 -- ------------------------------------------------------------------ automatic refresh, node caches
 
--- The automatic refresh of an index: a Vertica schedule (cron, every `minutes`) and a trigger
--- vfts.refresh_<index> that runs vfts.maintain('<index>') as its definer. minutes = 0 removes the
--- trigger. Allowed: 1 to 59, or whole hours up to 1440 (cron has no seconds). Creating triggers
--- needs a superuser; for anyone else it says so and leaves the refresh to them.
+-- The automatic refresh of an index: its own Vertica schedule vfts.refresh_<index>_schedule (cron,
+-- every `minutes`; a schedule carries one trigger) and the trigger vfts.refresh_<index>, which runs
+-- vfts.maintain('<index>') as its definer. minutes = 0 removes both. Allowed: 1 to 59, or whole
+-- hours up to 1440 (cron has no seconds). Creating triggers needs a superuser; for anyone else it
+-- leaves the refresh to them (create_index says so).
 CREATE OR REPLACE PROCEDURE vfts.set_schedule(nm VARCHAR, minutes INT) LANGUAGE PLvSQL AS $$
 DECLARE
     cron VARCHAR(64); sched VARCHAR(128); sup INT;
@@ -898,22 +899,20 @@ BEGIN
         RAISE EXCEPTION 'vfts: refresh_every is in minutes: 0 (off), 1 to 59, or whole hours up to 1440';
     END IF;
     sup := (SELECT COUNT(*) FROM v_catalog.users WHERE user_name = CURRENT_USER() AND is_super_user);
-    IF minutes = 0 THEN
-        IF sup > 0 THEN
-            EXECUTE 'DROP TRIGGER IF EXISTS vfts.refresh_' || nm;
-        END IF;
+    IF sup = 0 THEN
         RETURN;
     END IF;
-    IF sup = 0 THEN
-        RAISE NOTICE 'vfts: index % is not refreshed automatically: scheduling needs a superuser (CALL vfts.alter_index(''%'', ''refresh_every=%'') as one); run CALL vfts.refresh_index(''%'') yourself meanwhile',
-                     nm, nm, minutes, nm;
+    sched := 'refresh_' || nm || '_schedule';
+    EXECUTE 'DROP TRIGGER IF EXISTS vfts.refresh_' || nm;
+    IF (SELECT COUNT(*) FROM v_catalog.user_schedules WHERE schema_name = 'vfts' AND schedule_name = sched) > 0 THEN
+        EXECUTE 'DROP SCHEDULE vfts.' || sched || ' CASCADE';
+    END IF;
+    IF minutes = 0 THEN
         RETURN;
     END IF;
     cron := CASE WHEN minutes < 60 THEN '*/' || minutes || ' * * * *' WHEN minutes < 1440 THEN '0 */' || (minutes // 60) || ' * * *' ELSE '0 0 * * *' END;
-    sched := 'vfts.every_' || minutes || '_min';
-    EXECUTE 'CREATE SCHEDULE IF NOT EXISTS ' || sched || ' USING CRON ' || QUOTE_LITERAL(cron);
-    EXECUTE 'DROP TRIGGER IF EXISTS vfts.refresh_' || nm;
-    EXECUTE 'CREATE TRIGGER vfts.refresh_' || nm || ' ON SCHEDULE ' || sched || ' EXECUTE PROCEDURE vfts.maintain(' || QUOTE_LITERAL(nm) || ') AS DEFINER';
+    EXECUTE 'CREATE SCHEDULE vfts.' || sched || ' USING CRON ' || QUOTE_LITERAL(cron);
+    EXECUTE 'CREATE TRIGGER vfts.refresh_' || nm || ' ON SCHEDULE vfts.' || sched || ' EXECUTE PROCEDURE vfts.maintain(' || QUOTE_LITERAL(nm) || ') AS DEFINER';
 END;
 $$;
 
@@ -1018,14 +1017,15 @@ $$;
 -- an install makes them again).
 CREATE OR REPLACE PROCEDURE vfts.upgrade_schedules() LANGUAGE PLvSQL AS $$
 DECLARE
-    nm VARCHAR(64); last VARCHAR(64);
+    nm VARCHAR(64); last VARCHAR(64); every INT;
 BEGIN
     last := '';
     LOOP
         nm := (SELECT MIN(index_name) FROM vfts.indexes WHERE COALESCE(refresh_every, 0) > 0 AND index_name > last);
         EXIT WHEN nm IS NULL;
         last := nm;
-        PERFORM CALL vfts.set_schedule(nm, (SELECT refresh_every FROM vfts.indexes WHERE index_name = nm));
+        every := (SELECT MAX(refresh_every) FROM vfts.indexes WHERE index_name = nm);
+        PERFORM CALL vfts.set_schedule(nm, every);
     END LOOP;
 END;
 $$;

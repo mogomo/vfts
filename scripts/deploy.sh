@@ -48,11 +48,12 @@ if [ "$UNDEPLOY" = no ]; then
     install -m 0644 "$LIBFILE" "$SHARED"
     trap 'rm -f "$SHARED"' EXIT
 fi
-if [ "$UNDEPLOY" = yes ]; then
-    # the triggers of the automatic refresh call vfts procedures: remove them first (an install
-    # makes them again from vfts.indexes.refresh_every)
-    for nm in $(vsql -X -A -t -q -c "SELECT index_name FROM vfts.indexes WHERE COALESCE(refresh_every, 0) > 0" 2> /dev/null); do
-        vsql -X -q -c "CALL vfts.set_schedule('$nm', 0);" > /dev/null 2>&1 || echo "deploy.sh: could not remove the trigger vfts.refresh_$nm" >&2
+if [ "$ECHO_ONLY" = no ]; then
+    # The triggers of the automatic refresh call vfts.maintain, which cannot be replaced or dropped
+    # while they exist: remove them first. The install makes them again from
+    # vfts.indexes.refresh_every (vfts.upgrade_schedules); an uninstall leaves them removed.
+    for t in $(vsql -X -A -t -q -c "SELECT trigger_name FROM v_catalog.stored_proc_triggers WHERE schema_name = 'vfts'" 2> /dev/null); do
+        vsql -X -q -c "DROP TRIGGER IF EXISTS vfts.$t;" > /dev/null 2>&1 || echo "deploy.sh: could not remove the trigger vfts.$t" >&2
     done
 fi
 if [ "$UNDEPLOY" = yes ] && [ "$DROP" = yes ]; then

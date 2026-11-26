@@ -418,8 +418,9 @@ Who may search an index, and what the access policies of the source table do to 
 ## Automatic refresh
 
 `create_index` (option `refresh_every`, minutes, default 1) makes a Vertica schedule
-(`vfts.every_<n>_min`, `CREATE SCHEDULE ... USING CRON`, shared by all indexes with the same
-interval) and a trigger `vfts.refresh_<index>` that runs `vfts.maintain('<index>')` as its definer
+of its own (`vfts.refresh_<index>_schedule`, `CREATE SCHEDULE ... USING CRON`; a schedule carries
+one trigger, so indexes cannot share one: found when a second index got the same interval) and a
+trigger `vfts.refresh_<index>` that runs `vfts.maintain('<index>')` as its definer
 (stored procedure scheduling, Vertica 12 and later; the database parameter
 `EnableStoredProcedureScheduler` must be 1, its default). Cron has no seconds, so the interval is
 1 to 59 minutes or whole hours. `maintain`:

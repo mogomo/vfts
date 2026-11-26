@@ -132,14 +132,13 @@ cat << EOF
    - Index a table:  CALL vfts.create_index('docs', 'app.docs', 'lang=en');   (README: Prepare a table)
    - Search:         SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='docs', query='...', k=10) OVER()
                                     FROM app.docs_live) r;
-   - Let users search: GRANT USAGE ON SCHEMA app TO <role>; GRANT SELECT ON app.docs_live, app.docs_snap TO <role>;
-   - Keep it fresh:  CALL vfts.refresh_index('docs');   on a schedule
-   - Node caches:    /tmp/vfts by default; for production pass cache_dir=<dir> to create_index
-                     (the directory must exist on every node, writable by the database's OS user)
+   - Let users search: whoever may SELECT from app.docs may search it (the views follow the table's grants)
+   - Keep it fresh:  nothing to do: the index refreshes itself every minute (option refresh_every)
+   - Node caches:    <catalog>/vfts on each node (survives a reboot); another place: cache_dir=<dir> at create_index
 EOF
 if [ "${eon:-0}" -gt 1 ]; then
-    echo "   - Eon: after create_index / refresh_index on the primary subcluster, run CALL vfts.load_all('docs');"
-    echo "     from a session on each secondary subcluster"
+    echo "   - Eon: the trigger refreshes the index on one subcluster; on each other subcluster run"
+    echo "     CALL vfts.maintain('docs'); every minute or so from a session on it, and once CALL vfts.upgrade_caches();"
 fi
 echo "   - Many clients:   build/tools/vfts_broker --port 9300 --schema app --mode serve   (README: tserve and vfts_broker)"
 echo "   - More:           scripts/demo.sh (a guided tour), tests/sql/run_all.sh (SQL tests)"

@@ -74,7 +74,7 @@ database that already holds the text.
 ## What vfts is
 
     source table ──build──▶ index tables (in Vertica) ──load──▶ a cache file on every node ──▶ search
-    + journal                term_dict, postings,                (memory-mapped)                 tsearch, tcount,
+    (doc_id, text)           term_dict, postings,                (memory-mapped)                 tsearch, tcount,
                              positions, doc_stats                                                tsnippet, hybrid
 
 - The **index lives in Vertica tables**: backed up, replicated and secured with the database.
@@ -96,12 +96,14 @@ French, Hebrew and Arabic). The outputs below are copied from a real run.
 
 ### Create an index
 
-    CALL vfts.create_index('cases', 'demo.cases', 'lang=en journal=demo.cases_journal margin=0');
+    CALL vfts.create_index('cases', 'demo.cases', 'lang=en journal=demo.cases_journal');
 
-The source table needs a `doc_id`, the text, an optional `lang` per row and a version timestamp
-(`ver TIMESTAMPTZ DEFAULT CLOCK_TIMESTAMP()`). `create_index` analyzes every row, writes the index
-tables, loads the cache on every node, and creates two views: `demo.cases_live` (every committed
-row) and `demo.cases_snap` (the rows up to the last refresh). Search functions read one of them.
+The source table needs a unique `doc_id`, the text and an optional `lang` per row; nothing else,
+and the people who write to it follow no rules: vfts finds what changed by Vertica's row epoch.
+`create_index` analyzes every row, writes the index tables, loads the cache on every node, creates
+two views, `demo.cases_live` (every committed row) and `demo.cases_snap` (the rows up to the last
+refresh), and a schedule that refreshes the index every minute. Search functions read one of the
+views, and whoever may read the table may search it (the views follow its grants).
 
 ### What the analyzer sees: `vfts.tokenize`
 
@@ -242,8 +244,9 @@ same works through the broker: `{"query": "contract*", "filter": "owner = 'legal
 
     query='indemn*'  -> 1, 5, 9      (9 is new; 2 no longer says indemnify; 8 is deleted)
 
-No refresh was run: the live view hands the three changed rows to the search, which analyzes the
-new ones and hides the old versions. `CALL vfts.refresh_index('cases')` then makes them a small
+No refresh was run: the live view hands the changed rows to the search, which analyzes the new ones
+and hides the old versions (the delete is hidden by its journal row; without one, the next refresh
+removes it). `CALL vfts.refresh_index('cases')` then makes them a small
 new segment (0.3 s), and `CALL vfts.merge('cases', 1)` merges the segments into one; the answers
 stay the same.
 
@@ -306,7 +309,11 @@ and its output; `scripts/examples.sh` runs them all.
 | rebuild | `CALL vfts.rebuild(index)` | `CALL vfts.rebuild('notes');` |
 | load_all | `CALL vfts.load_all(index)` | `CALL vfts.load_all('notes');` |
 | info | `CALL vfts.info(index)` | `CALL vfts.info('notes');` |
-| check_access | `CALL vfts.check_access(index)` | `CALL vfts.check_access('notes');` (after an access policy changed) |
+| check_access | `CALL vfts.check_access(index)` | `CALL vfts.check_access('notes');` (after an access policy or a grant changed) |
+| alter_index | `CALL vfts.alter_index(index, options)` | `CALL vfts.alter_index('notes', 'refresh_every=5');` |
+| maintain | `CALL vfts.maintain(index)` | what the index's trigger runs every minute: refresh, repair nodes |
+| cleanup | `CALL vfts.cleanup()` | indexes whose table is gone, caches of dropped indexes |
+| export_index, import_index | `CALL vfts.export_index(index)`, `CALL vfts.import_index(index, export_table)` | the index in a table of the source's schema, for a backup with the table |
 | drop_index | `CALL vfts.drop_index(index)` | `CALL vfts.drop_index('notes');` |
 | tsearch | `vfts.tsearch(* USING PARAMETERS index, query \| queries [, k, mode, syntax, ...]) OVER() FROM <view>` | `SELECT * FROM (SELECT vfts.tsearch(* USING PARAMETERS index='notes', query='contract w/5 indemn*', k=10) OVER() FROM ex.notes_live) r;` |
 | tcount | `vfts.tcount(* USING PARAMETERS index, query [, ...]) OVER() FROM <view>` | `SELECT * FROM (SELECT vfts.tcount(* USING PARAMETERS index='notes', query='contract') OVER() FROM ex.notes_live) c;` |
@@ -328,17 +335,21 @@ and its output; `scripts/examples.sh` runs them all.
 A search index that has to be rebuilt after every load is a batch job, not a search engine. vfts
 works the way Lucene does:
 
-1. New rows go into **small new segments** when you call `vfts.refresh_index` - nothing already
-   indexed is rewritten.
-2. Rows written after the last refresh are **searched at query time**: the view `<index>_live`
-   returns them and `tsearch` analyzes them on the fly. A search sees every committed row.
-3. Deleted and changed rows are hidden by a **tombstone bitmap** (a delete, or an update that keeps
-   the version, is written to a small journal table).
-4. `refresh_index` then runs a **tiered merge** that combines small segments; searches keep
-   using the previous generation while it runs.
+1. New rows go into **small new segments** at every refresh - nothing already indexed is
+   rewritten. The index refreshes itself every minute (a Vertica schedule and trigger made by
+   `create_index`).
+2. Rows committed after the last refresh are **searched at query time**: the view `<index>_live`
+   returns them (every row whose commit epoch is newer than the refresh) and `tsearch` analyzes
+   them on the fly. A search sees every committed insert and update, however it was written
+   (`UPDATE`, `MERGE`, `COPY`, partitions moved or swapped in).
+3. Deleted and changed rows are hidden by a **tombstone bitmap**. Rows that left the table
+   (`DELETE`, a dropped partition, `TRUNCATE`) are found at the refresh by comparing counts, so no
+   journal is needed; a journal row hides a delete at once.
+4. The refresh then runs a **tiered merge** that combines small segments, on several threads;
+   searches keep using the previous generation while it runs.
 
-A refresh is needed for speed, not for correct answers: every query analyzes the rows written since
-the last refresh, so refresh often (every minute or hour) and the tail stays small.
+A refresh keeps queries fast (every query analyzes the rows written since the last one) and removes
+deleted rows; the automatic one keeps the tail small without anyone thinking about it.
 
 An upgrade of Vertica keeps the index as well: it lives in ordinary Vertica tables and in node cache
 files whose format belongs to vfts. The library may need to be compiled again for the new Vertica
